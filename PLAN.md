@@ -105,13 +105,13 @@ the same session protocol from Phase 1 — all frames base64-encoded ciphertext.
 - [x] Plain-text rendering only for MVP — markdown / tool-call detail cards / diff viewer deferred
 - [x] Verified via `--list-agents --timeline <prefix>` and a GUI cold-start survives 3s without crashing
 
-### Phase 4 — paste and drop ← the reason we're building this
-- [ ] NSPasteboard hook on ⌘V, detect `public.image` / `public.file-url`
-- [ ] `Attachment` model with thumbnail
-- [ ] Drop target on composer (`onDrop(of:)`)
-- [ ] Upload: base64 inline via `send_agent_message_request.images[]`
-  - Confirmed from upstream code: images are base64 inline, no separate HTTP endpoint.
-- [ ] Images preview inline, files show as a chip with filename
+### Phase 4 — paste and drop ✅ done
+- [x] `.onPasteCommand(of:)` hooks ⌘V; `PasteboardHelper.extractImages` handles NSImage payloads and file-URL image attachments
+- [x] `PendingImageAttachment` model keeps PNG bytes + thumbnail (draw-into-NSImage scaled by aspect)
+- [x] `.onDrop(of: [.image, .fileURL])` on composer; dashed accent-colored overlay when targeted
+- [x] Upload path: attachments serialize to base64 and flow through `SendAgentMessageRequest.images[]` — matches upstream wire shape
+- [x] Inline thumbnail chips with a remove button render above the text editor; dedicated ScrollView so many attachments still fit
+- [x] File (non-image) drop support deferred: the daemon schema only models GitHub PR/issue attachments for now, not arbitrary files
 
 ### Phase 5 — diff / code polish (optional)
 - [ ] Detect unified diff in messages, render with add/remove colors

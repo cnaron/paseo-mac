@@ -27,6 +27,7 @@ final class ConversationViewModel {
     var isAgentWorking: Bool = false
     var lastError: String? = nil
     var composerText: String = ""
+    var pendingImages: [PendingImageAttachment] = []
 
     private let getClient: () -> DaemonClient?
     private var streamRowCounter: Int = 0
@@ -56,23 +57,48 @@ final class ConversationViewModel {
 
     func sendComposer() async {
         let text = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        let images = pendingImages
+        guard !text.isEmpty || !images.isEmpty else { return }
         guard let client = getClient() else {
             self.lastError = "Not connected"
             return
         }
         composerText = ""
+        pendingImages = []
 
         // Optimistically append a user bubble so the UI feels instant. The
         // real row will come back via agent_stream `timeline` events.
-        appendLocalUserRow(text: text)
+        let optimisticText = text.isEmpty
+            ? "[\(images.count) image\(images.count == 1 ? "" : "s")]"
+            : text
+        appendLocalUserRow(text: optimisticText)
 
         do {
-            _ = try await client.sendMessage(agentId: agentId, text: text)
+            let wireImages = images.map {
+                SendAgentMessageRequest.ImageAttachment(
+                    data: $0.pngData.base64EncodedString(),
+                    mimeType: $0.mimeType
+                )
+            }
+            _ = try await client.sendMessage(
+                agentId: agentId,
+                text: text,
+                images: wireImages.isEmpty ? nil : wireImages
+            )
             self.lastError = nil
         } catch {
             self.lastError = "Send failed: \(error.localizedDescription)"
         }
+    }
+
+    // MARK: - Pending attachments
+
+    func addImages(_ images: [PendingImageAttachment]) {
+        pendingImages.append(contentsOf: images)
+    }
+
+    func removeImage(id: UUID) {
+        pendingImages.removeAll { $0.id == id }
     }
 
     // MARK: - Stream ingestion
