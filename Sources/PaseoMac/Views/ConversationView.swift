@@ -41,6 +41,9 @@ private struct BubbleGroup: Identifiable {
     let text: String
     let timestamp: String?
     let tool: ConversationViewModel.ToolInfo?
+    /// Populated only when `kind == "tool_cluster"` — consecutive tool rows
+    /// rendered together with tight internal spacing.
+    let toolCluster: [ConversationViewModel.ToolInfo]
 }
 
 private func groupRows(_ rows: [ConversationViewModel.Row]) -> [BubbleGroup] {
@@ -48,12 +51,39 @@ private func groupRows(_ rows: [ConversationViewModel.Row]) -> [BubbleGroup] {
     let mergeable: Set<String> = ["user", "assistant", "reasoning"]
 
     for row in rows {
+        // Coalesce consecutive tool rows into a tight cluster so a run of
+        // Read → Edit → Bash doesn't get spread out by the inter-bubble gap.
+        if row.kind == "tool", let info = row.tool,
+           let last = out.last, last.kind == "tool_cluster" {
+            var cluster = last.toolCluster
+            cluster.append(info)
+            out.removeLast()
+            out.append(BubbleGroup(
+                id: last.id,
+                kind: "tool_cluster",
+                text: "",
+                timestamp: last.timestamp,
+                tool: nil,
+                toolCluster: cluster
+            ))
+            continue
+        }
+        if row.kind == "tool", let info = row.tool {
+            out.append(BubbleGroup(
+                id: row.id,
+                kind: "tool_cluster",
+                text: "",
+                timestamp: row.timestamp,
+                tool: nil,
+                toolCluster: [info]
+            ))
+            continue
+        }
+
         if let last = out.last,
            last.kind == row.kind,
            mergeable.contains(row.kind) {
-            // Join with an empty separator: the daemon splits mid-sentence during
-            // streaming, so forcing newlines would insert false paragraph breaks.
-            // Block-level parsing (code fences, headings) runs later on the joined text.
+            // Streaming chunks of the same kind merge into one bubble.
             let merged = last.text + row.text
             out.removeLast()
             out.append(BubbleGroup(
@@ -61,7 +91,8 @@ private func groupRows(_ rows: [ConversationViewModel.Row]) -> [BubbleGroup] {
                 kind: last.kind,
                 text: merged,
                 timestamp: last.timestamp,
-                tool: nil
+                tool: nil,
+                toolCluster: []
             ))
         } else {
             out.append(BubbleGroup(
@@ -69,7 +100,8 @@ private func groupRows(_ rows: [ConversationViewModel.Row]) -> [BubbleGroup] {
                 kind: row.kind,
                 text: row.text,
                 timestamp: row.timestamp,
-                tool: row.tool
+                tool: row.tool,
+                toolCluster: []
             ))
         }
     }
@@ -84,7 +116,7 @@ private struct MessageList: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 18) {
+                LazyVStack(alignment: .leading, spacing: 14) {
                     if let err = vm.lastError {
                         Text(err)
                             .font(.callout)
@@ -125,10 +157,12 @@ private struct MessageBubble: View {
         switch group.kind {
         case "user":
             userBubble
-        case "tool":
-            toolLine
-        case "assistant", "reasoning":
-            sideBubble
+        case "tool_cluster":
+            toolCluster
+        case "assistant":
+            assistantBubble
+        case "reasoning":
+            reasoningView
         default:
             sideBubble
         }
@@ -148,7 +182,49 @@ private struct MessageBubble: View {
         .padding(.horizontal, 16)
     }
 
-    // MARK: Assistant / reasoning / everything else (left-aligned bubble)
+    // MARK: Assistant (spoken narrative + conclusion — left bubble)
+
+    private var assistantBubble: some View {
+        HStack(alignment: .top) {
+            MarkdownBodyView(text: group.text)
+                .frame(maxWidth: 680, alignment: .leading)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(Color.secondary.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
+            Spacer(minLength: 48)
+        }
+        .padding(.horizontal, 16)
+    }
+
+    // MARK: Reasoning (private thinking — left bar, italic, no bubble)
+
+    private var reasoningView: some View {
+        HStack(alignment: .top, spacing: 10) {
+            RoundedRectangle(cornerRadius: 2)
+                .fill(Color.secondary.opacity(0.35))
+                .frame(width: 3)
+            MarkdownBodyView(text: group.text)
+                .frame(maxWidth: 680, alignment: .leading)
+                .italic()
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 48)
+        }
+        .padding(.horizontal, 16)
+    }
+
+    // MARK: Tool cluster (consecutive tool rows, tight spacing)
+
+    private var toolCluster: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            ForEach(Array(group.toolCluster.enumerated()), id: \.offset) { _, info in
+                ToolRow(info: info)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 2)
+    }
+
+    // MARK: Todo / error / system / other (fallback bubble)
 
     @ViewBuilder
     private var sideBubble: some View {
@@ -173,54 +249,22 @@ private struct MessageBubble: View {
 
     @ViewBuilder
     private var bubbleBody: some View {
-        switch group.kind {
-        case "assistant", "reasoning":
-            MarkdownBodyView(text: group.text)
-        case "todo":
-            Text(group.text)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-        case "error":
-            Text(group.text)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-        default:
-            Text(group.text)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    // MARK: Tool (compact clickable row à la Claude Code)
-
-    @ViewBuilder
-    private var toolLine: some View {
-        if let info = group.tool {
-            ToolRow(info: info)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 6)
-        } else {
-            // Defensive fallback if detail decoding was missing.
-            Text(group.text)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 16)
-        }
+        Text(group.text)
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     // MARK: Styling shared by the left-aligned bubble
 
     private var showKindHeader: Bool {
         switch group.kind {
-        case "assistant": return false
-        case "reasoning", "todo", "error", "system": return true
-        default: return true
+        case "todo", "error", "system": return true
+        default: return false
         }
     }
 
     private var headerLabel: String {
         switch group.kind {
-        case "reasoning": "thinking"
         case "todo": "todo"
         case "error": "error"
         case "system": "system"
@@ -230,8 +274,6 @@ private struct MessageBubble: View {
 
     private var background: Color {
         switch group.kind {
-        case "assistant": Color.secondary.opacity(0.12)
-        case "reasoning": Color.secondary.opacity(0.08)
         case "todo": Color.orange.opacity(0.12)
         case "error": Color.red.opacity(0.15)
         default: Color.secondary.opacity(0.1)
@@ -240,7 +282,6 @@ private struct MessageBubble: View {
 
     private var foreground: Color {
         switch group.kind {
-        case "reasoning": .secondary
         case "error": .red
         default: .primary
         }
