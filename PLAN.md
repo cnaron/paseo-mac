@@ -17,8 +17,8 @@ Target: **~200 MB RSS, real Mac window, first-class paste and drag-drop for imag
 ## Scope
 
 ### In scope (MVP)
-- Connect to a remote daemon (VPS) over WebSocket, via relay or direct
-- Authenticate using the existing pairing token flow
+- Connect to a remote daemon (VPS) over WebSocket
+- Authenticate via the `hello` handshake (no relay / E2EE yet — see risks)
 - List agents (equivalent of `paseo ls`)
 - Open an agent → render conversation history → stream new messages
 - Composer with text, image paste (⌘V), file drag-drop
@@ -47,8 +47,6 @@ Target: **~200 MB RSS, real Mac window, first-class paste and drag-drop for imag
 │ PaseoMac (Swift / SwiftUI)                     │
 │                                                │
 │ Views ── ViewModels ── DaemonClient ── WSTask  │
-│                              │                 │
-│                              └── Relay (NaCl)  │
 └────────────────────────────────────────────────┘
               │ ws(s)://
               ▼
@@ -58,48 +56,48 @@ Target: **~200 MB RSS, real Mac window, first-class paste and drag-drop for imag
 ```
 
 - **Transport**: `URLSessionWebSocketTask` (native, no deps)
-- **Crypto for relay**: Apple CryptoKit `Curve25519` + libsodium-style sealed boxes where needed
+- **MVP connectivity**: SSH tunnel (`ssh -L 6767:localhost:6767 cc`) + direct WS. Avoids implementing relay / NaCl box now — that is P2 work.
 - **Persistence**: `SecItem` Keychain for tokens, `UserDefaults` for benign prefs
 - **Concurrency**: Swift 6 actors, async/await throughout
 - **UI**: SwiftUI with `@Observable` state, `NavigationSplitView` for the list+detail layout
 
 ### Build system
 
-First pass uses **Swift Package Manager** executable target. Faster to iterate from SSH (`swift build`, no Xcode GUI). A shell script wraps the built binary into a `.app` with a hand-written `Info.plist`.
-
-Once the app stabilizes we can optionally add an `.xcodeproj` for GUI debugging.
+SwiftPM executable target. `swift build` from SSH, `scripts/bundle.sh` wraps into `.app`. An Xcode project can come later for GUI debugging.
 
 ## Milestones
 
-### Phase 0 — scaffold (today)
+### Phase 0 — scaffold ✅ done
 - [x] git init, directory layout, PLAN + README
-- [ ] Package.swift + minimal SwiftUI app
-- [ ] scripts/bundle.sh produces `.app`
-- [ ] `swift build && open .build/PaseoMac.app` shows empty window
+- [x] Package.swift + minimal SwiftUI app
+- [x] scripts/bundle.sh produces `.app`
+- [x] `swift build && open build/PaseoMac.app` shows empty window
 
-### Phase 1 — daemon client (day 2–3)
-- [ ] `DaemonClient.swift`: connect, send frame, receive frame, reconnect
-- [ ] `Protocol.swift`: `Codable` types for the RPC messages we need
-- [ ] `Connection.swift`: host/port/token stored in Keychain
-- [ ] CLI sanity: listing agents printed to stdout matches `paseo ls`
+### Phase 1 — daemon client ✅ done
+- [x] `DaemonClient.swift`: connect, hello handshake, auto pong, requestId correlation
+- [x] `Protocol.swift`: `Codable` types for WS envelope + session messages
+- [x] `SmokeTest.swift`: `./PaseoMac --list-agents` prints the same agent list as `paseo ls`
+- [x] End-to-end verified against live VPS daemon over SSH tunnel
 
-### Phase 2 — conversation UI (day 4–7)
-- [ ] `AgentListView` — left sidebar, native List
-- [ ] `ConversationView` — streaming messages
+### Phase 2 — conversation UI (next)
+- [ ] `AgentListView` — left sidebar, native List, selection bound to ViewModel
+- [ ] `fetch_agent_timeline_request` decoded into `Message` models
+- [ ] `ConversationView` — streaming messages, auto-scroll to bottom
 - [ ] `MessageBubble` — role-aware bubbles, markdown via `AttributedString`
-- [ ] `ComposerView` — text input + send
-- [ ] Incremental message merging (deltas into one bubble)
+- [ ] `ComposerView` — `TextEditor` + send button
+- [ ] Incremental `assistant_chunk` merging (deltas into one bubble)
 
-### Phase 3 — paste and drop (day 8–10) ← the reason we're building this
+### Phase 3 — paste and drop ← the reason we're building this
 - [ ] NSPasteboard hook on ⌘V, detect `public.image` / `public.file-url`
 - [ ] `Attachment` model with thumbnail
 - [ ] Drop target on composer (`onDrop(of:)`)
-- [ ] Upload to daemon (binary WS frame or multipart — TBD after protocol dig)
-- [ ] Images embed inline, files attach with filename chip
+- [ ] Upload: base64 inline via `send_agent_message_request.images[]`
+  - Confirmed from upstream code: images are base64 inline, no separate HTTP endpoint.
+- [ ] Images preview inline, files show as a chip with filename
 
-### Phase 4 — diff / code polish (day 11–14, optional)
-- [ ] Detect ```diff / unified diff in messages
-- [ ] Syntax highlight via a small, dep-light highlighter
+### Phase 4 — diff / code polish (optional)
+- [ ] Detect unified diff in messages, render with add/remove colors
+- [ ] Syntax highlight via a dep-light highlighter
 - [ ] Collapse long code blocks
 
 ### Phase 5 — Mac-native polish (rolling)
@@ -107,18 +105,22 @@ Once the app stabilizes we can optionally add an `.xcodeproj` for GUI debugging.
 - [ ] Standard shortcuts
 - [ ] Notifications via `UNUserNotificationCenter`
 - [ ] Restore window/session on relaunch
+- [ ] Relay / E2EE support so we can drop the SSH tunnel
 
-## Risks and unknowns
+## Risks, unknowns, and notes accumulated during Phase 1
 
-1. **Pairing flow** — iOS app presumably scans a QR code from the desktop. We need to replicate whichever handshake the daemon expects. Will dig into `packages/server/src/server/connection-offer.ts` and the relay before Phase 1.
-2. **Binary upload path** — if daemon WebSocket is JSON-only, we either base64-inline images (slow) or find an HTTP multipart endpoint. Will determine during Phase 3.
-3. **Streaming delta merge** — agent responses arrive as many partial events; merging them into one bubble without flicker needs care.
-4. **Relay v2 crypto** — tweetnacl sealed boxes in Swift via CryptoKit are straightforward if the scheme is standard Curve25519+XSalsa20-Poly1305. If Paseo uses a custom twist we may need to port a small shim.
+1. **MVP uses SSH tunnel, not relay.** The relay protocol needs Curve25519 + XSalsa20-Poly1305 (NaCl box) via CryptoKit, plus the handshake in `packages/relay/`. We can add this later. For now users run `ssh -L 6767:localhost:6767 <vps>` and PaseoMac connects to `ws://localhost:6767/ws`.
+2. **`WS_PROTOCOL_VERSION = 1`** — the daemon checks this literal; relay protocol is a separate `"2"` (unrelated).
+3. **Envelope discrepancy**: our earlier docs note assumed `{type:"server_info"}` but server actually emits `{type:"session", message:{type:"status", payload:{status:"server_info", ...}}}`. Our decoder handles it by routing to `.unknown` on the session level for now — good enough because list/send don't need the info.
+4. **Response shape**: `fetch_agents_response.payload.entries[].agent` (wraps agent inside `{agent, project}`) — not `payload.agents[]`. Handle `entries` when decoding.
+5. **Paging**: `pageInfo.nextCursor` returned when `hasMore:true`. Ignored for MVP (MVP pulls top 50).
+6. **Streaming delta merge** is still unverified — will be exercised in Phase 2 when we consume `assistant_chunk`.
+7. **Binary WS frames**: confirmed unused at the session level. Binary frames are reserved for `terminal-stream-protocol` (out of scope).
 
 ## Non-goals and anti-goals
 
 - **Not a Paseo feature-for-feature clone.** We're replacing daily-driver workflow, not rebuilding the whole app.
-- **Not a distributable product.** AGPLv3 source is public if published, but this is personal tooling first. Publishing can come later if the app is useful.
+- **Not a distributable product.** AGPLv3 source is public if published, but this is personal tooling first.
 - **Not going to re-implement the daemon.** The VPS already runs `@getpaseo/server`. We're a client, period.
 
 ## Directory layout
@@ -126,20 +128,36 @@ Once the app stabilizes we can optionally add an `.xcodeproj` for GUI debugging.
 ```
 paseo-mac/
 ├── PLAN.md                 ← this file
-├── README.md               ← how to build/run
+├── README.md
+├── LICENSE                 (AGPLv3, matches upstream)
 ├── Package.swift
 ├── .gitignore
 ├── Sources/PaseoMac/
-│   ├── PaseoMacApp.swift   ← @main
-│   ├── ContentView.swift
-│   ├── Models/             ← Agent, Message, Attachment
-│   ├── Network/            ← DaemonClient, Protocol, Relay
-│   ├── ViewModels/         ← @Observable state
-│   └── Views/              ← UI
-├── Resources/
-│   └── Info.plist
-├── scripts/
-│   └── bundle.sh           ← wrap binary into .app
-└── docs/
-    └── daemon-protocol.md  ← notes from reading packages/server
+│   ├── PaseoMacApp.swift   ← @main (dispatches to smoke test when --list-agents)
+│   ├── SmokeTest.swift     ← CLI agent list printer
+│   ├── ContentView.swift   ← Phase 0 placeholder; rewritten in Phase 2
+│   ├── Network/
+│   │   ├── DaemonClient.swift
+│   │   └── Protocol.swift
+│   ├── Models/             (to be populated in Phase 2)
+│   ├── ViewModels/
+│   └── Views/
+├── Resources/Info.plist
+├── scripts/bundle.sh
+└── docs/daemon-protocol.md
 ```
+
+## How to run today (post Phase 1)
+
+```bash
+# one-time: open an SSH tunnel from your Mac to the remote daemon
+ssh -f -N -L 6767:localhost:6767 <your-vps-alias>
+
+# build + run the CLI smoke test
+cd paseo-mac
+swift build
+./.build/debug/PaseoMac --list-agents
+# => table of agents identical to `paseo ls` on the VPS
+```
+
+The GUI (`open build/PaseoMac.app`) still shows the Phase 0 placeholder window; Phase 2 wires the UI to the client.
