@@ -40,6 +40,7 @@ private struct BubbleGroup: Identifiable {
     let kind: String
     let text: String
     let timestamp: String?
+    let tool: ConversationViewModel.ToolInfo?
 }
 
 private func groupRows(_ rows: [ConversationViewModel.Row]) -> [BubbleGroup] {
@@ -59,14 +60,16 @@ private func groupRows(_ rows: [ConversationViewModel.Row]) -> [BubbleGroup] {
                 id: last.id,           // keep the first row's id so SwiftUI keeps animation identity
                 kind: last.kind,
                 text: merged,
-                timestamp: last.timestamp
+                timestamp: last.timestamp,
+                tool: nil
             ))
         } else {
             out.append(BubbleGroup(
                 id: row.id,
                 kind: row.kind,
                 text: row.text,
-                timestamp: row.timestamp
+                timestamp: row.timestamp,
+                tool: row.tool
             ))
         }
     }
@@ -119,33 +122,64 @@ private struct MessageBubble: View {
     let group: BubbleGroup
 
     var body: some View {
+        switch group.kind {
+        case "user":
+            userBubble
+        case "tool":
+            toolLine
+        case "assistant", "reasoning":
+            sideBubble
+        default:
+            sideBubble
+        }
+    }
+
+    // MARK: User (right-aligned bubble)
+
+    private var userBubble: some View {
         HStack(alignment: .top) {
-            if group.kind == "user" { Spacer(minLength: 48) }
-            VStack(alignment: alignment, spacing: 4) {
+            Spacer(minLength: 48)
+            MarkdownBodyView(text: group.text)
+                .frame(maxWidth: 560, alignment: .leading)
+                .padding(10)
+                .background(Color.accentColor.opacity(0.18), in: RoundedRectangle(cornerRadius: 10))
+        }
+        .padding(.horizontal, 16)
+    }
+
+    // MARK: Assistant / reasoning / everything else (left-aligned bubble)
+
+    @ViewBuilder
+    private var sideBubble: some View {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 4) {
                 if showKindHeader {
                     Text(headerLabel)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                bubbleContent
+                bubbleBody
+                    .frame(maxWidth: 680, alignment: .leading)
                     .padding(10)
                     .background(background, in: RoundedRectangle(cornerRadius: 10))
-                    .frame(maxWidth: 640, alignment: .leading)
                     .foregroundStyle(foreground)
             }
-            if group.kind != "user" { Spacer(minLength: 48) }
+            Spacer(minLength: 48)
         }
         .padding(.horizontal, 16)
     }
 
     @ViewBuilder
-    private var bubbleContent: some View {
+    private var bubbleBody: some View {
         switch group.kind {
-        case "user", "assistant", "reasoning":
+        case "assistant", "reasoning":
             MarkdownBodyView(text: group.text)
-        case "tool", "todo", "error", "system":
+        case "todo":
             Text(group.text)
-                .font(.system(.body, design: group.kind == "tool" ? .monospaced : .default))
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        case "error":
+            Text(group.text)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
         default:
@@ -155,16 +189,36 @@ private struct MessageBubble: View {
         }
     }
 
-    private var alignment: HorizontalAlignment { group.kind == "user" ? .trailing : .leading }
+    // MARK: Tool (compact clickable row à la Claude Code)
+
+    @ViewBuilder
+    private var toolLine: some View {
+        if let info = group.tool {
+            ToolRow(info: info)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 2)
+        } else {
+            // Defensive fallback if detail decoding was missing.
+            Text(group.text)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 16)
+        }
+    }
+
+    // MARK: Styling shared by the left-aligned bubble
 
     private var showKindHeader: Bool {
-        group.kind != "user" && group.kind != "assistant"
+        switch group.kind {
+        case "assistant": return false
+        case "reasoning", "todo", "error", "system": return true
+        default: return true
+        }
     }
 
     private var headerLabel: String {
         switch group.kind {
         case "reasoning": "thinking"
-        case "tool": "tool call"
         case "todo": "todo"
         case "error": "error"
         case "system": "system"
@@ -174,10 +228,8 @@ private struct MessageBubble: View {
 
     private var background: Color {
         switch group.kind {
-        case "user": Color.accentColor.opacity(0.18)
         case "assistant": Color.secondary.opacity(0.12)
         case "reasoning": Color.secondary.opacity(0.08)
-        case "tool": Color.indigo.opacity(0.15)
         case "todo": Color.orange.opacity(0.12)
         case "error": Color.red.opacity(0.15)
         default: Color.secondary.opacity(0.1)
@@ -190,5 +242,106 @@ private struct MessageBubble: View {
         case "error": .red
         default: .primary
         }
+    }
+}
+
+// MARK: - Tool row
+
+/// One tool invocation — name, target (file path / command / query), status.
+/// Tap the row (or the chevron) to reveal the detail payload when there is one.
+private struct ToolRow: View {
+    let info: ConversationViewModel.ToolInfo
+    @State private var expanded: Bool = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            summaryRow
+            if expanded, let detail = info.detail, !detail.isEmpty {
+                detailView(detail: detail)
+            }
+        }
+    }
+
+    private var summaryRow: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: info.iconName)
+                .foregroundStyle(.secondary)
+                .font(.caption)
+                .frame(width: 14)
+
+            Text(info.name)
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.primary)
+
+            if let target = info.target, !target.isEmpty {
+                Text(truncate(target, max: 96))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            if let status = statusSuffix {
+                Text("· \(status)")
+                    .font(.caption)
+                    .foregroundStyle(statusColor)
+            }
+
+            Spacer(minLength: 0)
+
+            if hasDetail {
+                Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            guard hasDetail else { return }
+            withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+        }
+    }
+
+    private func detailView(detail: String) -> some View {
+        Text(detail)
+            .font(info.detailIsMonospaced
+                  ? .system(.caption, design: .monospaced)
+                  : .callout)
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(10)
+            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+            .padding(.leading, 20)
+    }
+
+    private var hasDetail: Bool {
+        (info.detail?.isEmpty == false)
+    }
+
+    /// Only surface the status when it's interesting — i.e. not a plain
+    /// "completed" finish. "running", "failed", "canceled" all surface so the
+    /// user knows something's in flight or went wrong.
+    private var statusSuffix: String? {
+        switch info.status {
+        case "completed", "": return nil
+        default: return info.status
+        }
+    }
+
+    private var statusColor: Color {
+        switch info.status {
+        case "running": .blue
+        case "failed", "error": .red
+        case "canceled": .orange
+        default: .secondary
+        }
+    }
+
+    private func truncate(_ s: String, max: Int) -> String {
+        guard s.count > max else { return s }
+        let head = s.prefix(max / 2 - 1)
+        let tail = s.suffix(max / 2 - 1)
+        return "\(head)…\(tail)"
     }
 }

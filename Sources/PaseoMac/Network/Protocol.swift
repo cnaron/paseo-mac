@@ -254,7 +254,7 @@ enum TimelineItem: Decodable, Hashable, Sendable {
     case userMessage(text: String, messageId: String?)
     case assistantMessage(text: String)
     case reasoning(text: String)
-    case toolCall(name: String, status: String, callId: String)
+    case toolCall(name: String, status: String, callId: String, detail: ToolDetail)
     case todo(items: [TodoItem])
     case error(message: String)
     case other(type: String)
@@ -264,7 +264,7 @@ enum TimelineItem: Decodable, Hashable, Sendable {
         let completed: Bool
     }
 
-    private enum Keys: String, CodingKey { case type, text, messageId, name, status, callId, items, message }
+    private enum Keys: String, CodingKey { case type, text, messageId, name, status, callId, detail, items, message }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
@@ -280,10 +280,12 @@ enum TimelineItem: Decodable, Hashable, Sendable {
         case "reasoning":
             self = .reasoning(text: (try? c.decode(String.self, forKey: .text)) ?? "")
         case "tool_call":
+            let detail = (try? c.decode(ToolDetail.self, forKey: .detail)) ?? .other(type: "")
             self = .toolCall(
                 name: (try? c.decode(String.self, forKey: .name)) ?? "",
                 status: (try? c.decode(String.self, forKey: .status)) ?? "",
-                callId: (try? c.decode(String.self, forKey: .callId)) ?? ""
+                callId: (try? c.decode(String.self, forKey: .callId)) ?? "",
+                detail: detail
             )
         case "todo":
             let items = (try? c.decode([TodoItem].self, forKey: .items)) ?? []
@@ -312,11 +314,108 @@ enum TimelineItem: Decodable, Hashable, Sendable {
         case .userMessage(let t, _): t
         case .assistantMessage(let t): t
         case .reasoning(let t): t
-        case .toolCall(let name, let status, _): "\(name) · \(status)"
+        case .toolCall(let name, let status, _, _): "\(name) · \(status)"
         case .todo(let items):
             items.map { ($0.completed ? "[x] " : "[ ] ") + $0.text }.joined(separator: "\n")
         case .error(let m): m
         case .other(let t): "[\(t)]"
+        }
+    }
+}
+
+/// Decoded detail payload for a `tool_call` timeline item. Mirrors
+/// `ToolCallDetailPayloadSchema` in upstream messages.ts, trimmed to the
+/// fields we actually render. Anything we don't explicitly model falls
+/// through as `.other(type:)`.
+enum ToolDetail: Decodable, Hashable, Sendable {
+    case shell(command: String, cwd: String?, output: String?, exitCode: Int?)
+    case read(filePath: String, content: String?, offset: Int?, limit: Int?)
+    case edit(filePath: String, unifiedDiff: String?, oldString: String?, newString: String?)
+    case write(filePath: String, content: String?)
+    case search(query: String, toolName: String?, filePaths: [String]?, webResults: [WebResult]?, numMatches: Int?, content: String?)
+    case fetch(url: String, prompt: String?, result: String?, code: Int?)
+    case subAgent(subAgentType: String?, description: String?, log: String)
+    case plainText(label: String?, text: String?, icon: String?)
+    case plan(text: String)
+    case other(type: String)
+
+    struct WebResult: Decodable, Hashable, Sendable {
+        let title: String
+        let url: String
+    }
+
+    private enum Keys: String, CodingKey {
+        case type, command, cwd, output, exitCode
+        case filePath, content, offset, limit
+        case unifiedDiff, oldString, newString
+        case query, toolName, filePaths, webResults, numMatches
+        case url, prompt, result, code
+        case subAgentType, description, log
+        case label, text, icon
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Keys.self)
+        let t = (try? c.decode(String.self, forKey: .type)) ?? ""
+        switch t {
+        case "shell":
+            self = .shell(
+                command: (try? c.decode(String.self, forKey: .command)) ?? "",
+                cwd: try? c.decode(String.self, forKey: .cwd),
+                output: try? c.decode(String.self, forKey: .output),
+                exitCode: try? c.decode(Int.self, forKey: .exitCode)
+            )
+        case "read":
+            self = .read(
+                filePath: (try? c.decode(String.self, forKey: .filePath)) ?? "",
+                content: try? c.decode(String.self, forKey: .content),
+                offset: try? c.decode(Int.self, forKey: .offset),
+                limit: try? c.decode(Int.self, forKey: .limit)
+            )
+        case "edit":
+            self = .edit(
+                filePath: (try? c.decode(String.self, forKey: .filePath)) ?? "",
+                unifiedDiff: try? c.decode(String.self, forKey: .unifiedDiff),
+                oldString: try? c.decode(String.self, forKey: .oldString),
+                newString: try? c.decode(String.self, forKey: .newString)
+            )
+        case "write":
+            self = .write(
+                filePath: (try? c.decode(String.self, forKey: .filePath)) ?? "",
+                content: try? c.decode(String.self, forKey: .content)
+            )
+        case "search":
+            self = .search(
+                query: (try? c.decode(String.self, forKey: .query)) ?? "",
+                toolName: try? c.decode(String.self, forKey: .toolName),
+                filePaths: try? c.decode([String].self, forKey: .filePaths),
+                webResults: try? c.decode([WebResult].self, forKey: .webResults),
+                numMatches: try? c.decode(Int.self, forKey: .numMatches),
+                content: try? c.decode(String.self, forKey: .content)
+            )
+        case "fetch":
+            self = .fetch(
+                url: (try? c.decode(String.self, forKey: .url)) ?? "",
+                prompt: try? c.decode(String.self, forKey: .prompt),
+                result: try? c.decode(String.self, forKey: .result),
+                code: try? c.decode(Int.self, forKey: .code)
+            )
+        case "sub_agent":
+            self = .subAgent(
+                subAgentType: try? c.decode(String.self, forKey: .subAgentType),
+                description: try? c.decode(String.self, forKey: .description),
+                log: (try? c.decode(String.self, forKey: .log)) ?? ""
+            )
+        case "plain_text":
+            self = .plainText(
+                label: try? c.decode(String.self, forKey: .label),
+                text: try? c.decode(String.self, forKey: .text),
+                icon: try? c.decode(String.self, forKey: .icon)
+            )
+        case "plan":
+            self = .plan(text: (try? c.decode(String.self, forKey: .text)) ?? "")
+        default:
+            self = .other(type: t)
         }
     }
 }
