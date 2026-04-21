@@ -93,14 +93,17 @@ the same session protocol from Phase 1 — all frames base64-encoded ciphertext.
 - [x] `DaemonClient` routes its transport through `RelayChannel` when the endpoint is relay
 - [x] `SmokeTest.swift --offer <...>` verified end-to-end against `relay.cnaron.com:443` + the VPS daemon
 
-### Phase 3 — conversation UI (next)
+### Phase 3 — conversation UI ✅ done
 
-- [ ] `AgentListView` — left sidebar, native List, selection bound to ViewModel
-- [ ] `fetch_agent_timeline_request` decoded into `Message` models
-- [ ] `ConversationView` — streaming messages, auto-scroll to bottom
-- [ ] `MessageBubble` — role-aware bubbles, markdown via `AttributedString`
-- [ ] `ComposerView` — `TextEditor` + send button
-- [ ] Incremental `assistant_chunk` merging (deltas into one bubble)
+- [x] `AgentListView` — sidebar `List` with status dots, bound to `selectedAgentId`
+- [x] `Protocol.swift` extended: `FetchAgentTimelineRequest/Response`, `TimelineItem`/`TimelineEntry`, `AgentStreamMessage`/`AgentStreamEvent`
+- [x] `DaemonClient.fetchTimeline(agentId:)` + `sendMessage(agentId:text:)` wired with requestId correlation; agent_stream events routed to per-agent VMs
+- [x] `ConversationView` — LazyVStack of role-aware `MessageBubble`s, auto-scroll to bottom on new rows
+- [x] `ComposerView` — `TextEditor` + ⌘↩ send; optimistic user bubble then reconciled via agent_stream
+- [x] `AppViewModel` + `ConversationViewModel` (@Observable / @MainActor) — routes `turn_started/completed/failed` to a "working…" chip, timeline events to row appends
+- [x] `ConnectSheet` — first-run pairing-offer paste UI; persisted in `UserDefaults`, auto-reconnect on relaunch
+- [x] Plain-text rendering only for MVP — markdown / tool-call detail cards / diff viewer deferred
+- [x] Verified via `--list-agents --timeline <prefix>` and a GUI cold-start survives 3s without crashing
 
 ### Phase 4 — paste and drop ← the reason we're building this
 - [ ] NSPasteboard hook on ⌘V, detect `public.image` / `public.file-url`

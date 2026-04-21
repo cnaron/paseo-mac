@@ -45,15 +45,36 @@ func runSmokeTestAndExit() -> Never {
             try? await Task.sleep(for: .milliseconds(150))
 
             let agents = try await client.listAgents(limit: limit)
-            print("")
-            print(pad("ID", 10) + "  " + pad("STATUS", 10) + "  TITLE")
-            print(String(repeating: "-", count: 60))
-            for a in agents {
-                let id = String(a.id.prefix(8))
-                print(pad(id, 10) + "  " + pad(a.status, 10) + "  " + a.displayName)
+
+            if let agentQuery = argValue("--timeline", in: args) {
+                // Resolve prefix match against the list we just fetched.
+                guard let target = agents.first(where: { $0.id.hasPrefix(agentQuery) }) else {
+                    fputs("ERROR: no agent found with id prefix '\(agentQuery)'\n", stderr)
+                    return
+                }
+                print("Fetching timeline for \(target.displayName) (\(target.id.prefix(8)))...")
+                let payload = try await client.fetchTimeline(agentId: target.id, limit: 30)
+                print("")
+                print("Timeline: \(payload.entries.count) entries (hasOlder=\(payload.hasOlder))")
+                print(String(repeating: "-", count: 60))
+                for entry in payload.entries {
+                    let kind = entry.item.displayKind.padding(toLength: 10, withPad: " ", startingAt: 0)
+                    let text = entry.item.displayText
+                        .replacingOccurrences(of: "\n", with: " ⏎ ")
+                        .prefix(120)
+                    print("\(kind) \(text)")
+                }
+            } else {
+                print("")
+                print(pad("ID", 10) + "  " + pad("STATUS", 10) + "  TITLE")
+                print(String(repeating: "-", count: 60))
+                for a in agents {
+                    let id = String(a.id.prefix(8))
+                    print(pad(id, 10) + "  " + pad(a.status, 10) + "  " + a.displayName)
+                }
+                print("")
+                print("Total: \(agents.count) agent(s)")
             }
-            print("")
-            print("Total: \(agents.count) agent(s)")
             await client.disconnect()
         } catch {
             fputs("ERROR: \(error.localizedDescription)\n", stderr)

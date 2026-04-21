@@ -174,6 +174,64 @@ actor DaemonClient {
         return resp.payload.agents
     }
 
+    func fetchTimeline(
+        agentId: String,
+        direction: String = "tail",
+        cursor: AgentTimelineCursor? = nil,
+        limit: Int = 200,
+        projection: String = "projected"
+    ) async throws -> FetchAgentTimelineResponse.Payload {
+        let requestId = UUID().uuidString
+        let req = FetchAgentTimelineRequest(
+            requestId: requestId,
+            agentId: agentId,
+            direction: direction,
+            cursor: cursor,
+            limit: limit,
+            projection: projection
+        )
+        let reply = try await requestResponse(
+            requestId: requestId,
+            outbound: .session(.fetchAgentTimeline(req))
+        )
+        guard case let .fetchAgentTimelineResponse(resp) = reply else {
+            throw DaemonError.protocolError("Expected fetch_agent_timeline_response, got \(reply)")
+        }
+        if let err = resp.payload.error, !err.isEmpty {
+            throw DaemonError.rpcFailed(err)
+        }
+        return resp.payload
+    }
+
+    @discardableResult
+    func sendMessage(
+        agentId: String,
+        text: String,
+        messageId: String? = nil,
+        images: [SendAgentMessageRequest.ImageAttachment]? = nil
+    ) async throws -> SendAgentMessageResponse.Payload {
+        let requestId = UUID().uuidString
+        let req = SendAgentMessageRequest(
+            requestId: requestId,
+            agentId: agentId,
+            text: text,
+            messageId: messageId,
+            images: images,
+            attachments: nil
+        )
+        let reply = try await requestResponse(
+            requestId: requestId,
+            outbound: .session(.sendAgentMessage(req))
+        )
+        guard case let .sendAgentMessageResponse(resp) = reply else {
+            throw DaemonError.protocolError("Expected send_agent_message_response, got \(reply)")
+        }
+        if let err = resp.payload.error, !err.isEmpty {
+            throw DaemonError.rpcFailed(err)
+        }
+        return resp.payload
+    }
+
     // MARK: - Private plumbing
 
     private func rawSend(_ msg: WSOutbound) async throws {
@@ -267,6 +325,7 @@ actor DaemonClient {
         let requestId: String? = {
             switch session {
             case .fetchAgentsResponse(let r): return r.payload.requestId
+            case .fetchAgentTimelineResponse(let r): return r.payload.requestId
             case .sendAgentMessageResponse(let r): return r.payload.requestId
             default: return nil
             }
