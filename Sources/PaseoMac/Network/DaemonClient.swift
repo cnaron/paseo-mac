@@ -2,30 +2,32 @@ import Foundation
 
 // MARK: - Endpoint configuration
 
-struct DaemonEndpoint: Sendable, Hashable {
-    /// e.g. "localhost" / "127.0.0.1" / a remote host over SSH tunnel
-    var host: String
-    /// Defaults to 6767 (daemon local listen port)
-    var port: Int
-    /// Stable identifier this client reports to the daemon. Anything non-empty works;
-    /// reusing the same value across launches lets the daemon resume session state.
-    var clientId: String
+/// Where the daemon lives and how to reach it.
+///
+/// - `direct`: a plain WebSocket to the daemon (typically localhost, optionally through an SSH tunnel).
+/// - `relay`: traverse a Paseo relay server with E2EE via `ConnectionOffer`.
+enum DaemonEndpoint: Sendable, Hashable {
+    case direct(host: String, port: Int, clientId: String)
+    case relay(offer: ConnectionOffer, clientId: String)
 
-    var websocketURL: URL {
-        let scheme = port == 443 ? "wss" : "ws"
-        var comps = URLComponents()
-        comps.scheme = scheme
-        comps.host = host
-        comps.port = port
-        comps.path = "/ws"
-        return comps.url!
+    var clientId: String {
+        switch self {
+        case .direct(_, _, let id): id
+        case .relay(_, let id): id
+        }
     }
 
-    static let localhost = DaemonEndpoint(
-        host: "localhost",
-        port: 6767,
-        clientId: "cid_paseomac_\(UUID().uuidString.prefix(16))"
-    )
+    /// Label used in error messages and logs.
+    var displayName: String {
+        switch self {
+        case .direct(let host, let port, _): "\(host):\(port)"
+        case .relay(let offer, _): "relay \(offer.relayEndpoint)/\(offer.serverId)"
+        }
+    }
+
+    static func directLocalhost() -> DaemonEndpoint {
+        .direct(host: "localhost", port: 6767, clientId: "cid_paseomac_\(UUID().uuidString.prefix(16))")
+    }
 }
 
 // MARK: - Errors
@@ -46,21 +48,26 @@ enum DaemonError: Error, LocalizedError {
 
 // MARK: - DaemonClient
 
-/// Owns a live WebSocket connection to a Paseo daemon. Handles the hello handshake,
+/// Owns a live connection to a Paseo daemon. Handles the hello handshake,
 /// automatic ping replies, and requestId correlation for session-level RPCs.
 ///
-/// This MVP skips relay / E2EE entirely: it expects to talk to a reachable daemon directly
-/// (typically via an SSH tunnel — `ssh -L 6767:localhost:6767 cc`). Relay support comes later.
+/// Two transports are supported: a direct WebSocket (for loopback / SSH-tunnel use),
+/// and a relay-backed E2EE channel (`RelayChannel`) when connecting through a
+/// Paseo relay server. Both behave identically from the caller's perspective.
 actor DaemonClient {
     private let endpoint: DaemonEndpoint
     private let session: URLSession
-    private var task: URLSessionWebSocketTask?
+
+    private enum Transport {
+        case direct(URLSessionWebSocketTask)
+        case relay(RelayChannel)
+    }
+    private var transport: Transport?
 
     private var pending: [String: CheckedContinuation<SessionInbound, Error>] = [:]
     private var receiveTask: Task<Void, Never>?
 
     /// Fires for every inbound session message we didn't match to a pending request.
-    /// UI layer observes this to append streaming chunks etc.
     let events: AsyncStream<SessionInbound>
     private let eventContinuation: AsyncStream<SessionInbound>.Continuation
 
@@ -75,14 +82,13 @@ actor DaemonClient {
     // MARK: - Lifecycle
 
     func connect() async throws {
-        guard task == nil else { return }
-        let ws = session.webSocketTask(with: endpoint.websocketURL)
-        ws.resume()
-        self.task = ws
+        guard transport == nil else { return }
 
-        // Spawn the receive loop before sending hello so we don't miss server_info.
-        self.receiveTask = Task { [weak self] in
-            await self?.runReceiveLoop()
+        switch endpoint {
+        case .direct(let host, let port, _):
+            try await connectDirect(host: host, port: port)
+        case .relay(let offer, _):
+            try await connectRelay(offer: offer)
         }
 
         let hello = HelloMessage(
@@ -98,13 +104,54 @@ actor DaemonClient {
     func disconnect() {
         receiveTask?.cancel()
         receiveTask = nil
-        task?.cancel(with: .normalClosure, reason: nil)
-        task = nil
+        switch transport {
+        case .direct(let t)?:
+            t.cancel(with: .normalClosure, reason: nil)
+        case .relay(let c)?:
+            Task { await c.close() }
+        case .none:
+            break
+        }
+        transport = nil
         for (_, cont) in pending {
             cont.resume(throwing: DaemonError.notConnected)
         }
         pending.removeAll()
         eventContinuation.finish()
+    }
+
+    private func connectDirect(host: String, port: Int) async throws {
+        let scheme = port == 443 ? "wss" : "ws"
+        var comps = URLComponents()
+        comps.scheme = scheme
+        comps.host = host
+        comps.port = port
+        comps.path = "/ws"
+        guard let url = comps.url else {
+            throw DaemonError.protocolError("Could not build WS URL for \(host):\(port)")
+        }
+        let ws = session.webSocketTask(with: url)
+        ws.resume()
+        self.transport = .direct(ws)
+
+        self.receiveTask = Task { [weak self] in
+            await self?.runDirectReceiveLoop(ws)
+        }
+    }
+
+    private func connectRelay(offer: ConnectionOffer) async throws {
+        let url = try offer.relayWebSocketURL()
+        let channel = try RelayChannel(
+            relayURL: url,
+            daemonPublicKeyB64: offer.daemonPublicKeyB64,
+            session: session
+        )
+        try await channel.start()
+        self.transport = .relay(channel)
+
+        self.receiveTask = Task { [weak self] in
+            await self?.runRelayReceiveLoop(channel)
+        }
     }
 
     // MARK: - Public RPCs
@@ -118,9 +165,9 @@ actor DaemonClient {
             page: .init(limit: limit, cursor: nil),
             subscribe: nil
         )
-        if ProcessInfo.processInfo.environment["PASEO_DEBUG_WS"] == "1" { fputs("[listAgents] sending request requestId=\(requestId)\n", stderr) }
+        debugLog("[listAgents] sending request requestId=\(requestId)")
         let reply = try await requestResponse(requestId: requestId, outbound: .session(.fetchAgents(req)))
-        if ProcessInfo.processInfo.environment["PASEO_DEBUG_WS"] == "1" { fputs("[listAgents] got reply\n", stderr) }
+        debugLog("[listAgents] got reply")
         guard case let .fetchAgentsResponse(resp) = reply else {
             throw DaemonError.protocolError("Expected fetch_agents_response, got \(reply)")
         }
@@ -130,15 +177,18 @@ actor DaemonClient {
     // MARK: - Private plumbing
 
     private func rawSend(_ msg: WSOutbound) async throws {
-        guard let task else { throw DaemonError.notConnected }
+        guard let transport else { throw DaemonError.notConnected }
         let data = try JSONEncoder.paseo.encode(msg)
-        let text = String(decoding: data, as: UTF8.self)
-        if ProcessInfo.processInfo.environment["PASEO_DEBUG_WS"] == "1" { fputs("[ws-send] \(text)\n", stderr) }
-        try await task.send(.string(text))
+        debugLog("[ws-send] \(String(decoding: data, as: UTF8.self))")
+        switch transport {
+        case .direct(let task):
+            let text = String(decoding: data, as: UTF8.self)
+            try await task.send(.string(text))
+        case .relay(let channel):
+            try await channel.send(data)
+        }
     }
 
-    /// Register a pending continuation for `requestId`, send the outbound frame, and wait
-    /// for the correlated response. If sending fails, the pending entry is cleaned up.
     private func requestResponse(
         requestId: String,
         outbound: WSOutbound
@@ -161,34 +211,47 @@ actor DaemonClient {
         }
     }
 
-    private func runReceiveLoop() async {
-        while !Task.isCancelled, let task = self.task {
+    private func runDirectReceiveLoop(_ task: URLSessionWebSocketTask) async {
+        while !Task.isCancelled {
             do {
                 let msg = try await task.receive()
-                try handle(message: msg)
+                let data: Data
+                switch msg {
+                case .string(let s): data = Data(s.utf8)
+                case .data(let d): data = d
+                @unknown default: continue
+                }
+                try handle(rawFrame: data)
             } catch {
-                if ProcessInfo.processInfo.environment["PASEO_DEBUG_WS"] == "1" {
-                    fputs("[ws-loop-error] \(error)\n", stderr)
-                }
-                // Fail every pending continuation so callers do not hang.
-                for (_, cont) in pending {
-                    cont.resume(throwing: error)
-                }
-                pending.removeAll()
-                eventContinuation.finish()
+                failAllPending(with: error)
                 return
             }
         }
     }
 
-    private func handle(message: URLSessionWebSocketTask.Message) throws {
-        let data: Data
-        switch message {
-        case .string(let s): data = Data(s.utf8)
-        case .data(let d): data = d
-        @unknown default: return
+    private func runRelayReceiveLoop(_ channel: RelayChannel) async {
+        let stream = await channel.incoming
+        for await data in stream {
+            if Task.isCancelled { return }
+            do {
+                try handle(rawFrame: data)
+            } catch {
+                debugLog("[relay-recv] handle failed: \(error)")
+            }
         }
-        if ProcessInfo.processInfo.environment["PASEO_DEBUG_WS"] == "1" { fputs("[ws-recv] \(String(decoding: data, as: UTF8.self))\n", stderr) }
+        // Stream ended — treat as disconnect.
+        failAllPending(with: DaemonError.notConnected)
+    }
+
+    private func failAllPending(with error: Error) {
+        debugLog("[recv-loop] terminating with error: \(error)")
+        for (_, cont) in pending { cont.resume(throwing: error) }
+        pending.removeAll()
+        eventContinuation.finish()
+    }
+
+    private func handle(rawFrame data: Data) throws {
+        debugLog("[ws-recv] \(String(decoding: data, as: UTF8.self))")
         let inbound = try JSONDecoder.paseo.decode(WSInbound.self, from: data)
         switch inbound {
         case .ping:
@@ -208,13 +271,17 @@ actor DaemonClient {
             default: return nil
             }
         }()
-        if ProcessInfo.processInfo.environment["PASEO_DEBUG_WS"] == "1" {
-            fputs("[dispatch] session=\(session) requestId=\(requestId ?? "nil") pending=\(Array(pending.keys))\n", stderr)
-        }
+        debugLog("[dispatch] session=\(session) requestId=\(requestId ?? "nil") pending=\(Array(pending.keys))")
         if let rid = requestId, let cont = pending.removeValue(forKey: rid) {
             cont.resume(returning: session)
             return
         }
         eventContinuation.yield(session)
+    }
+
+    private func debugLog(_ s: @autoclosure () -> String) {
+        if ProcessInfo.processInfo.environment["PASEO_DEBUG_WS"] == "1" {
+            fputs("\(s())\n", stderr)
+        }
     }
 }

@@ -79,7 +79,22 @@ SwiftPM executable target. `swift build` from SSH, `scripts/bundle.sh` wraps int
 - [x] `SmokeTest.swift`: `./PaseoMac --list-agents` prints the same agent list as `paseo ls`
 - [x] End-to-end verified against live VPS daemon over SSH tunnel
 
-### Phase 2 — conversation UI (next)
+### Phase 2 — relay transport ✅ done
+Replaces the SSH tunnel with a real end-to-end relay path. PaseoMac now
+connects to `wss://<relay>/ws?serverId=...&role=client&v=2`, does the NaCl
+box handshake with the daemon's pubkey from a pairing offer, and then speaks
+the same session protocol from Phase 1 — all frames base64-encoded ciphertext.
+
+- [x] Vendored `swift-sodium` under `.vendor/` (Clibsodium only; git proxy on Air makes SPM fetch unreliable)
+- [x] `RelayCrypto.swift` — `crypto_box_beforenm` + `crypto_secretbox_{easy,open_easy}`, bundle `[nonce(24)][mac+ct]`
+- [x] `ConnectionOffer.swift` — parses `https://app.paseo.sh/#offer=<b64>`, `paseo://`, raw base64, or JSON
+- [x] `RelayChannel.swift` — actor that runs the `e2ee_hello` / `e2ee_ready` handshake, 1s retry, encrypted send/recv
+- [x] `DaemonEndpoint` made an enum: `.direct(host,port,clientId)` or `.relay(offer,clientId)`
+- [x] `DaemonClient` routes its transport through `RelayChannel` when the endpoint is relay
+- [x] `SmokeTest.swift --offer <...>` verified end-to-end against `relay.cnaron.com:443` + the VPS daemon
+
+### Phase 3 — conversation UI (next)
+
 - [ ] `AgentListView` — left sidebar, native List, selection bound to ViewModel
 - [ ] `fetch_agent_timeline_request` decoded into `Message` models
 - [ ] `ConversationView` — streaming messages, auto-scroll to bottom
@@ -87,7 +102,7 @@ SwiftPM executable target. `swift build` from SSH, `scripts/bundle.sh` wraps int
 - [ ] `ComposerView` — `TextEditor` + send button
 - [ ] Incremental `assistant_chunk` merging (deltas into one bubble)
 
-### Phase 3 — paste and drop ← the reason we're building this
+### Phase 4 — paste and drop ← the reason we're building this
 - [ ] NSPasteboard hook on ⌘V, detect `public.image` / `public.file-url`
 - [ ] `Attachment` model with thumbnail
 - [ ] Drop target on composer (`onDrop(of:)`)
@@ -95,17 +110,16 @@ SwiftPM executable target. `swift build` from SSH, `scripts/bundle.sh` wraps int
   - Confirmed from upstream code: images are base64 inline, no separate HTTP endpoint.
 - [ ] Images preview inline, files show as a chip with filename
 
-### Phase 4 — diff / code polish (optional)
+### Phase 5 — diff / code polish (optional)
 - [ ] Detect unified diff in messages, render with add/remove colors
 - [ ] Syntax highlight via a dep-light highlighter
 - [ ] Collapse long code blocks
 
-### Phase 5 — Mac-native polish (rolling)
+### Phase 6 — Mac-native polish (rolling)
 - [ ] Menu bar (File, Edit, Agent, Window, Help)
 - [ ] Standard shortcuts
 - [ ] Notifications via `UNUserNotificationCenter`
 - [ ] Restore window/session on relaunch
-- [ ] Relay / E2EE support so we can drop the SSH tunnel
 
 ## Risks, unknowns, and notes accumulated during Phase 1
 
@@ -147,16 +161,20 @@ paseo-mac/
 └── docs/daemon-protocol.md
 ```
 
-## How to run today (post Phase 1)
+## How to run today (post Phase 2)
 
 ```bash
-# one-time: open an SSH tunnel from your Mac to the remote daemon
-ssh -f -N -L 6767:localhost:6767 <your-vps-alias>
+# Direct (localhost or SSH-tunnelled to a daemon on :6767):
+#   ssh -f -N -L 6767:localhost:6767 <your-vps-alias>
+
+# Relay (recommended): produce a pairing offer on the daemon side, pass it via --offer.
+# The offer is the JSON blob (or the URL fragment from app.paseo.sh) that pairs
+# this client with the daemon over the relay, end-to-end encrypted.
 
 # build + run the CLI smoke test
 cd paseo-mac
 swift build
-./.build/debug/PaseoMac --list-agents
+./.build/debug/PaseoMac --list-agents --offer "$OFFER_JSON_OR_URL"
 # => table of agents identical to `paseo ls` on the VPS
 ```
 

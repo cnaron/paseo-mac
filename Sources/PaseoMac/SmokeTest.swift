@@ -2,19 +2,37 @@ import Foundation
 
 /// Runs a synchronous smoke test that connects to the daemon and prints all agents
 /// in a table similar to `paseo ls`. Never returns — exits the process when done.
+///
+/// Two modes:
+///
+///   # Direct (SSH-tunnelled or loopback)
+///   PaseoMac --list-agents [--host localhost] [--port 6767]
+///
+///   # Relay (E2EE via a Paseo relay server)
+///   PaseoMac --list-agents --offer <paseo-offer-url-or-base64-or-json>
+///
 func runSmokeTestAndExit() -> Never {
-    // Disable stdout buffering so our output is visible even if the process is killed.
     setbuf(stdout, nil)
     let args = CommandLine.arguments
-    let host = argValue("--host", in: args) ?? "localhost"
-    let port = Int(argValue("--port", in: args) ?? "") ?? 6767
-    let limit = Int(argValue("--limit", in: args) ?? "") ?? 50
 
-    let endpoint = DaemonEndpoint(
-        host: host,
-        port: port,
-        clientId: "cid_paseomac_smoke_\(Int(Date().timeIntervalSince1970))"
-    )
+    let limit = Int(argValue("--limit", in: args) ?? "") ?? 50
+    let clientId = argValue("--client-id", in: args)
+        ?? "cid_paseomac_smoke_\(Int(Date().timeIntervalSince1970))"
+
+    let endpoint: DaemonEndpoint
+    if let offerRaw = argValue("--offer", in: args) {
+        do {
+            let offer = try ConnectionOffer.parse(offerRaw)
+            endpoint = .relay(offer: offer, clientId: clientId)
+        } catch {
+            fputs("ERROR: could not parse --offer: \(error.localizedDescription)\n", stderr)
+            exit(2)
+        }
+    } else {
+        let host = argValue("--host", in: args) ?? "localhost"
+        let port = Int(argValue("--port", in: args) ?? "") ?? 6767
+        endpoint = .direct(host: host, port: port, clientId: clientId)
+    }
 
     let sem = DispatchSemaphore(value: 0)
 
@@ -22,7 +40,7 @@ func runSmokeTestAndExit() -> Never {
         defer { sem.signal() }
         let client = DaemonClient(endpoint: endpoint)
         do {
-            print("Connecting to \(endpoint.websocketURL.absoluteString) ...")
+            print("Connecting to \(endpoint.displayName) ...")
             try await client.connect()
             try? await Task.sleep(for: .milliseconds(150))
 
