@@ -84,7 +84,7 @@ private struct MessageList: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 12) {
+                LazyVStack(alignment: .leading, spacing: 18) {
                     if let err = vm.lastError {
                         Text(err)
                             .font(.callout)
@@ -100,7 +100,7 @@ private struct MessageList: View {
                     }
                     Color.clear.frame(height: 1).id("bottom")
                 }
-                .padding(.vertical, 12)
+                .padding(.vertical, 16)
             }
             .onChange(of: vm.rows.count) { _, _ in
                 withAnimation(.easeOut(duration: 0.15)) {
@@ -141,8 +141,9 @@ private struct MessageBubble: View {
             Spacer(minLength: 48)
             MarkdownBodyView(text: group.text)
                 .frame(maxWidth: 560, alignment: .leading)
-                .padding(10)
-                .background(Color.accentColor.opacity(0.18), in: RoundedRectangle(cornerRadius: 10))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(Color.accentColor.opacity(0.18), in: RoundedRectangle(cornerRadius: 12))
         }
         .padding(.horizontal, 16)
     }
@@ -160,8 +161,9 @@ private struct MessageBubble: View {
                 }
                 bubbleBody
                     .frame(maxWidth: 680, alignment: .leading)
-                    .padding(10)
-                    .background(background, in: RoundedRectangle(cornerRadius: 10))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(background, in: RoundedRectangle(cornerRadius: 12))
                     .foregroundStyle(foreground)
             }
             Spacer(minLength: 48)
@@ -196,7 +198,7 @@ private struct MessageBubble: View {
         if let info = group.tool {
             ToolRow(info: info)
                 .padding(.horizontal, 16)
-                .padding(.vertical, 2)
+                .padding(.vertical, 6)
         } else {
             // Defensive fallback if detail decoding was missing.
             Text(group.text)

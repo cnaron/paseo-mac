@@ -167,7 +167,7 @@ struct MarkdownBodyView: View {
 
     var body: some View {
         let blocks = Markdown.parse(text)
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 12) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                 switch block {
                 case .heading(let level, let text):
@@ -175,6 +175,7 @@ struct MarkdownBodyView: View {
                         .font(headingFont(level: level))
                         .bold()
                         .textSelection(.enabled)
+                        .padding(.top, 4)
                 case .code(let lang, let content):
                     CodeBlockView(language: lang, content: content)
                 case .table(let headers, let rows):
@@ -183,6 +184,7 @@ struct MarkdownBodyView: View {
                     Text(Markdown.renderInline(text))
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
+                        .lineSpacing(3)
                 }
             }
         }
