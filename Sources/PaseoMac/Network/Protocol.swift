@@ -33,6 +33,10 @@ enum SessionRequest: Encodable {
     case fetchAgents(FetchAgentsRequest)
     case fetchAgentTimeline(FetchAgentTimelineRequest)
     case sendAgentMessage(SendAgentMessageRequest)
+    case setAgentMode(SetAgentModeRequest)
+    case setAgentModel(SetAgentModelRequest)
+    case setAgentThinking(SetAgentThinkingRequest)
+    case getProvidersSnapshot(GetProvidersSnapshotRequest)
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.singleValueContainer()
@@ -40,8 +44,39 @@ enum SessionRequest: Encodable {
         case .fetchAgents(let r): try c.encode(r)
         case .fetchAgentTimeline(let r): try c.encode(r)
         case .sendAgentMessage(let r): try c.encode(r)
+        case .setAgentMode(let r): try c.encode(r)
+        case .setAgentModel(let r): try c.encode(r)
+        case .setAgentThinking(let r): try c.encode(r)
+        case .getProvidersSnapshot(let r): try c.encode(r)
         }
     }
+}
+
+struct SetAgentModeRequest: Encodable {
+    let type = "set_agent_mode_request"
+    let requestId: String
+    let agentId: String
+    let modeId: String
+}
+
+struct SetAgentModelRequest: Encodable {
+    let type = "set_agent_model_request"
+    let requestId: String
+    let agentId: String
+    let modelId: String?   // null clears the override
+}
+
+struct SetAgentThinkingRequest: Encodable {
+    let type = "set_agent_thinking_request"
+    let requestId: String
+    let agentId: String
+    let thinkingOptionId: String?
+}
+
+struct GetProvidersSnapshotRequest: Encodable {
+    let type = "get_providers_snapshot_request"
+    let requestId: String
+    var cwd: String?
 }
 
 struct FetchAgentsRequest: Encodable {
@@ -135,6 +170,11 @@ enum SessionInbound: Decodable, @unchecked Sendable {
     case fetchAgentTimelineResponse(FetchAgentTimelineResponse)
     case sendAgentMessageResponse(SendAgentMessageResponse)
     case agentStream(AgentStreamMessage)
+    case agentStatus(AgentStatusMessage)
+    case setAgentModeResponse(SetAgentModeResponse)
+    case setAgentModelResponse(SetAgentModelResponse)
+    case setAgentThinkingResponse(SetAgentThinkingResponse)
+    case getProvidersSnapshotResponse(GetProvidersSnapshotResponse)
     case unknown(type: String, raw: Data)
 
     private enum Keys: String, CodingKey { case type }
@@ -157,6 +197,16 @@ enum SessionInbound: Decodable, @unchecked Sendable {
             self = .sendAgentMessageResponse(try JSONDecoder.paseo.decode(SendAgentMessageResponse.self, from: raw))
         case "agent_stream":
             self = .agentStream(try JSONDecoder.paseo.decode(AgentStreamMessage.self, from: raw))
+        case "agent_status":
+            self = .agentStatus(try JSONDecoder.paseo.decode(AgentStatusMessage.self, from: raw))
+        case "set_agent_mode_response":
+            self = .setAgentModeResponse(try JSONDecoder.paseo.decode(SetAgentModeResponse.self, from: raw))
+        case "set_agent_model_response":
+            self = .setAgentModelResponse(try JSONDecoder.paseo.decode(SetAgentModelResponse.self, from: raw))
+        case "set_agent_thinking_response":
+            self = .setAgentThinkingResponse(try JSONDecoder.paseo.decode(SetAgentThinkingResponse.self, from: raw))
+        case "get_providers_snapshot_response":
+            self = .getProvidersSnapshotResponse(try JSONDecoder.paseo.decode(GetProvidersSnapshotResponse.self, from: raw))
         default:
             self = .unknown(type: type, raw: raw)
         }
@@ -243,6 +293,89 @@ struct SendAgentMessageResponse: Decodable, Sendable {
         let accepted: Bool?
         let error: String?
     }
+}
+
+struct AckResponsePayload: Decodable, Sendable {
+    let requestId: String
+    let agentId: String?
+    let accepted: Bool?
+    let error: String?
+}
+
+struct SetAgentModeResponse: Decodable, Sendable {
+    let type: String
+    let payload: AckResponsePayload
+}
+
+struct SetAgentModelResponse: Decodable, Sendable {
+    let type: String
+    let payload: AckResponsePayload
+}
+
+struct SetAgentThinkingResponse: Decodable, Sendable {
+    let type: String
+    let payload: AckResponsePayload
+}
+
+/// Lazily pushed status updates for a single agent. Handy for keeping the
+/// sidebar's little status dot in sync without a full `fetch_agents`.
+struct AgentStatusMessage: Decodable, Sendable {
+    let type: String     // "agent_status"
+    let payload: Payload
+    struct Payload: Decodable, Sendable {
+        let agentId: String
+        let status: String
+        let info: AgentSnapshot?
+    }
+}
+
+struct GetProvidersSnapshotResponse: Decodable, Sendable {
+    let type: String    // "get_providers_snapshot_response"
+    let payload: Payload
+    struct Payload: Decodable, Sendable {
+        let entries: [ProviderSnapshot]
+        let generatedAt: String
+        let requestId: String
+    }
+}
+
+/// One provider's model + mode catalog, as returned by
+/// `get_providers_snapshot_response`. Fields we don't consume are dropped.
+struct ProviderSnapshot: Decodable, Sendable, Hashable, Identifiable {
+    let provider: String              // "claude" | "codex" | ...
+    let status: String                // "ready" | "loading" | "error" | "unavailable"
+    let error: String?
+    let models: [ModelDefinition]?
+    let modes: [AgentMode]?
+    let label: String?
+    let defaultModeId: String?
+
+    var id: String { provider }
+}
+
+struct ModelDefinition: Decodable, Sendable, Hashable, Identifiable {
+    let provider: String
+    let id: String
+    let label: String
+    let description: String?
+    let isDefault: Bool?
+    let thinkingOptions: [SelectOption]?
+    let defaultThinkingOptionId: String?
+}
+
+struct AgentMode: Decodable, Sendable, Hashable, Identifiable {
+    let id: String
+    let label: String
+    let description: String?
+    let icon: String?
+    let colorTier: String?
+}
+
+struct SelectOption: Decodable, Sendable, Hashable, Identifiable {
+    let id: String
+    let label: String
+    let description: String?
+    let isDefault: Bool?
 }
 
 // MARK: - Timeline
@@ -513,6 +646,7 @@ enum AgentStreamEvent: Decodable, Sendable {
 
 struct AgentSnapshot: Decodable, Sendable, Identifiable, Hashable {
     let id: String
+    let provider: String?
     let cwd: String
     let status: String
     let title: String?
@@ -520,6 +654,10 @@ struct AgentSnapshot: Decodable, Sendable, Identifiable, Hashable {
     let updatedAt: String
     let lastUserMessageAt: String?
     let model: String?
+    let thinkingOptionId: String?
+    let effectiveThinkingOptionId: String?
+    let currentModeId: String?
+    let availableModes: [AgentMode]?
     let archivedAt: String?
     let requiresAttention: Bool?
     let attentionReason: String?

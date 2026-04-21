@@ -8,8 +8,11 @@ struct AgentListView: View {
         List(selection: $app.selectedAgentId) {
             Section("Agents") {
                 ForEach(app.agents) { agent in
-                    AgentRow(agent: agent)
-                        .tag(agent.id as String?)
+                    AgentRow(
+                        agent: agent,
+                        live: app.liveStatus[agent.id]
+                    )
+                    .tag(agent.id as String?)
                 }
             }
         }
@@ -39,17 +42,21 @@ struct AgentListView: View {
 
 private struct AgentRow: View {
     let agent: AgentSnapshot
+    let live: AppViewModel.LiveStatus?
 
     var body: some View {
         HStack(spacing: 8) {
-            StatusDot(status: agent.status, requiresAttention: agent.requiresAttention ?? false)
+            StatusIndicator(
+                status: effectiveStatus,
+                requiresAttention: effectiveAttention
+            )
             VStack(alignment: .leading, spacing: 2) {
                 Text(agent.displayName)
                     .font(.body)
                     .lineLimit(1)
-                Text(agent.cwd)
+                Text(effectiveStatus == "running" ? "\(shortCwd) · running" : shortCwd)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(effectiveStatus == "running" ? Color.green : Color.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
@@ -57,16 +64,45 @@ private struct AgentRow: View {
         }
         .padding(.vertical, 2)
     }
+
+    private var effectiveStatus: String { live?.status ?? agent.status }
+    private var effectiveAttention: Bool {
+        live?.requiresAttention ?? (agent.requiresAttention ?? false)
+    }
+
+    /// Trim absolute paths to `<parent>/<dir>` so long cwd values stay readable.
+    private var shortCwd: String {
+        let parts = agent.cwd.split(separator: "/").map(String.init)
+        guard parts.count > 2 else { return agent.cwd }
+        let tail = parts.suffix(2).joined(separator: "/")
+        return "…/" + tail
+    }
 }
 
-private struct StatusDot: View {
+/// Status indicator: a colored dot, animated via scale pulse when running.
+private struct StatusIndicator: View {
     let status: String
     let requiresAttention: Bool
+
+    @State private var pulse = false
 
     var body: some View {
         Circle()
             .fill(color)
             .frame(width: 8, height: 8)
+            .scaleEffect(pulse && status == "running" ? 1.35 : 1.0)
+            .animation(
+                status == "running"
+                    ? .easeInOut(duration: 0.9).repeatForever(autoreverses: true)
+                    : .default,
+                value: pulse
+            )
+            .onAppear { pulse = true }
+            .onChange(of: status) { _, _ in
+                // Re-arm the animation when we transition into "running".
+                pulse = false
+                DispatchQueue.main.async { pulse = true }
+            }
     }
 
     private var color: Color {
@@ -74,7 +110,7 @@ private struct StatusDot: View {
         switch status {
         case "running": return .green
         case "idle": return .blue
-        case "error": return .red
+        case "error", "failed": return .red
         default: return .gray
         }
     }

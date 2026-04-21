@@ -164,6 +164,7 @@ enum Markdown {
 /// Renders parsed markdown blocks as a vertical stack suitable for a chat bubble.
 struct MarkdownBodyView: View {
     let text: String
+    @Environment(SettingsStore.self) private var settings
 
     var body: some View {
         let blocks = Markdown.parse(text)
@@ -172,8 +173,8 @@ struct MarkdownBodyView: View {
                 switch block {
                 case .heading(let level, let text):
                     Text(Markdown.renderInline(text))
-                        .font(headingFont(level: level))
-                        .bold()
+                        .font(.system(size: settings.scaled(headingPoints(level: level)),
+                                      weight: .semibold))
                         .textSelection(.enabled)
                         .padding(.top, 4)
                 case .code(let lang, let content):
@@ -182,20 +183,21 @@ struct MarkdownBodyView: View {
                     TableBlockView(headers: headers, rows: rows)
                 case .paragraph(let text):
                     Text(Markdown.renderInline(text))
+                        .font(.system(size: settings.scaled(13)))   // body baseline ~13pt on macOS
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
-                        .lineSpacing(3)
+                        .lineSpacing(CGFloat(settings.paragraphLineSpacing))
                 }
             }
         }
     }
 
-    private func headingFont(level: Int) -> Font {
+    private func headingPoints(level: Int) -> CGFloat {
         switch level {
-        case 1: return .title2
-        case 2: return .title3
-        case 3: return .headline
-        default: return .subheadline
+        case 1: return 22
+        case 2: return 19
+        case 3: return 16
+        default: return 14
         }
     }
 }

@@ -112,11 +112,12 @@ private func groupRows(_ rows: [ConversationViewModel.Row]) -> [BubbleGroup] {
 
 private struct MessageList: View {
     @Bindable var vm: ConversationViewModel
+    @Environment(SettingsStore.self) private var settings
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 14) {
+                LazyVStack(alignment: .leading, spacing: CGFloat(settings.bubbleGap)) {
                     if let err = vm.lastError {
                         Text(err)
                             .font(.callout)
@@ -169,15 +170,20 @@ private struct MessageBubble: View {
     }
 
     // MARK: User (right-aligned bubble)
+    //
+    // Layout note: the `maxWidth` cap must come AFTER padding+background so
+    // the bubble hugs its content for short messages. Putting it first creates
+    // an invisible 560pt zone that the background expands to fill — the
+    // "bubble always stretches edge-to-edge" bug.
 
     private var userBubble: some View {
         HStack(alignment: .top) {
             Spacer(minLength: 48)
             MarkdownBodyView(text: group.text)
-                .frame(maxWidth: 560, alignment: .leading)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
                 .background(Color.accentColor.opacity(0.18), in: RoundedRectangle(cornerRadius: 12))
+                .frame(maxWidth: 560, alignment: .trailing)
         }
         .padding(.horizontal, 16)
     }
@@ -187,10 +193,10 @@ private struct MessageBubble: View {
     private var assistantBubble: some View {
         HStack(alignment: .top) {
             MarkdownBodyView(text: group.text)
-                .frame(maxWidth: 680, alignment: .leading)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
                 .background(Color.secondary.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
+                .frame(maxWidth: 680, alignment: .leading)
             Spacer(minLength: 48)
         }
         .padding(.horizontal, 16)
@@ -204,9 +210,9 @@ private struct MessageBubble: View {
                 .fill(Color.secondary.opacity(0.35))
                 .frame(width: 3)
             MarkdownBodyView(text: group.text)
-                .frame(maxWidth: 680, alignment: .leading)
                 .italic()
                 .foregroundStyle(.secondary)
+                .frame(maxWidth: 680, alignment: .leading)
             Spacer(minLength: 48)
         }
         .padding(.horizontal, 16)
@@ -299,8 +305,9 @@ private struct ToolRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             summaryRow
-            if expanded, let detail = info.detail, !detail.isEmpty {
-                detailView(detail: detail)
+            if expanded, info.hasDetail {
+                detailView
+                    .padding(.leading, 20)
             }
         }
     }
@@ -332,7 +339,7 @@ private struct ToolRow: View {
 
             Spacer(minLength: 0)
 
-            if hasDetail {
+            if info.hasDetail {
                 Image(systemName: expanded ? "chevron.down" : "chevron.right")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -340,26 +347,29 @@ private struct ToolRow: View {
         }
         .contentShape(Rectangle())
         .onTapGesture {
-            guard hasDetail else { return }
+            guard info.hasDetail else { return }
             withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
         }
     }
 
-    private func detailView(detail: String) -> some View {
-        Text(detail)
-            .font(info.detailIsMonospaced
-                  ? .system(.caption, design: .monospaced)
-                  : .callout)
-            .textSelection(.enabled)
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(10)
-            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
-            .padding(.leading, 20)
-    }
-
-    private var hasDetail: Bool {
-        (info.detail?.isEmpty == false)
+    @ViewBuilder
+    private var detailView: some View {
+        switch info.detailKind {
+        case .none:
+            EmptyView()
+        case .plain(let text, let mono):
+            Text(text)
+                .font(mono ? .system(.caption, design: .monospaced) : .callout)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(10)
+                .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+        case .beforeAfter(let before, let after):
+            BeforeAfterView(before: before, after: after)
+        case .unifiedDiff(let text):
+            DiffView(text: text)
+        }
     }
 
     /// Only surface the status when it's interesting — i.e. not a plain
@@ -386,5 +396,89 @@ private struct ToolRow: View {
         let head = s.prefix(max / 2 - 1)
         let tail = s.suffix(max / 2 - 1)
         return "\(head)…\(tail)"
+    }
+}
+
+// MARK: - Edit before/after renderer (Claude-Code style)
+
+/// Stacked "── before ──" / "── after ──" code blocks. Used when a tool_call
+/// provides both `oldString` and `newString` (no colored +/- formatting —
+/// just plain monospace so the eye can compare the two regions directly).
+private struct BeforeAfterView: View {
+    let before: String
+    let after: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            codeSection(label: "── before ──", text: before)
+            codeSection(label: "── after ──", text: after)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
+    }
+
+    @ViewBuilder
+    private func codeSection(label: String, text: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label)
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(.secondary)
+            Text(text)
+                .font(.system(.caption, design: .monospaced))
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+// MARK: - Unified diff renderer
+
+/// Colored line-by-line renderer for unified diffs. No syntax highlighting;
+/// just enough hue to make add/remove/context skimmable.
+private struct DiffView: View {
+    let text: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(text.components(separatedBy: "\n").enumerated()), id: \.offset) { _, line in
+                DiffLine(line: line)
+            }
+        }
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
+    }
+}
+
+private struct DiffLine: View {
+    let line: String
+
+    var body: some View {
+        Text(line.isEmpty ? " " : line)
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(foreground)
+            .textSelection(.enabled)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 1)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(background)
+    }
+
+    private var foreground: Color {
+        if line.hasPrefix("+++") || line.hasPrefix("---") { return .secondary }
+        if line.hasPrefix("+") { return .green }
+        if line.hasPrefix("-") { return .red }
+        if line.hasPrefix("@@") { return .purple }
+        return .primary
+    }
+
+    private var background: Color {
+        if line.hasPrefix("+++") || line.hasPrefix("---") { return .clear }
+        if line.hasPrefix("+") { return Color.green.opacity(0.10) }
+        if line.hasPrefix("-") { return Color.red.opacity(0.10) }
+        if line.hasPrefix("@@") { return Color.purple.opacity(0.08) }
+        return .clear
     }
 }

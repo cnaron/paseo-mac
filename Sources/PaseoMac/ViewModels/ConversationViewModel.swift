@@ -32,6 +32,16 @@ final class ConversationViewModel {
         }
     }
 
+    /// Shape of a tool's expanded detail. Drives the picker in ToolRow so
+    /// each tool type can use the most readable rendering: plain monospace,
+    /// colored +/- unified-diff lines, or a before/after split for edits.
+    enum DetailKind: Hashable {
+        case none
+        case plain(text: String, monospaced: Bool)
+        case beforeAfter(before: String, after: String)
+        case unifiedDiff(text: String)
+    }
+
     /// UI-facing tool summary built from `ToolDetail`. Keeps presentation logic
     /// (icon pick, target formatting, detail body) in one place.
     struct ToolInfo: Hashable {
@@ -39,8 +49,27 @@ final class ConversationViewModel {
         let target: String?          // file path, command, query — one-line summary
         let status: String           // "running" | "completed" | "failed" | "canceled"
         let iconName: String         // SF Symbol
-        let detail: String?          // full body to show when the row is expanded
-        let detailIsMonospaced: Bool
+        let detailKind: DetailKind
+
+        /// Plain single-string version of the detail for tools that need it
+        /// (e.g. to drop into a truncated preview). Returns "" for .none.
+        var detailPlain: String {
+            switch detailKind {
+            case .none: return ""
+            case .plain(let t, _): return t
+            case .beforeAfter(let b, let a): return "── before ──\n\(b)\n\n── after ──\n\(a)"
+            case .unifiedDiff(let t): return t
+            }
+        }
+
+        var hasDetail: Bool {
+            switch detailKind {
+            case .none: return false
+            case .plain(let t, _): return !t.isEmpty
+            case .beforeAfter(let b, let a): return !b.isEmpty || !a.isEmpty
+            case .unifiedDiff(let t): return !t.isEmpty
+            }
+        }
 
         static func from(name: String, status: String, detail: ToolDetail) -> ToolInfo {
             switch detail {
@@ -52,8 +81,7 @@ final class ConversationViewModel {
                     name: displayName(rawName: name, fallback: "Shell"),
                     target: target,
                     status: status, iconName: "terminal",
-                    detail: body.isEmpty ? nil : body,
-                    detailIsMonospaced: true
+                    detailKind: body.isEmpty ? .none : .plain(text: body, monospaced: true)
                 )
             case .read(let path, let content, let offset, let limit):
                 var hint = ""
@@ -62,29 +90,31 @@ final class ConversationViewModel {
                     name: displayName(rawName: name, fallback: "Read"),
                     target: path + hint,
                     status: status, iconName: "doc.text",
-                    detail: content,
-                    detailIsMonospaced: true
+                    detailKind: content.flatMap { $0.isEmpty ? nil : .plain(text: $0, monospaced: true) } ?? .none
                 )
             case .edit(let path, let diff, let oldStr, let newStr):
-                let body: String? = {
-                    if let d = diff, !d.isEmpty { return d }
-                    if let o = oldStr, let n = newStr { return "--- before ---\n\(o)\n\n--- after ---\n\(n)" }
-                    return nil
-                }()
+                // Prefer the semantic before/after split (cleaner reading);
+                // fall back to the raw unified diff when that's all we have.
+                let kind: DetailKind
+                if let o = oldStr, let n = newStr, !(o.isEmpty && n.isEmpty) {
+                    kind = .beforeAfter(before: o, after: n)
+                } else if let d = diff, !d.isEmpty {
+                    kind = .unifiedDiff(text: d)
+                } else {
+                    kind = .none
+                }
                 return ToolInfo(
                     name: displayName(rawName: name, fallback: "Edit"),
                     target: path,
                     status: status, iconName: "pencil",
-                    detail: body,
-                    detailIsMonospaced: true
+                    detailKind: kind
                 )
             case .write(let path, let content):
                 return ToolInfo(
                     name: displayName(rawName: name, fallback: "Write"),
                     target: path,
                     status: status, iconName: "square.and.pencil",
-                    detail: content,
-                    detailIsMonospaced: true
+                    detailKind: content.flatMap { $0.isEmpty ? nil : .plain(text: $0, monospaced: true) } ?? .none
                 )
             case .search(let query, let toolName, let filePaths, let webResults, let numMatches, let content):
                 var lines: [String] = []
@@ -99,12 +129,12 @@ final class ConversationViewModel {
                 }
                 let hits: String? = numMatches.map { "(\($0) match\( $0 == 1 ? "" : "es"))" }
                 let target = [query, hits].compactMap { $0 }.joined(separator: " ")
+                let body = lines.joined(separator: "\n")
                 return ToolInfo(
                     name: displayName(rawName: toolName ?? name, fallback: "Search"),
                     target: target,
                     status: status, iconName: "magnifyingglass",
-                    detail: lines.isEmpty ? nil : lines.joined(separator: "\n"),
-                    detailIsMonospaced: false
+                    detailKind: body.isEmpty ? .none : .plain(text: body, monospaced: false)
                 )
             case .fetch(let url, let prompt, let result, let code):
                 var header = ""
@@ -115,8 +145,7 @@ final class ConversationViewModel {
                     name: displayName(rawName: name, fallback: "Fetch"),
                     target: url,
                     status: status, iconName: "arrow.down.circle",
-                    detail: body.isEmpty ? nil : body,
-                    detailIsMonospaced: false
+                    detailKind: body.isEmpty ? .none : .plain(text: body, monospaced: false)
                 )
             case .subAgent(let subType, let description, let log):
                 let target = [subType, description].compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: " · ")
@@ -124,8 +153,7 @@ final class ConversationViewModel {
                     name: displayName(rawName: name, fallback: "SubAgent"),
                     target: target.isEmpty ? nil : target,
                     status: status, iconName: "person.2",
-                    detail: log.isEmpty ? nil : log,
-                    detailIsMonospaced: true
+                    detailKind: log.isEmpty ? .none : .plain(text: log, monospaced: true)
                 )
             case .plainText(let label, let text, let icon):
                 return ToolInfo(
@@ -133,23 +161,21 @@ final class ConversationViewModel {
                     target: nil,
                     status: status,
                     iconName: icon ?? "hammer",
-                    detail: text,
-                    detailIsMonospaced: false
+                    detailKind: text.flatMap { $0.isEmpty ? nil : .plain(text: $0, monospaced: false) } ?? .none
                 )
             case .plan(let text):
                 return ToolInfo(
                     name: "Plan",
                     target: text.split(separator: "\n").first.map(String.init),
                     status: status, iconName: "list.bullet.rectangle",
-                    detail: text,
-                    detailIsMonospaced: false
+                    detailKind: text.isEmpty ? .none : .plain(text: text, monospaced: false)
                 )
             case .other:
                 return ToolInfo(
                     name: name.isEmpty ? "tool" : name,
                     target: nil,
                     status: status, iconName: "hammer",
-                    detail: nil, detailIsMonospaced: false
+                    detailKind: .none
                 )
             }
         }
@@ -170,6 +196,7 @@ final class ConversationViewModel {
     var lastError: String? = nil
     var composerText: String = ""
     var pendingImages: [PendingImageAttachment] = []
+    var pendingTextFiles: [PendingTextFile] = []
 
     private let getClient: () -> DaemonClient?
     private var streamRowCounter: Int = 0
@@ -198,22 +225,30 @@ final class ConversationViewModel {
     // MARK: - Send
 
     func sendComposer() async {
-        let text = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let baseText = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
         let images = pendingImages
-        guard !text.isEmpty || !images.isEmpty else { return }
+        let textFiles = pendingTextFiles
+
+        guard !baseText.isEmpty || !images.isEmpty || !textFiles.isEmpty else { return }
         guard let client = getClient() else {
             self.lastError = "Not connected"
             return
         }
         composerText = ""
         pendingImages = []
+        pendingTextFiles = []
 
-        // Optimistically append a user bubble so the UI feels instant. The
-        // real row will come back via agent_stream `timeline` events.
-        let optimisticText = text.isEmpty
+        // Inline attached text files as markdown-fenced blocks at the top of
+        // the message body. The daemon protocol has no first-class file
+        // attachment slot, but this matches how Claude Code renders a pasted
+        // file and keeps the content searchable in the conversation timeline.
+        let finalText = composeOutgoingText(baseText: baseText, files: textFiles)
+
+        let messageId = UUID().uuidString
+        let optimisticText = finalText.isEmpty
             ? "[\(images.count) image\(images.count == 1 ? "" : "s")]"
-            : text
-        appendLocalUserRow(text: optimisticText)
+            : finalText
+        appendLocalUserRow(text: optimisticText, messageId: messageId)
 
         do {
             let wireImages = images.map {
@@ -224,13 +259,25 @@ final class ConversationViewModel {
             }
             _ = try await client.sendMessage(
                 agentId: agentId,
-                text: text,
+                text: finalText,
+                messageId: messageId,
                 images: wireImages.isEmpty ? nil : wireImages
             )
             self.lastError = nil
         } catch {
             self.lastError = "Send failed: \(error.localizedDescription)"
         }
+    }
+
+    private func composeOutgoingText(baseText: String, files: [PendingTextFile]) -> String {
+        guard !files.isEmpty else { return baseText }
+        var pieces: [String] = []
+        for f in files {
+            let lang = f.languageHint ?? ""
+            pieces.append("**\(f.name)**\n```\(lang)\n\(f.content)\n```")
+        }
+        if !baseText.isEmpty { pieces.append(baseText) }
+        return pieces.joined(separator: "\n\n")
     }
 
     // MARK: - Pending attachments
@@ -241,6 +288,14 @@ final class ConversationViewModel {
 
     func removeImage(id: UUID) {
         pendingImages.removeAll { $0.id == id }
+    }
+
+    func addTextFile(_ file: PendingTextFile) {
+        pendingTextFiles.append(file)
+    }
+
+    func removeTextFile(id: UUID) {
+        pendingTextFiles.removeAll { $0.id == id }
     }
 
     // MARK: - Stream ingestion
@@ -270,7 +325,7 @@ final class ConversationViewModel {
 
     private func rowFromEntry(_ entry: TimelineEntry) -> Row {
         Row(
-            id: "entry-\(entry.id)",
+            id: rowIdForItem(entry.item, defaultId: "entry-\(entry.id)"),
             kind: entry.item.displayKind,
             text: entry.item.displayText,
             timestamp: entry.timestamp,
@@ -278,9 +333,38 @@ final class ConversationViewModel {
         )
     }
 
+    /// Stable per-item id. Tool calls use `tool-<callId>` so the same
+    /// invocation keeps identity across its running → completed lifecycle
+    /// (otherwise a single Edit appears as 4-6 separate rows).
+    private func rowIdForItem(_ item: TimelineItem, defaultId: String) -> String {
+        if case let .toolCall(_, _, callId, _) = item, !callId.isEmpty {
+            return "tool-\(callId)"
+        }
+        return defaultId
+    }
+
     private func appendStreamedRow(item: TimelineItem, seq: Int?, timestamp: String) {
+        // Dedup optimistic user bubble: when our just-sent message echoes back
+        // with the messageId we chose, replace the local placeholder instead
+        // of appending a new row (which would show duplicated text once the
+        // merge logic coalesces both into one bubble).
+        if case let .userMessage(text, msgId) = item, let msgId {
+            let localId = "msg-\(msgId)"
+            if let idx = rows.firstIndex(where: { $0.id == localId }) {
+                rows[idx] = Row(
+                    id: localId,
+                    kind: "user",
+                    text: text,
+                    timestamp: timestamp,
+                    tool: nil
+                )
+                return
+            }
+        }
+
         streamRowCounter += 1
-        let id = seq.map { "seq-\($0)" } ?? "stream-\(streamRowCounter)"
+        let defaultId = seq.map { "seq-\($0)" } ?? "stream-\(streamRowCounter)"
+        let id = rowIdForItem(item, defaultId: defaultId)
         let row = Row(
             id: id,
             kind: item.displayKind,
@@ -288,8 +372,9 @@ final class ConversationViewModel {
             timestamp: timestamp,
             tool: toolInfo(from: item)
         )
-        // Coalesce: if the last row has the same id (e.g. assistant_message
-        // with same seq arriving twice), replace in place rather than appending.
+        // Coalesce: if we already have a row with this id (a tool_call
+        // transitioning running → completed, or an assistant chunk arriving
+        // twice), replace in place rather than appending.
         if let idx = rows.firstIndex(where: { $0.id == id }) {
             rows[idx] = row
         } else {
@@ -304,8 +389,10 @@ final class ConversationViewModel {
         return nil
     }
 
-    private func appendLocalUserRow(text: String) {
-        let id = "local-\(UUID().uuidString)"
+    private func appendLocalUserRow(text: String, messageId: String) {
+        // Id is derived from the messageId we sent so appendStreamedRow can
+        // find and replace this row when the daemon echoes it back.
+        let id = "msg-\(messageId)"
         rows.append(Row(
             id: id,
             kind: "user",

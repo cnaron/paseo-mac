@@ -232,6 +232,54 @@ actor DaemonClient {
         return resp.payload
     }
 
+    @discardableResult
+    func setAgentMode(agentId: String, modeId: String) async throws -> AckResponsePayload {
+        let requestId = UUID().uuidString
+        let req = SetAgentModeRequest(requestId: requestId, agentId: agentId, modeId: modeId)
+        let reply = try await requestResponse(requestId: requestId, outbound: .session(.setAgentMode(req)))
+        guard case let .setAgentModeResponse(resp) = reply else {
+            throw DaemonError.protocolError("Expected set_agent_mode_response, got \(reply)")
+        }
+        if let err = resp.payload.error, !err.isEmpty { throw DaemonError.rpcFailed(err) }
+        return resp.payload
+    }
+
+    @discardableResult
+    func setAgentModel(agentId: String, modelId: String?) async throws -> AckResponsePayload {
+        let requestId = UUID().uuidString
+        let req = SetAgentModelRequest(requestId: requestId, agentId: agentId, modelId: modelId)
+        let reply = try await requestResponse(requestId: requestId, outbound: .session(.setAgentModel(req)))
+        guard case let .setAgentModelResponse(resp) = reply else {
+            throw DaemonError.protocolError("Expected set_agent_model_response, got \(reply)")
+        }
+        if let err = resp.payload.error, !err.isEmpty { throw DaemonError.rpcFailed(err) }
+        return resp.payload
+    }
+
+    @discardableResult
+    func setAgentThinking(agentId: String, thinkingOptionId: String?) async throws -> AckResponsePayload {
+        let requestId = UUID().uuidString
+        let req = SetAgentThinkingRequest(
+            requestId: requestId, agentId: agentId, thinkingOptionId: thinkingOptionId
+        )
+        let reply = try await requestResponse(requestId: requestId, outbound: .session(.setAgentThinking(req)))
+        guard case let .setAgentThinkingResponse(resp) = reply else {
+            throw DaemonError.protocolError("Expected set_agent_thinking_response, got \(reply)")
+        }
+        if let err = resp.payload.error, !err.isEmpty { throw DaemonError.rpcFailed(err) }
+        return resp.payload
+    }
+
+    func getProvidersSnapshot(cwd: String? = nil) async throws -> [ProviderSnapshot] {
+        let requestId = UUID().uuidString
+        let req = GetProvidersSnapshotRequest(requestId: requestId, cwd: cwd)
+        let reply = try await requestResponse(requestId: requestId, outbound: .session(.getProvidersSnapshot(req)))
+        guard case let .getProvidersSnapshotResponse(resp) = reply else {
+            throw DaemonError.protocolError("Expected get_providers_snapshot_response, got \(reply)")
+        }
+        return resp.payload.entries
+    }
+
     // MARK: - Private plumbing
 
     private func rawSend(_ msg: WSOutbound) async throws {
@@ -327,6 +375,10 @@ actor DaemonClient {
             case .fetchAgentsResponse(let r): return r.payload.requestId
             case .fetchAgentTimelineResponse(let r): return r.payload.requestId
             case .sendAgentMessageResponse(let r): return r.payload.requestId
+            case .setAgentModeResponse(let r): return r.payload.requestId
+            case .setAgentModelResponse(let r): return r.payload.requestId
+            case .setAgentThinkingResponse(let r): return r.payload.requestId
+            case .getProvidersSnapshotResponse(let r): return r.payload.requestId
             default: return nil
             }
         }()

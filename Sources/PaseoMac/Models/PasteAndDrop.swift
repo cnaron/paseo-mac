@@ -53,6 +53,52 @@ struct PendingImageAttachment: Identifiable, Hashable, Sendable {
     }
 }
 
+/// A text file dragged into the composer. The daemon protocol has no
+/// first-class file slot, so we inline the content into the outgoing
+/// message body as a fenced code block (matching Claude Code's behavior).
+struct PendingTextFile: Identifiable, Hashable, Sendable {
+    let id: UUID
+    let name: String
+    let content: String
+    /// Language hint for the fenced block, derived from the extension.
+    let languageHint: String?
+
+    /// Max bytes we'll inline. Larger → rejected with a size error.
+    static let maxInlineBytes = 256 * 1024
+
+    static func fromFileURL(_ url: URL) throws -> PendingTextFile {
+        let values = try url.resourceValues(forKeys: [.fileSizeKey])
+        if let size = values.fileSize, size > maxInlineBytes {
+            throw PendingTextFileError.tooLarge(actual: size, limit: maxInlineBytes)
+        }
+        let data = try Data(contentsOf: url)
+        guard let s = String(data: data, encoding: .utf8) else {
+            throw PendingTextFileError.binaryFile
+        }
+        let ext = url.pathExtension.lowercased()
+        return PendingTextFile(
+            id: UUID(),
+            name: url.lastPathComponent,
+            content: s,
+            languageHint: ext.isEmpty ? nil : ext
+        )
+    }
+}
+
+enum PendingTextFileError: LocalizedError {
+    case tooLarge(actual: Int, limit: Int)
+    case binaryFile
+
+    var errorDescription: String? {
+        switch self {
+        case .tooLarge(let a, let l):
+            return "File too large (\(a / 1024) KB > \(l / 1024) KB)"
+        case .binaryFile:
+            return "Binary files are not supported; drop text only."
+        }
+    }
+}
+
 enum PasteboardHelper {
     /// Pulls all image-ish items out of the given pasteboard.
     /// Handles: raw image data (⌘V screenshots, copied from browsers),

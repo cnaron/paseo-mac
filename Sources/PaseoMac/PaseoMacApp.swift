@@ -4,18 +4,21 @@ import SwiftUI
 struct PaseoMacApp: App {
 
     @State private var appModel: AppViewModel
+    @State private var settings: SettingsStore
 
     init() {
         if CommandLine.arguments.contains("--list-agents") {
             runSmokeTestAndExit()
         }
         self._appModel = State(initialValue: AppViewModel())
+        self._settings = State(initialValue: SettingsStore())
     }
 
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environment(appModel)
+                .environment(settings)
                 .frame(minWidth: 900, minHeight: 600)
         }
         .windowResizability(.contentMinSize)
@@ -26,6 +29,11 @@ struct PaseoMacApp: App {
                 }
                 .keyboardShortcut("r", modifiers: [.command])
             }
+        }
+
+        Settings {
+            PreferencesView()
+                .environment(settings)
         }
     }
 }
