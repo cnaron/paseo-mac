@@ -37,6 +37,7 @@ enum SessionRequest: Encodable {
     case setAgentModel(SetAgentModelRequest)
     case setAgentThinking(SetAgentThinkingRequest)
     case getProvidersSnapshot(GetProvidersSnapshotRequest)
+    case cancelAgent(CancelAgentRequest)
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.singleValueContainer()
@@ -48,8 +49,15 @@ enum SessionRequest: Encodable {
         case .setAgentModel(let r): try c.encode(r)
         case .setAgentThinking(let r): try c.encode(r)
         case .getProvidersSnapshot(let r): try c.encode(r)
+        case .cancelAgent(let r): try c.encode(r)
         }
     }
+}
+
+struct CancelAgentRequest: Encodable {
+    let type = "cancel_agent_request"
+    let requestId: String
+    let agentId: String
 }
 
 struct SetAgentModeRequest: Encodable {
@@ -175,6 +183,7 @@ enum SessionInbound: Decodable, @unchecked Sendable {
     case setAgentModelResponse(SetAgentModelResponse)
     case setAgentThinkingResponse(SetAgentThinkingResponse)
     case getProvidersSnapshotResponse(GetProvidersSnapshotResponse)
+    case cancelAgentResponse(CancelAgentResponse)
     case unknown(type: String, raw: Data)
 
     private enum Keys: String, CodingKey { case type }
@@ -207,6 +216,8 @@ enum SessionInbound: Decodable, @unchecked Sendable {
             self = .setAgentThinkingResponse(try JSONDecoder.paseo.decode(SetAgentThinkingResponse.self, from: raw))
         case "get_providers_snapshot_response":
             self = .getProvidersSnapshotResponse(try JSONDecoder.paseo.decode(GetProvidersSnapshotResponse.self, from: raw))
+        case "cancel_agent_response":
+            self = .cancelAgentResponse(try JSONDecoder.paseo.decode(CancelAgentResponse.self, from: raw))
         default:
             self = .unknown(type: type, raw: raw)
         }
@@ -326,6 +337,15 @@ struct AgentStatusMessage: Decodable, Sendable {
         let agentId: String
         let status: String
         let info: AgentSnapshot?
+    }
+}
+
+struct CancelAgentResponse: Decodable, Sendable {
+    let type: String
+    let payload: Payload
+    struct Payload: Decodable, Sendable {
+        let requestId: String
+        let agentId: String
     }
 }
 
@@ -658,6 +678,7 @@ struct AgentSnapshot: Decodable, Sendable, Identifiable, Hashable {
     let effectiveThinkingOptionId: String?
     let currentModeId: String?
     let availableModes: [AgentMode]?
+    let lastUsage: AgentUsage?
     let archivedAt: String?
     let requiresAttention: Bool?
     let attentionReason: String?
@@ -666,6 +687,17 @@ struct AgentSnapshot: Decodable, Sendable, Identifiable, Hashable {
         if let t = title, !t.isEmpty { return t }
         return String(id.prefix(8))
     }
+}
+
+/// Rolling usage snapshot for an agent — tokens in/out, total cost, and
+/// context-window occupancy. Mirrors `AgentUsageSchema` in upstream messages.ts.
+struct AgentUsage: Decodable, Sendable, Hashable {
+    let inputTokens: Int?
+    let cachedInputTokens: Int?
+    let outputTokens: Int?
+    let totalCostUsd: Double?
+    let contextWindowMaxTokens: Int?
+    let contextWindowUsedTokens: Int?
 }
 
 // MARK: - Shared helpers

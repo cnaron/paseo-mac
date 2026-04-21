@@ -13,12 +13,14 @@ final class SettingsStore {
     static let fontScaleRange: ClosedRange<Double> = 0.85...1.5
     static let lineSpacingRange: ClosedRange<Double> = 0...10
     static let bubbleGapRange: ClosedRange<Double> = 8...28
+    static let composerHeightRange: ClosedRange<Double> = 44...420
 
     // MARK: - Defaults keys
 
     private let kFontScale = "paseomac.settings.fontScale"
     private let kLineSpacing = "paseomac.settings.lineSpacing"
     private let kBubbleGap = "paseomac.settings.bubbleGap"
+    private let kComposerHeight = "paseomac.settings.composerHeight"
 
     // MARK: - Published state
 
@@ -31,6 +33,9 @@ final class SettingsStore {
     var bubbleGap: Double {
         didSet { UserDefaults.standard.set(bubbleGap, forKey: kBubbleGap) }
     }
+    var composerHeight: Double {
+        didSet { UserDefaults.standard.set(composerHeight, forKey: kComposerHeight) }
+    }
 
     // MARK: - Init
 
@@ -39,6 +44,7 @@ final class SettingsStore {
         self.fontScale = d.object(forKey: kFontScale) as? Double ?? 1.0
         self.paragraphLineSpacing = d.object(forKey: kLineSpacing) as? Double ?? 3.0
         self.bubbleGap = d.object(forKey: kBubbleGap) as? Double ?? 14.0
+        self.composerHeight = d.object(forKey: kComposerHeight) as? Double ?? 72.0
     }
 
     // MARK: - Helpers
@@ -47,6 +53,7 @@ final class SettingsStore {
         fontScale = 1.0
         paragraphLineSpacing = 3.0
         bubbleGap = 14.0
+        composerHeight = 72.0
     }
 
     /// Scales a base point size by `fontScale`. Rounded to 0.5 so fonts stay

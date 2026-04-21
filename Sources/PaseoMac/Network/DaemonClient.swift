@@ -270,6 +270,17 @@ actor DaemonClient {
         return resp.payload
     }
 
+    @discardableResult
+    func cancelAgent(agentId: String) async throws -> CancelAgentResponse.Payload {
+        let requestId = UUID().uuidString
+        let req = CancelAgentRequest(requestId: requestId, agentId: agentId)
+        let reply = try await requestResponse(requestId: requestId, outbound: .session(.cancelAgent(req)))
+        guard case let .cancelAgentResponse(resp) = reply else {
+            throw DaemonError.protocolError("Expected cancel_agent_response, got \(reply)")
+        }
+        return resp.payload
+    }
+
     func getProvidersSnapshot(cwd: String? = nil) async throws -> [ProviderSnapshot] {
         let requestId = UUID().uuidString
         let req = GetProvidersSnapshotRequest(requestId: requestId, cwd: cwd)
@@ -379,6 +390,7 @@ actor DaemonClient {
             case .setAgentModelResponse(let r): return r.payload.requestId
             case .setAgentThinkingResponse(let r): return r.payload.requestId
             case .getProvidersSnapshotResponse(let r): return r.payload.requestId
+            case .cancelAgentResponse(let r): return r.payload.requestId
             default: return nil
             }
         }()

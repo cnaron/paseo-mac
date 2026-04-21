@@ -22,13 +22,32 @@ final class ConversationViewModel {
         /// target, status, and an optional long-form detail that the tool row
         /// in the UI can expand on click.
         let tool: ToolInfo?
+        /// Images the user attached to this message. Populated on the local
+        /// optimistic row; preserved across the server's user_message echo
+        /// (which doesn't ship the image bytes back).
+        let images: [PendingImageAttachment]
 
-        init(id: String, kind: String, text: String, timestamp: String?, tool: ToolInfo? = nil) {
+        /// Model the agent was running with when this row was produced.
+        /// Populated on live streaming so a subsequent model switch shows up
+        /// as a differently-tagged chip on the next assistant turn.
+        let modelUsed: String?
+
+        init(
+            id: String,
+            kind: String,
+            text: String,
+            timestamp: String?,
+            tool: ToolInfo? = nil,
+            images: [PendingImageAttachment] = [],
+            modelUsed: String? = nil
+        ) {
             self.id = id
             self.kind = kind
             self.text = text
             self.timestamp = timestamp
             self.tool = tool
+            self.images = images
+            self.modelUsed = modelUsed
         }
     }
 
@@ -93,13 +112,14 @@ final class ConversationViewModel {
                     detailKind: content.flatMap { $0.isEmpty ? nil : .plain(text: $0, monospaced: true) } ?? .none
                 )
             case .edit(let path, let diff, let oldStr, let newStr):
-                // Prefer the semantic before/after split (cleaner reading);
-                // fall back to the raw unified diff when that's all we have.
+                // Prefer the colored unified diff (easier to spot added vs
+                // removed lines). Fall back to before/after blocks only when
+                // no unified diff is available.
                 let kind: DetailKind
-                if let o = oldStr, let n = newStr, !(o.isEmpty && n.isEmpty) {
-                    kind = .beforeAfter(before: o, after: n)
-                } else if let d = diff, !d.isEmpty {
+                if let d = diff, !d.isEmpty {
                     kind = .unifiedDiff(text: d)
+                } else if let o = oldStr, let n = newStr, !(o.isEmpty && n.isEmpty) {
+                    kind = .beforeAfter(before: o, after: n)
                 } else {
                     kind = .none
                 }
@@ -198,8 +218,33 @@ final class ConversationViewModel {
     var pendingImages: [PendingImageAttachment] = []
     var pendingTextFiles: [PendingTextFile] = []
 
+    /// Messages the user submitted while the agent was busy. We display them
+    /// above the composer and flush them one at a time as turns complete.
+    var queued: [QueuedMessage] = []
+
+    struct QueuedMessage: Identifiable, Hashable {
+        let id: UUID = UUID()
+        let text: String                  // final text (text files already inlined)
+        let messageId: String             // client-chosen for dedup
+        let images: [PendingImageAttachment]
+        let createdAt: Date = Date()
+
+        /// Short preview for the chip strip.
+        var preview: String {
+            let first = text.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? text
+            let trimmed = first.trimmingCharacters(in: .whitespaces)
+            return trimmed.isEmpty
+                ? "[\(images.count) image\(images.count == 1 ? "" : "s")]"
+                : String(trimmed.prefix(80))
+        }
+    }
+
     private let getClient: () -> DaemonClient?
     private var streamRowCounter: Int = 0
+    /// Model the agent was running with when the most recent `turn_started`
+    /// event fired. Used to tag subsequent assistant_message rows so a
+    /// mid-conversation model switch is visible per bubble.
+    private var currentTurnModel: String? = nil
 
     init(agentId: String, getClient: @escaping () -> DaemonClient?) {
         self.agentId = agentId
@@ -224,34 +269,64 @@ final class ConversationViewModel {
 
     // MARK: - Send
 
+    /// Default send path: if the agent is mid-turn, queue up for later flush.
+    /// Otherwise fire immediately.
     func sendComposer() async {
+        guard let pending = drainComposerForSend() else { return }
+        if isAgentWorking {
+            queued.append(pending)
+        } else {
+            await dispatch(pending)
+        }
+    }
+
+    /// "Interrupt and send" path: cancels whatever the agent is doing right
+    /// now, then sends this message immediately (without touching the rest
+    /// of the queue). Useful when the user realizes the current run is off
+    /// the rails and they want to steer without waiting.
+    func sendInterrupting() async {
+        guard let pending = drainComposerForSend() else { return }
+        if isAgentWorking, let client = getClient() {
+            do { _ = try await client.cancelAgent(agentId: agentId) }
+            catch { /* best-effort; still try to send */ }
+        }
+        await dispatch(pending)
+    }
+
+    func removeQueued(id: UUID) {
+        queued.removeAll { $0.id == id }
+    }
+
+    /// Pull the composer's current content into a QueuedMessage and clear it.
+    /// Returns nil if nothing is actually pending.
+    private func drainComposerForSend() -> QueuedMessage? {
         let baseText = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
         let images = pendingImages
         let textFiles = pendingTextFiles
+        if baseText.isEmpty && images.isEmpty && textFiles.isEmpty { return nil }
 
-        guard !baseText.isEmpty || !images.isEmpty || !textFiles.isEmpty else { return }
-        guard let client = getClient() else {
-            self.lastError = "Not connected"
-            return
-        }
         composerText = ""
         pendingImages = []
         pendingTextFiles = []
 
-        // Inline attached text files as markdown-fenced blocks at the top of
-        // the message body. The daemon protocol has no first-class file
-        // attachment slot, but this matches how Claude Code renders a pasted
-        // file and keeps the content searchable in the conversation timeline.
         let finalText = composeOutgoingText(baseText: baseText, files: textFiles)
+        return QueuedMessage(
+            text: finalText,
+            messageId: UUID().uuidString,
+            images: images
+        )
+    }
 
-        let messageId = UUID().uuidString
-        let optimisticText = finalText.isEmpty
-            ? "[\(images.count) image\(images.count == 1 ? "" : "s")]"
-            : finalText
-        appendLocalUserRow(text: optimisticText, messageId: messageId)
-
+    /// Actually fire the RPC and append an optimistic local bubble.
+    private func dispatch(_ msg: QueuedMessage) async {
+        guard let client = getClient() else {
+            self.lastError = "Not connected"
+            queued.insert(msg, at: 0)   // put it back so the user doesn't lose it
+            return
+        }
+        appendLocalUserRow(text: msg.text, messageId: msg.messageId, images: msg.images)
         do {
-            let wireImages = images.map {
+            let wireImages = msg.images.map {
                 SendAgentMessageRequest.ImageAttachment(
                     data: $0.pngData.base64EncodedString(),
                     mimeType: $0.mimeType
@@ -259,14 +334,22 @@ final class ConversationViewModel {
             }
             _ = try await client.sendMessage(
                 agentId: agentId,
-                text: finalText,
-                messageId: messageId,
+                text: msg.text,
+                messageId: msg.messageId,
                 images: wireImages.isEmpty ? nil : wireImages
             )
             self.lastError = nil
         } catch {
             self.lastError = "Send failed: \(error.localizedDescription)"
         }
+    }
+
+    /// Called when the VM sees a terminal turn event. Pops and sends the
+    /// next queued message if any.
+    private func flushQueueIfNeeded() {
+        guard !queued.isEmpty else { return }
+        let next = queued.removeFirst()
+        Task { await dispatch(next) }
     }
 
     private func composeOutgoingText(baseText: String, files: [PendingTextFile]) -> String {
@@ -300,12 +383,14 @@ final class ConversationViewModel {
 
     // MARK: - Stream ingestion
 
-    func apply(streamEvent: AgentStreamEvent, seq: Int?, timestamp: String) {
+    func apply(streamEvent: AgentStreamEvent, seq: Int?, timestamp: String, currentModel: String? = nil) {
         switch streamEvent {
         case .turnStarted:
             isAgentWorking = true
+            currentTurnModel = currentModel
         case .turnCompleted, .turnFailed, .turnCanceled:
             isAgentWorking = false
+            flushQueueIfNeeded()
         case .threadStarted:
             break
         case .timelineUpdated(let item):
@@ -351,12 +436,15 @@ final class ConversationViewModel {
         if case let .userMessage(text, msgId) = item, let msgId {
             let localId = "msg-\(msgId)"
             if let idx = rows.firstIndex(where: { $0.id == localId }) {
+                // Preserve the locally-attached image blobs — the daemon
+                // doesn't echo them back in the user_message payload.
                 rows[idx] = Row(
                     id: localId,
                     kind: "user",
                     text: text,
                     timestamp: timestamp,
-                    tool: nil
+                    tool: nil,
+                    images: rows[idx].images
                 )
                 return
             }
@@ -365,12 +453,21 @@ final class ConversationViewModel {
         streamRowCounter += 1
         let defaultId = seq.map { "seq-\($0)" } ?? "stream-\(streamRowCounter)"
         let id = rowIdForItem(item, defaultId: defaultId)
+        // Tag narrative rows with the model that was active when the turn
+        // started. Tool rows and user messages don't carry a model label.
+        let tagged: String? = {
+            switch item {
+            case .assistantMessage, .reasoning: return currentTurnModel
+            default: return nil
+            }
+        }()
         let row = Row(
             id: id,
             kind: item.displayKind,
             text: item.displayText,
             timestamp: timestamp,
-            tool: toolInfo(from: item)
+            tool: toolInfo(from: item),
+            modelUsed: tagged
         )
         // Coalesce: if we already have a row with this id (a tool_call
         // transitioning running → completed, or an assistant chunk arriving
@@ -389,7 +486,11 @@ final class ConversationViewModel {
         return nil
     }
 
-    private func appendLocalUserRow(text: String, messageId: String) {
+    private func appendLocalUserRow(
+        text: String,
+        messageId: String,
+        images: [PendingImageAttachment] = []
+    ) {
         // Id is derived from the messageId we sent so appendStreamedRow can
         // find and replace this row when the daemon echoes it back.
         let id = "msg-\(messageId)"
@@ -398,7 +499,8 @@ final class ConversationViewModel {
             kind: "user",
             text: text,
             timestamp: ISO8601DateFormatter().string(from: Date()),
-            tool: nil
+            tool: nil,
+            images: images
         ))
     }
 

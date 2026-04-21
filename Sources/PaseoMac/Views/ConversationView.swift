@@ -14,6 +14,11 @@ struct ConversationView: View {
         .navigationTitle(agent()?.displayName ?? "")
         .toolbar {
             ToolbarItem(placement: .automatic) {
+                if let a = agent() {
+                    UsageChip(agent: a)
+                }
+            }
+            ToolbarItem(placement: .automatic) {
                 if vm.isAgentWorking {
                     HStack(spacing: 6) {
                         ProgressView().controlSize(.small)
@@ -41,9 +46,9 @@ private struct BubbleGroup: Identifiable {
     let text: String
     let timestamp: String?
     let tool: ConversationViewModel.ToolInfo?
-    /// Populated only when `kind == "tool_cluster"` — consecutive tool rows
-    /// rendered together with tight internal spacing.
     let toolCluster: [ConversationViewModel.ToolInfo]
+    let images: [PendingImageAttachment]
+    let modelUsed: String?
 }
 
 private func groupRows(_ rows: [ConversationViewModel.Row]) -> [BubbleGroup] {
@@ -64,7 +69,9 @@ private func groupRows(_ rows: [ConversationViewModel.Row]) -> [BubbleGroup] {
                 text: "",
                 timestamp: last.timestamp,
                 tool: nil,
-                toolCluster: cluster
+                toolCluster: cluster,
+                images: [],
+                modelUsed: nil
             ))
             continue
         }
@@ -75,7 +82,9 @@ private func groupRows(_ rows: [ConversationViewModel.Row]) -> [BubbleGroup] {
                 text: "",
                 timestamp: row.timestamp,
                 tool: nil,
-                toolCluster: [info]
+                toolCluster: [info],
+                images: [],
+                modelUsed: nil
             ))
             continue
         }
@@ -87,12 +96,14 @@ private func groupRows(_ rows: [ConversationViewModel.Row]) -> [BubbleGroup] {
             let merged = last.text + row.text
             out.removeLast()
             out.append(BubbleGroup(
-                id: last.id,           // keep the first row's id so SwiftUI keeps animation identity
+                id: last.id,
                 kind: last.kind,
                 text: merged,
                 timestamp: last.timestamp,
                 tool: nil,
-                toolCluster: []
+                toolCluster: [],
+                images: last.images + row.images,
+                modelUsed: last.modelUsed ?? row.modelUsed
             ))
         } else {
             out.append(BubbleGroup(
@@ -101,7 +112,9 @@ private func groupRows(_ rows: [ConversationViewModel.Row]) -> [BubbleGroup] {
                 text: row.text,
                 timestamp: row.timestamp,
                 tool: row.tool,
-                toolCluster: []
+                toolCluster: [],
+                images: row.images,
+                modelUsed: row.modelUsed
             ))
         }
     }
@@ -179,11 +192,18 @@ private struct MessageBubble: View {
     private var userBubble: some View {
         HStack(alignment: .top) {
             Spacer(minLength: 48)
-            MarkdownBodyView(text: group.text)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(Color.accentColor.opacity(0.18), in: RoundedRectangle(cornerRadius: 12))
-                .frame(maxWidth: 560, alignment: .trailing)
+            VStack(alignment: .trailing, spacing: 6) {
+                if !group.images.isEmpty {
+                    UserBubbleImages(images: group.images)
+                }
+                if !group.text.isEmpty {
+                    MarkdownBodyView(text: group.text)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(Color.accentColor.opacity(0.18), in: RoundedRectangle(cornerRadius: 12))
+                }
+            }
+            .frame(maxWidth: 560, alignment: .trailing)
         }
         .padding(.horizontal, 16)
     }
@@ -192,11 +212,16 @@ private struct MessageBubble: View {
 
     private var assistantBubble: some View {
         HStack(alignment: .top) {
-            MarkdownBodyView(text: group.text)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(Color.secondary.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
-                .frame(maxWidth: 680, alignment: .leading)
+            VStack(alignment: .leading, spacing: 4) {
+                if let m = group.modelUsed, !m.isEmpty {
+                    ModelPill(model: m)
+                }
+                MarkdownBodyView(text: group.text)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(Color.secondary.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
+            }
+            .frame(maxWidth: 680, alignment: .leading)
             Spacer(minLength: 48)
         }
         .padding(.horizontal, 16)
@@ -396,6 +421,173 @@ private struct ToolRow: View {
         let head = s.prefix(max / 2 - 1)
         let tail = s.suffix(max / 2 - 1)
         return "\(head)…\(tail)"
+    }
+}
+
+// MARK: - Usage chip (toolbar)
+
+/// Compact cost + context-window indicator for the selected agent.
+/// Values come from `AgentSnapshot.lastUsage`, which the daemon refreshes
+/// after each turn. Hover tooltip shows per-token breakdown.
+private struct UsageChip: View {
+    let agent: AgentSnapshot
+
+    var body: some View {
+        if let u = agent.lastUsage, hasAnything(u) {
+            HStack(spacing: 6) {
+                if let cost = u.totalCostUsd {
+                    Text(formatCost(cost))
+                        .font(.caption)
+                        .monospacedDigit()
+                }
+                if let used = u.contextWindowUsedTokens,
+                   let max = u.contextWindowMaxTokens, max > 0 {
+                    contextBar(used: used, max: max)
+                }
+            }
+            .foregroundStyle(.secondary)
+            .help(tooltip(u))
+        }
+    }
+
+    private func hasAnything(_ u: AgentUsage) -> Bool {
+        u.totalCostUsd != nil || u.contextWindowUsedTokens != nil
+    }
+
+    private func contextBar(used: Int, max: Int) -> some View {
+        let ratio = min(max > 0 ? Double(used) / Double(max) : 0, 1.0)
+        return HStack(spacing: 4) {
+            RoundedRectangle(cornerRadius: 2)
+                .stroke(Color.secondary.opacity(0.4), lineWidth: 1)
+                .background(
+                    GeometryReader { geo in
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(barColor(ratio: ratio))
+                            .frame(width: geo.size.width * ratio, alignment: .leading)
+                    }
+                )
+                .frame(width: 48, height: 6)
+            Text("\(compactTokens(used))/\(compactTokens(max))")
+                .font(.caption2)
+                .monospacedDigit()
+        }
+    }
+
+    private func barColor(ratio: Double) -> Color {
+        if ratio >= 0.9 { return .red }
+        if ratio >= 0.7 { return .orange }
+        return .accentColor
+    }
+
+    private func formatCost(_ cost: Double) -> String {
+        cost >= 10 ? String(format: "$%.2f", cost) : String(format: "$%.3f", cost)
+    }
+
+    private func compactTokens(_ n: Int) -> String {
+        if n >= 1_000_000 { return String(format: "%.1fM", Double(n) / 1_000_000) }
+        if n >= 1_000 { return String(format: "%.0fk", Double(n) / 1_000) }
+        return "\(n)"
+    }
+
+    private func tooltip(_ u: AgentUsage) -> String {
+        var lines: [String] = []
+        if let v = u.inputTokens { lines.append("Input: \(v.formatted())") }
+        if let v = u.cachedInputTokens { lines.append("Cached: \(v.formatted())") }
+        if let v = u.outputTokens { lines.append("Output: \(v.formatted())") }
+        if let v = u.totalCostUsd { lines.append(String(format: "Cost: $%.4f", v)) }
+        if let used = u.contextWindowUsedTokens {
+            let maxStr = u.contextWindowMaxTokens.map { " / \($0.formatted())" } ?? ""
+            lines.append("Context: \(used.formatted())\(maxStr)")
+        }
+        return lines.joined(separator: "\n")
+    }
+}
+
+// MARK: - Model pill (per-assistant-turn label)
+
+/// Small muted chip showing which model produced an assistant turn.
+/// Lets a mid-conversation model switch show up in the transcript.
+private struct ModelPill: View {
+    let model: String
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "sparkles")
+                .font(.caption2)
+            Text(prettyName(model))
+                .font(.caption)
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 2)
+        .background(Color.secondary.opacity(0.08), in: Capsule())
+    }
+
+    private func prettyName(_ raw: String) -> String {
+        // "claude-opus-4-7[1m]" → "Opus 4.7 1M"
+        var s = raw
+        if s.hasPrefix("claude-") { s.removeFirst("claude-".count) }
+        s = s.replacingOccurrences(of: "[1m]", with: " 1M")
+        s = s.replacingOccurrences(of: "[", with: " ")
+        s = s.replacingOccurrences(of: "]", with: "")
+        // opus-4-7 → Opus 4.7
+        let parts = s.split(separator: "-")
+        if parts.count >= 3 {
+            let name = parts[0].capitalized
+            let ver = "\(parts[1]).\(parts[2])"
+            let rest = parts.dropFirst(3).joined(separator: " ")
+            return "\(name) \(ver)\(rest.isEmpty ? "" : " \(rest)")"
+        }
+        return raw
+    }
+}
+
+// MARK: - User bubble image strip
+
+/// Renders attached images inside a user bubble. Images cap at ~240pt tall
+/// so they don't dominate the window; click opens a QuickLook-ish full-size
+/// view via SwiftUI's default sheet.
+private struct UserBubbleImages: View {
+    let images: [PendingImageAttachment]
+    @State private var zoomed: PendingImageAttachment? = nil
+
+    var body: some View {
+        LazyVGrid(
+            columns: gridColumns(count: images.count),
+            spacing: 6
+        ) {
+            ForEach(images) { img in
+                if let ns = NSImage(data: img.pngData) {
+                    Image(nsImage: ns)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(maxWidth: 240, maxHeight: 240)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .contentShape(Rectangle())
+                        .onTapGesture { zoomed = img }
+                }
+            }
+        }
+        .sheet(item: $zoomed) { img in
+            if let ns = NSImage(data: img.pngData) {
+                VStack {
+                    Image(nsImage: ns)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxWidth: 900, maxHeight: 700)
+                    Button("Close") { zoomed = nil }.padding(.top)
+                }
+                .padding()
+            }
+        }
+    }
+
+    private func gridColumns(count: Int) -> [GridItem] {
+        let cols = min(count, 2)
+        return Array(
+            repeating: GridItem(.flexible(), spacing: 6, alignment: .trailing),
+            count: max(cols, 1)
+        )
     }
 }
 

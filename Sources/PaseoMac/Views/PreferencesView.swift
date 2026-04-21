@@ -61,6 +61,21 @@ struct PreferencesView: View {
                             .foregroundStyle(.secondary)
                             .monospacedDigit()
                     }
+
+                    Slider(
+                        value: $settings.composerHeight,
+                        in: SettingsStore.composerHeightRange,
+                        step: 2
+                    ) {
+                        Text("Composer height")
+                    }
+                    HStack {
+                        Text("Composer height")
+                        Spacer()
+                        Text(String(format: "%.0f pt", settings.composerHeight))
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
                 }
 
                 Section {

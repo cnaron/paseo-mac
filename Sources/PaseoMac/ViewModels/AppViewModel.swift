@@ -188,8 +188,14 @@ final class AppViewModel {
         case .agentStream(let msg):
             let agentId = msg.payload.agentId
             applyLiveStatus(agentId: agentId, event: msg.payload.event)
+            let currentModel = agents.first(where: { $0.id == agentId })?.model
             let vm = conversation(for: agentId)
-            vm.apply(streamEvent: msg.payload.event, seq: msg.payload.seq, timestamp: msg.payload.timestamp)
+            vm.apply(
+                streamEvent: msg.payload.event,
+                seq: msg.payload.seq,
+                timestamp: msg.payload.timestamp,
+                currentModel: currentModel
+            )
         case .agentStatus(let msg):
             // Daemon-pushed snapshot update — apply directly.
             if let snap = msg.payload.info,
@@ -203,7 +209,8 @@ final class AppViewModel {
             )
         case .serverInfo, .status, .fetchAgentsResponse, .fetchAgentTimelineResponse,
              .sendAgentMessageResponse, .setAgentModeResponse, .setAgentModelResponse,
-             .setAgentThinkingResponse, .getProvidersSnapshotResponse, .unknown:
+             .setAgentThinkingResponse, .getProvidersSnapshotResponse, .cancelAgentResponse,
+             .unknown:
             break
         }
     }
@@ -246,6 +253,7 @@ private extension AgentSnapshot {
             model: model, thinkingOptionId: thinkingOptionId,
             effectiveThinkingOptionId: effectiveThinkingOptionId,
             currentModeId: modeId, availableModes: availableModes,
+            lastUsage: lastUsage,
             archivedAt: archivedAt, requiresAttention: requiresAttention,
             attentionReason: attentionReason
         )
@@ -257,6 +265,7 @@ private extension AgentSnapshot {
             model: modelId, thinkingOptionId: thinkingOptionId,
             effectiveThinkingOptionId: effectiveThinkingOptionId,
             currentModeId: currentModeId, availableModes: availableModes,
+            lastUsage: lastUsage,
             archivedAt: archivedAt, requiresAttention: requiresAttention,
             attentionReason: attentionReason
         )
@@ -268,6 +277,7 @@ private extension AgentSnapshot {
             model: model, thinkingOptionId: optId,
             effectiveThinkingOptionId: optId,
             currentModeId: currentModeId, availableModes: availableModes,
+            lastUsage: lastUsage,
             archivedAt: archivedAt, requiresAttention: requiresAttention,
             attentionReason: attentionReason
         )

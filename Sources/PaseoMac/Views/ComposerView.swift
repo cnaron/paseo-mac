@@ -5,12 +5,20 @@ import UniformTypeIdentifiers
 struct ComposerView: View {
     @Bindable var vm: ConversationViewModel
     @Environment(AppViewModel.self) private var app
+    @Environment(SettingsStore.self) private var settings
     @FocusState private var focused: Bool
     @State private var isDropTargeted: Bool = false
     @State private var dropError: String? = nil
+    /// Height of the composer at the moment a drag began. Snapshot so we can
+    /// compute `start - delta.height` without compounding.
+    @State private var dragStartHeight: Double? = nil
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
+            resizeHandle
+            if !vm.queued.isEmpty {
+                queuedStrip
+            }
             if !vm.pendingImages.isEmpty || !vm.pendingTextFiles.isEmpty {
                 attachmentStrip
             }
@@ -35,6 +43,43 @@ struct ComposerView: View {
         .onDrop(of: [.image, .fileURL, .plainText], isTargeted: $isDropTargeted, perform: handleDrop)
     }
 
+    // MARK: Resize handle
+
+    /// Thin draggable bar sitting above the input row. Dragging up grows the
+    /// composer, dragging down shrinks it. Height is persisted on SettingsStore
+    /// so it survives relaunch. Double-click resets to the default.
+    private var resizeHandle: some View {
+        @Bindable var settings = settings
+        return RoundedRectangle(cornerRadius: 2)
+            .fill(Color.secondary.opacity(0.35))
+            .frame(width: 36, height: 4)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 2)
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                if hovering {
+                    NSCursor.resizeUpDown.push()
+                } else {
+                    NSCursor.pop()
+                }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        let start = dragStartHeight ?? settings.composerHeight
+                        if dragStartHeight == nil { dragStartHeight = start }
+                        let proposed = start - Double(value.translation.height)
+                        let r = SettingsStore.composerHeightRange
+                        settings.composerHeight = min(max(proposed, r.lowerBound), r.upperBound)
+                    }
+                    .onEnded { _ in dragStartHeight = nil }
+            )
+            .onTapGesture(count: 2) {
+                settings.composerHeight = 72.0
+            }
+            .help("Drag to resize · double-click to reset")
+    }
+
     // MARK: - Attachment strip (images + text files)
 
     private var attachmentStrip: some View {
@@ -55,7 +100,7 @@ struct ComposerView: View {
         HStack(alignment: .bottom, spacing: 8) {
             TextEditor(text: $vm.composerText)
                 .font(.body)
-                .frame(minHeight: 38, maxHeight: 160)
+                .frame(height: CGFloat(settings.composerHeight))
                 .padding(6)
                 .overlay(
                     RoundedRectangle(cornerRadius: 6)
@@ -65,17 +110,81 @@ struct ComposerView: View {
                 .onAppear { focused = true }
                 .onSubmit { submit() }
 
-            Button {
-                submit()
-            } label: {
-                Label("Send", systemImage: "arrow.up.circle.fill")
-                    .labelStyle(.iconOnly)
-                    .font(.title2)
+            VStack(spacing: 4) {
+                if vm.isAgentWorking {
+                    Button {
+                        interrupt()
+                    } label: {
+                        Label("Interrupt & send", systemImage: "bolt.fill")
+                            .labelStyle(.iconOnly)
+                            .font(.title2)
+                            .foregroundStyle(.orange)
+                    }
+                    .buttonStyle(.plain)
+                    .keyboardShortcut(.return, modifiers: [.command, .shift])
+                    .disabled(isSendDisabled)
+                    .help("Cancel current turn and send (⌘⇧↩)")
+                }
+                Button {
+                    submit()
+                } label: {
+                    Label(vm.isAgentWorking ? "Queue" : "Send",
+                          systemImage: vm.isAgentWorking ? "clock.arrow.circlepath" : "arrow.up.circle.fill")
+                        .labelStyle(.iconOnly)
+                        .font(.title2)
+                        .foregroundStyle(vm.isAgentWorking ? Color.secondary : Color.accentColor)
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut(.return, modifiers: [.command])
+                .disabled(isSendDisabled)
+                .help(vm.isAgentWorking ? "Queue after current turn (⌘↩)" : "Send (⌘↩)")
             }
-            .keyboardShortcut(.return, modifiers: [.command])
-            .disabled(isSendDisabled)
-            .help("Send (⌘↩)")
         }
+    }
+
+    // MARK: Queued-message strip
+
+    private var queuedStrip: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Text("Queued · will send when the current turn finishes")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            ForEach(vm.queued) { q in
+                HStack(spacing: 6) {
+                    Text(q.preview)
+                        .font(.callout)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .foregroundStyle(.primary)
+                    if !q.images.isEmpty {
+                        Image(systemName: "photo").font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button {
+                        vm.removeQueued(id: q.id)
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Remove from queue")
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+            }
+        }
+    }
+
+    private func interrupt() {
+        Task { await vm.sendInterrupting() }
     }
 
     // MARK: - Picker row (mode / model / thinking)
