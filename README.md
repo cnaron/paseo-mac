@@ -6,9 +6,9 @@ Native macOS client for interacting with [Claude Code](https://claude.ai/code) a
 
 ## Why this exists
 
-Claude Code is a CLI tool that runs on your server and controls AI coding agents. It ships with a web UI, but that means keeping a browser tab open and exposing a port. This app is a native macOS alternative: it connects to the Paseo relay — the same WebSocket infrastructure Claude Code uses — and gives you a proper Mac window to monitor agents, read conversations, and send messages.
+[Paseo](https://github.com/getpaseo) has an official Mac app. It works, but it's Electron-based and carries a heavy memory footprint — noticeable if you keep it open alongside other tools all day.
 
-The core use case: you have Claude Code running 24/7 on a VPS, and you want a lightweight, always-ready Mac app to check in on it from anywhere, the same way you'd check Slack or Messages.
+This is a lightweight SwiftUI replacement. It speaks the same relay protocol as the official app, so it connects to the same daemon and sees the same agents. The difference is purely in the client: native rendering, minimal memory use, no bundled Chromium.
 
 ## What it does
 
@@ -20,17 +20,16 @@ The core use case: you have Claude Code running 24/7 on a VPS, and you want a li
 - **Agent controls** — switch model, mode, and thinking level per agent
 - **Quota panel** — shows Claude.ai subscription usage (5h / 7d windows) if configured
 
-## Limitations
+## Compared to the official Paseo Mac app
 
-**Read these before using.**
+**Read this before using.**
 
-- **Not official.** This is a personal project, not affiliated with Anthropic or the Paseo team.
-- **Protocol dependency.** The app speaks the `@getpaseo/server` WebSocket protocol. If that protocol changes, the app breaks.
+- **Not feature-complete.** The official app has capabilities this one doesn't — settings panels, onboarding flows, and other UI that wasn't replicated here. If something is missing, use the official app for that task.
+- **Protocol fragility.** This app speaks the `@getpaseo/server` WebSocket protocol based on observation, not documentation. Any protocol update can silently break it.
+- **Not official.** No affiliation with Anthropic or the Paseo team. No support, no guarantees.
 - **No Apple notarization.** The binary is unsigned. macOS will warn you on first launch — right-click → Open to proceed.
-- **Relay required.** You need a running Paseo daemon and a valid pairing offer. The app does nothing standalone.
-- **Quota panel needs setup.** The sidebar usage bars require a self-hosted VPS endpoint (see below). The app cannot call the Anthropic API directly from the Mac — your VPS does it.
-- **Pre-alpha quality.** This is built and tested for personal use. Edge cases are unhandled, error messages are sparse.
-- **macOS 14+ only.** Uses SwiftUI Observation framework (`@Observable`), which requires Sonoma.
+- **Quota panel needs extra setup.** The sidebar usage bars require a self-hosted VPS endpoint (see below). The official app handles this differently.
+- **macOS 14+ only.** Uses SwiftUI Observation (`@Observable`), which requires Sonoma or later.
 
 ## Install
 
