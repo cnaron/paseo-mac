@@ -271,7 +271,8 @@ final class AppViewModel {
             fiveHour: parsed.fiveHour?.utilization.map { clamp($0) },
             sevenDay: parsed.sevenDay?.utilization.map { clamp($0) },
             fiveHourResetAt: parsed.fiveHour?.resetsAt.flatMap(parseISO),
-            sevenDayResetAt: parsed.sevenDay?.resetsAt.flatMap(parseISO)
+            sevenDayResetAt: parsed.sevenDay?.resetsAt.flatMap(parseISO),
+            fetchedAt: Date()
         )
     }
 

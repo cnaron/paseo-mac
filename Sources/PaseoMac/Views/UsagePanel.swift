@@ -9,6 +9,13 @@ struct ClaudeUsageData {
     let sevenDay: Int?
     let fiveHourResetAt: Date?
     let sevenDayResetAt: Date?
+    let fetchedAt: Date
+
+    var fetchedTimestamp: String {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm"
+        return f.string(from: fetchedAt)
+    }
 }
 
 // MARK: - View
@@ -39,6 +46,9 @@ struct UsagePanel: View {
                 if let pct = usage.sevenDay {
                     UsageBar(label: "7d", percent: pct, resetAt: usage.sevenDayResetAt)
                 }
+            Text("Updated " + usage.fetchedTimestamp)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 7)
