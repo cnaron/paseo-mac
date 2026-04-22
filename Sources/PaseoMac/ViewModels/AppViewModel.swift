@@ -1,9 +1,6 @@
 import Foundation
 import Observation
 
-/// Root observable state: owns the (optional) daemon connection, the list of
-/// agents, the user's current selection, and the per-agent conversation VMs.
-/// Created once at `@main` time, passed down via environment.
 @MainActor
 @Observable
 final class AppViewModel {
@@ -15,11 +12,8 @@ final class AppViewModel {
         case failed(String)
     }
 
-    /// A live-derived status for one agent, layered on top of the most recent
-    /// `AgentSnapshot` from `fetch_agents`. Updated from `agent_stream` events
-    /// so the sidebar dot reacts within milliseconds of a turn starting.
     struct LiveStatus: Equatable {
-        var status: String              // "running" | "idle" | ...
+        var status: String
         var requiresAttention: Bool
         var attentionReason: String?
     }
@@ -42,12 +36,11 @@ final class AppViewModel {
         }
     }
 
-    /// Live status overlays keyed by agentId. Views fall back to the
-    /// snapshot's `status` if no entry here.
     var liveStatus: [String: LiveStatus] = [:]
-
-    /// Provider / model / mode catalog — populated on connect.
     var providers: [ProviderSnapshot] = []
+
+    /// Claude subscription usage — fetched from VPS proxy after connect.
+    var usageData: ClaudeUsageData? = nil
 
     // MARK: Internals
 
@@ -57,7 +50,6 @@ final class AppViewModel {
 
     // MARK: - Lifecycle
 
-    /// Kick off an attempt to connect with whatever offer we have stored.
     func autoConnectIfPossible() {
         guard case .disconnected = connectionState else { return }
         guard let raw = savedOfferRaw, !raw.isEmpty else { return }
@@ -78,25 +70,26 @@ final class AppViewModel {
             self.savedOfferRaw = raw
             self.connectionState = .connected
 
-            // Start listening for agent_stream events.
             let events = client.events
             self.eventTask = Task { [weak self] in
                 for await session in events {
                     await self?.ingest(session: session)
                 }
-                // Stream ended — connection dropped. Auto-reconnect.
                 guard let self, !Task.isCancelled else { return }
                 await self.handleUnexpectedDisconnect()
             }
 
             try await refreshAgents()
 
-            // Pull model/mode catalog in the background — used by composer pickers.
             Task { [weak self] in
                 if let list = try? await self?.client?.getProvidersSnapshot() {
                     self?.providers = list
                 }
             }
+
+            // Fetch usage quota from VPS proxy.
+            Task { [weak self] in await self?.fetchUsage() }
+
         } catch {
             self.connectionState = .failed(error.localizedDescription)
         }
@@ -112,6 +105,7 @@ final class AppViewModel {
         selectedAgentId = nil
         liveStatus.removeAll()
         providers = []
+        usageData = nil
         connectionState = .disconnected
     }
 
@@ -172,7 +166,6 @@ final class AppViewModel {
         }
     }
 
-    /// Returns (and lazily creates) the ConversationViewModel for a given agent.
     func conversation(for agentId: String) -> ConversationViewModel {
         if let existing = conversations[agentId] { return existing }
         let vm = ConversationViewModel(agentId: agentId) { [weak self] in self?.client }
@@ -181,8 +174,6 @@ final class AppViewModel {
         return vm
     }
 
-    /// Best-available current status/attention for an agent — merges live overlay
-    /// onto the most recent snapshot.
     func effectiveStatus(for agentId: String) -> (status: String, attention: Bool) {
         let base = agents.first(where: { $0.id == agentId })
         if let live = liveStatus[agentId] {
@@ -203,9 +194,7 @@ final class AppViewModel {
         do {
             _ = try await client.setAgentMode(agentId: agentId, modeId: modeId)
             patchAgent(id: agentId) { $0.withMode(modeId) }
-        } catch {
-            // Surface later; for now stay silent — live status picks up on next fetch.
-        }
+        } catch { }
     }
 
     func setAgentModel(agentId: String, modelId: String?) async {
@@ -230,6 +219,62 @@ final class AppViewModel {
         }
     }
 
+    // MARK: - Usage quota
+
+    func fetchUsage() async {
+        let urlString = UserDefaults.standard.string(forKey: "paseomac.usageApiUrl") ?? ""
+        let token     = UserDefaults.standard.string(forKey: "paseomac.usageApiToken") ?? ""
+        guard !urlString.isEmpty, let url = URL(string: urlString) else { return }
+
+        var req = URLRequest(url: url)
+        if !token.isEmpty { req.setValue(token, forHTTPHeaderField: "X-Usage-Token") }
+        req.timeoutInterval = 15
+
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              (resp as? HTTPURLResponse)?.statusCode == 200 else { return }
+
+        struct Resp: Decodable {
+            struct Period: Decodable {
+                let utilization: Double?
+                let resetsAt: String?
+                enum CodingKeys: String, CodingKey {
+                    case utilization; case resetsAt = "resets_at"
+                }
+            }
+            let fiveHour: Period?
+            let sevenDay: Period?
+            let subscriptionType: String?
+            enum CodingKeys: String, CodingKey {
+                case fiveHour = "five_hour"; case sevenDay = "seven_day"
+                case subscriptionType = "subscription_type"
+            }
+        }
+        guard let parsed = try? JSONDecoder().decode(Resp.self, from: data) else { return }
+
+        let isoFull: ISO8601DateFormatter = {
+            let f = ISO8601DateFormatter()
+            f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            return f
+        }()
+        func parseISO(_ s: String) -> Date? { isoFull.date(from: s) ?? ISO8601DateFormatter().date(from: s) }
+        func clamp(_ v: Double) -> Int { Int(max(0, min(100, v.rounded()))) }
+        func planName(_ sub: String) -> String {
+            let l = sub.lowercased()
+            if l.contains("max") { return "Max" }
+            if l.contains("pro") { return "Pro" }
+            if l.contains("team") { return "Team" }
+            return sub.isEmpty ? "Claude.ai" : sub.capitalized
+        }
+
+        usageData = ClaudeUsageData(
+            planName: planName(parsed.subscriptionType ?? ""),
+            fiveHour: parsed.fiveHour?.utilization.map { clamp($0) },
+            sevenDay: parsed.sevenDay?.utilization.map { clamp($0) },
+            fiveHourResetAt: parsed.fiveHour?.resetsAt.flatMap(parseISO),
+            sevenDayResetAt: parsed.sevenDay?.resetsAt.flatMap(parseISO)
+        )
+    }
+
     // MARK: - Inbound events
 
     private func ingest(session: SessionInbound) async {
@@ -246,7 +291,6 @@ final class AppViewModel {
                 currentModel: currentModel
             )
         case .agentStatus(let msg):
-            // Daemon-pushed snapshot update — apply directly.
             if let snap = msg.payload.info,
                let idx = agents.firstIndex(where: { $0.id == snap.id }) {
                 agents[idx] = snap

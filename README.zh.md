@@ -1,5 +1,7 @@
 # paseo-mac
 
+[English](README.md)
+
 基于 SwiftUI 的原生 macOS 客户端，用于连接 [Paseo](https://github.com/getpaseo) 守护进程（Claude Code 远程代理）。通过 WebSocket 连接到 VPS 上的 Claude Code 或 Paseo 服务器，在轻量级 Mac 窗口中管理多个 AI 编程代理并与之对话。
 
 > 本项目与 Paseo 官方团队无关，不代表其立场。

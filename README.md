@@ -1,5 +1,7 @@
 # paseo-mac
 
+[中文](README.zh.md)
+
 Native SwiftUI macOS client for the [Paseo](https://github.com/getpaseo) daemon (Claude Code remote agents). Connect to a Claude Code or Paseo server running on a VPS, manage multiple AI coding agents, and chat with them from a lightweight Mac window.
 
 > Not affiliated with or endorsed by the Paseo project.
