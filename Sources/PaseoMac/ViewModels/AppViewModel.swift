@@ -84,6 +84,9 @@ final class AppViewModel {
                 for await session in events {
                     await self?.ingest(session: session)
                 }
+                // Stream ended — connection dropped. Auto-reconnect.
+                guard let self, !Task.isCancelled else { return }
+                await self.handleUnexpectedDisconnect()
             }
 
             try await refreshAgents()
@@ -110,6 +113,52 @@ final class AppViewModel {
         liveStatus.removeAll()
         providers = []
         connectionState = .disconnected
+    }
+
+    private func handleUnexpectedDisconnect() async {
+        guard let raw = savedOfferRaw, !raw.isEmpty else {
+            connectionState = .disconnected
+            return
+        }
+        client = nil
+        connectionState = .connecting
+        try? await Task.sleep(nanoseconds: 2_000_000_000)
+        guard !Task.isCancelled else { return }
+        await connect(withOfferRaw: raw)
+    }
+
+    // MARK: - Agent creation
+
+    func createAgent(cwd: String) async {
+        guard let client else { return }
+        let provider = currentAgent()?.provider ?? "anthropic"
+        let before = Set(agents.map(\.id))
+        do {
+            try await client.createAgent(cwd: cwd, provider: provider)
+        } catch { return }
+        for _ in 0..<10 {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            try? await refreshAgents()
+            if let newId = agents.first(where: { !before.contains($0.id) })?.id {
+                selectedAgentId = newId
+                return
+            }
+        }
+    }
+
+    func archiveAgent(agentId: String) async {
+        guard let client else { return }
+        agents.removeAll { $0.id == agentId }
+        liveStatus.removeValue(forKey: agentId)
+        conversations.removeValue(forKey: agentId)
+        if selectedAgentId == agentId {
+            selectedAgentId = agents.first?.id
+        }
+        do {
+            try await client.archiveAgent(agentId: agentId)
+        } catch {
+            try? await refreshAgents()
+        }
     }
 
     // MARK: - Data access

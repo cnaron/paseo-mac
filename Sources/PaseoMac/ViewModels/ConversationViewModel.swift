@@ -31,6 +31,9 @@ final class ConversationViewModel {
         /// Populated on live streaming so a subsequent model switch shows up
         /// as a differently-tagged chip on the next assistant turn.
         let modelUsed: String?
+        /// Wall-clock seconds the turn took. Only set on the last assistant
+        /// row of a turn, after turn_completed/failed/canceled arrives.
+        var durationSec: TimeInterval?
 
         init(
             id: String,
@@ -39,7 +42,8 @@ final class ConversationViewModel {
             timestamp: String?,
             tool: ToolInfo? = nil,
             images: [PendingImageAttachment] = [],
-            modelUsed: String? = nil
+            modelUsed: String? = nil,
+            durationSec: TimeInterval? = nil
         ) {
             self.id = id
             self.kind = kind
@@ -48,6 +52,7 @@ final class ConversationViewModel {
             self.tool = tool
             self.images = images
             self.modelUsed = modelUsed
+            self.durationSec = durationSec
         }
     }
 
@@ -218,6 +223,10 @@ final class ConversationViewModel {
     var pendingImages: [PendingImageAttachment] = []
     var pendingTextFiles: [PendingTextFile] = []
 
+    var hasOlderMessages: Bool = false
+    private var oldestCursor: AgentTimelineCursor? = nil
+    private var currentPermissionRequestId: String? = nil
+
     /// Messages the user submitted while the agent was busy. We display them
     /// above the composer and flush them one at a time as turns complete.
     var queued: [QueuedMessage] = []
@@ -244,7 +253,14 @@ final class ConversationViewModel {
     /// Model the agent was running with when the most recent `turn_started`
     /// event fired. Used to tag subsequent assistant_message rows so a
     /// mid-conversation model switch is visible per bubble.
-    private var currentTurnModel: String? = nil
+    private(set) var currentTurnModel: String? = nil
+    private(set) var turnStartedAt: Date? = nil
+    /// Elapsed seconds for the most recent completed turn.
+    var lastTurnDuration: TimeInterval? = nil
+    /// Model used in the most recent turn (for bottom-of-reply display).
+    var lastTurnModel: String? = nil
+    /// Model to show while a turn is in progress (before lastTurnModel is set).
+    var currentDisplayModel: String? { currentTurnModel }
 
     init(agentId: String, getClient: @escaping () -> DaemonClient?) {
         self.agentId = agentId
@@ -256,12 +272,40 @@ final class ConversationViewModel {
     func loadInitial() async {
         guard !isLoading else { return }
         isLoading = true
+        // Reset per-session display state so switching agents
+        // doesn't bleed the previous agent's timer/model.
+        lastTurnModel = nil
+        lastTurnDuration = nil
         defer { isLoading = false }
         do {
             guard let client = getClient() else { return }
-            let payload = try await client.fetchTimeline(agentId: agentId)
+            let payload = try await client.fetchTimeline(agentId: agentId, projection: "canonical")
             self.rows = payload.entries.map(rowFromEntry)
+            self.hasOlderMessages = payload.hasOlder
+            self.oldestCursor = payload.startCursor
             self.lastError = nil
+        } catch {
+            self.lastError = error.localizedDescription
+        }
+    }
+
+    func loadOlderMessages() async {
+        guard !isLoading, hasOlderMessages, let cursor = oldestCursor else { return }
+        isLoading = true
+        defer { isLoading = false }
+        do {
+            guard let client = getClient() else { return }
+            let payload = try await client.fetchTimeline(
+                agentId: agentId,
+                direction: "before",
+                cursor: cursor,
+                limit: 50,
+                projection: "canonical"
+            )
+            let older = payload.entries.map(rowFromEntry)
+            self.rows = older + self.rows
+            self.hasOlderMessages = payload.hasOlder
+            self.oldestCursor = payload.startCursor
         } catch {
             self.lastError = error.localizedDescription
         }
@@ -295,6 +339,14 @@ final class ConversationViewModel {
 
     func removeQueued(id: UUID) {
         queued.removeAll { $0.id == id }
+    }
+
+    /// Pull a queued message back into the composer for editing.
+    func editQueued(id: UUID) {
+        guard let idx = queued.firstIndex(where: { $0.id == id }) else { return }
+        let msg = queued.remove(at: idx)
+        composerText = msg.text
+        pendingImages = msg.images
     }
 
     /// Pull the composer's current content into a QueuedMessage and clear it.
@@ -388,19 +440,38 @@ final class ConversationViewModel {
         case .turnStarted:
             isAgentWorking = true
             currentTurnModel = currentModel
+            turnStartedAt = Date()
         case .turnCompleted, .turnFailed, .turnCanceled:
             isAgentWorking = false
+            let dur = turnStartedAt.map { Date().timeIntervalSince($0) }
+            if let dur { lastTurnDuration = dur }
+            lastTurnModel = currentTurnModel
+                ?? rows.last(where: { $0.modelUsed != nil })?.modelUsed
+            turnStartedAt = nil
+            // Stamp duration + resolved model onto the last assistant row so
+            // the info is pinned to that bubble even after the next turn starts.
+            if let dur, let idx = rows.lastIndex(where: { $0.kind == "assistant" }) {
+                rows[idx].durationSec = dur
+                if rows[idx].modelUsed == nil, let m = lastTurnModel {
+                    rows[idx] = Row(
+                        id: rows[idx].id, kind: rows[idx].kind, text: rows[idx].text,
+                        timestamp: rows[idx].timestamp, tool: rows[idx].tool,
+                        images: rows[idx].images, modelUsed: m, durationSec: dur
+                    )
+                }
+            }
             flushQueueIfNeeded()
         case .threadStarted:
             break
         case .timelineUpdated(let item):
             appendStreamedRow(item: item, seq: seq, timestamp: timestamp)
-        case .permissionRequested:
-            appendSystemRow(text: "[permission requested]", timestamp: timestamp)
+        case .permissionRequested(let requestId):
+            currentPermissionRequestId = requestId
+            appendPermissionRow(timestamp: timestamp)
         case .permissionResolved:
-            break
-        case .attentionRequired:
-            break
+            currentPermissionRequestId = nil
+        case .attentionRequired(let reason):
+            appendAttentionRow(reason: reason, timestamp: timestamp)
         case .other:
             break
         }
@@ -513,5 +584,37 @@ final class ConversationViewModel {
             timestamp: timestamp,
             tool: nil
         ))
+    }
+
+    private func appendPermissionRow(timestamp: String) {
+        streamRowCounter += 1
+        rows.append(Row(
+            id: "perm-\(streamRowCounter)",
+            kind: "permission",
+            text: "",
+            timestamp: timestamp,
+            tool: nil
+        ))
+    }
+
+    private func appendAttentionRow(reason: String, timestamp: String) {
+        streamRowCounter += 1
+        rows.append(Row(
+            id: "attn-\(streamRowCounter)",
+            kind: "attention",
+            text: reason,
+            timestamp: timestamp,
+            tool: nil
+        ))
+    }
+
+    func approvePermission() async {
+        guard let client = getClient() else { return }
+        _ = try? await client.sendMessage(agentId: agentId, text: "y")
+    }
+
+    func denyPermission() async {
+        guard let client = getClient() else { return }
+        _ = try? await client.sendMessage(agentId: agentId, text: "n")
     }
 }

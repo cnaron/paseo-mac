@@ -22,6 +22,11 @@ mkdir -p "$MACOS" "$RESOURCES"
 cp "$BIN_PATH" "$MACOS/PaseoMac"
 cp "$ROOT/Resources/Info.plist" "$CONTENTS/Info.plist"
 
+# Copy icon if present
+if [[ -f "$ROOT/Resources/AppIcon.icns" ]]; then
+    cp "$ROOT/Resources/AppIcon.icns" "$RESOURCES/AppIcon.icns"
+fi
+
 # Code sign ad-hoc so Gatekeeper / launchd will run it
 codesign --force --sign - "$APP" >/dev/null
 

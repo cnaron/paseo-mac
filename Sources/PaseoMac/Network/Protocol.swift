@@ -38,6 +38,8 @@ enum SessionRequest: Encodable {
     case setAgentThinking(SetAgentThinkingRequest)
     case getProvidersSnapshot(GetProvidersSnapshotRequest)
     case cancelAgent(CancelAgentRequest)
+    case createAgent(CreateAgentRequest)
+    case archiveAgent(ArchiveAgentRequest)
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.singleValueContainer()
@@ -50,12 +52,43 @@ enum SessionRequest: Encodable {
         case .setAgentThinking(let r): try c.encode(r)
         case .getProvidersSnapshot(let r): try c.encode(r)
         case .cancelAgent(let r): try c.encode(r)
+        case .createAgent(let r): try c.encode(r)
+        case .archiveAgent(let r): try c.encode(r)
+        }
+    }
+}
+
+struct CreateAgentRequest: Encodable {
+    let type = "create_agent_request"
+    let requestId: String
+    let config: Config
+    struct Config: Encodable {
+        let provider: String
+        let cwd: String
+        let model: String?
+        let modeId: String?
+
+        private enum CodingKeys: String, CodingKey {
+            case provider, cwd, model, modeId
+        }
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(provider, forKey: .provider)
+            try c.encode(cwd, forKey: .cwd)
+            try c.encodeIfPresent(model, forKey: .model)
+            try c.encodeIfPresent(modeId, forKey: .modeId)
         }
     }
 }
 
 struct CancelAgentRequest: Encodable {
     let type = "cancel_agent_request"
+    let requestId: String
+    let agentId: String
+}
+
+struct ArchiveAgentRequest: Encodable {
+    let type = "archive_agent_request"
     let requestId: String
     let agentId: String
 }
@@ -275,6 +308,8 @@ struct StatusPayload: Decodable, Sendable {
         let serverId: String?
         let hostname: String?
         let version: String?
+        let agentId: String?    // present when status == "agent_created"
+        let requestId: String?  // present when status == "agent_created"
     }
 }
 

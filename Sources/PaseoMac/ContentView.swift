@@ -7,15 +7,12 @@ struct ContentView: View {
     var body: some View {
         @Bindable var app = app
         NavigationSplitView {
-            AgentListView()
+            AgentListView(showConnect: $showConnect)
+                .navigationSplitViewColumnWidth(min: 220, ideal: 240)
         } detail: {
             detailView
         }
-        .toolbar {
-            ToolbarItem(placement: .navigation) {
-                connectionBadge
-            }
-        }
+
         .sheet(isPresented: $showConnect) {
             ConnectSheet()
         }
@@ -56,6 +53,7 @@ struct ContentView: View {
         case .connected:
             if let id = app.selectedAgentId {
                 ConversationView(agentId: id)
+                    .id(id)
             } else {
                 ContentUnavailableView(
                     "Select an agent",
@@ -66,40 +64,5 @@ struct ContentView: View {
         }
     }
 
-    @ViewBuilder
-    private var connectionBadge: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(badgeColor)
-                .frame(width: 8, height: 8)
-            Text(badgeLabel)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Button {
-                showConnect = true
-            } label: {
-                Image(systemName: "gearshape")
-            }
-            .buttonStyle(.plain)
-            .help("Connection settings")
-        }
-    }
 
-    private var badgeColor: Color {
-        switch app.connectionState {
-        case .connected: .green
-        case .connecting: .yellow
-        case .failed: .red
-        case .disconnected: .gray
-        }
-    }
-
-    private var badgeLabel: String {
-        switch app.connectionState {
-        case .connected: "Connected"
-        case .connecting: "Connecting"
-        case .failed(let m): "Failed: \(m)"
-        case .disconnected: "Offline"
-        }
-    }
 }

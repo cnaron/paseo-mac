@@ -281,6 +281,19 @@ actor DaemonClient {
         return resp.payload
     }
 
+    func createAgent(cwd: String, provider: String, model: String? = nil) async throws {
+        let requestId = UUID().uuidString
+        let config = CreateAgentRequest.Config(provider: provider, cwd: cwd, model: model, modeId: nil)
+        let req = CreateAgentRequest(requestId: requestId, config: config)
+        try await rawSend(.session(.createAgent(req)))
+    }
+
+    func archiveAgent(agentId: String) async throws {
+        let requestId = UUID().uuidString
+        let req = ArchiveAgentRequest(requestId: requestId, agentId: agentId)
+        try await rawSend(.session(.archiveAgent(req)))
+    }
+
     func getProvidersSnapshot(cwd: String? = nil) async throws -> [ProviderSnapshot] {
         let requestId = UUID().uuidString
         let req = GetProvidersSnapshotRequest(requestId: requestId, cwd: cwd)
@@ -391,6 +404,7 @@ actor DaemonClient {
             case .setAgentThinkingResponse(let r): return r.payload.requestId
             case .getProvidersSnapshotResponse(let r): return r.payload.requestId
             case .cancelAgentResponse(let r): return r.payload.requestId
+            case .status(let r): return r.payload.requestId  // agent_created response
             default: return nil
             }
         }()

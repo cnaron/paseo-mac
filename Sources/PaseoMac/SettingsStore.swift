@@ -44,7 +44,9 @@ final class SettingsStore {
         self.fontScale = d.object(forKey: kFontScale) as? Double ?? 1.0
         self.paragraphLineSpacing = d.object(forKey: kLineSpacing) as? Double ?? 3.0
         self.bubbleGap = d.object(forKey: kBubbleGap) as? Double ?? 14.0
-        self.composerHeight = d.object(forKey: kComposerHeight) as? Double ?? 72.0
+        let storedH = d.object(forKey: kComposerHeight) as? Double
+        // Reset any prior fixed-height default (72, 52) to 44 for auto-grow
+        self.composerHeight = (storedH == nil || storedH == 72.0 || storedH == 52.0) ? 44.0 : storedH!
     }
 
     // MARK: - Helpers
@@ -53,7 +55,7 @@ final class SettingsStore {
         fontScale = 1.0
         paragraphLineSpacing = 3.0
         bubbleGap = 14.0
-        composerHeight = 72.0
+        composerHeight = 44.0
     }
 
     /// Scales a base point size by `fontScale`. Rounded to 0.5 so fonts stay

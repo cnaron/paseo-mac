@@ -1,17 +1,5 @@
 import SwiftUI
 
-/// Very small block-level markdown renderer tailored to Paseo chat output.
-///
-/// Inline syntax (`**bold**`, `*italic*`, `` `code` ``, `[link](url)`) is handled
-/// by SwiftUI's built-in `AttributedString(markdown:)` — it covers the common
-/// cases we see. Block-level, we detect:
-///   - fenced code blocks (```lang ... ```)
-///   - ATX headings (`#`, `##`, ..., up to `######`)
-///   - GitHub-flavored pipe tables (`| a | b |` with a `|---|---|` separator)
-///   - everything else is a paragraph
-///
-/// Deliberate non-goals for MVP: block quotes, nested lists, math. These
-/// degrade to plain paragraphs — good enough, never crashes.
 enum Markdown {
 
     enum Block: Hashable {
@@ -19,11 +7,12 @@ enum Markdown {
         case code(language: String?, content: String)
         case table(headers: [String], rows: [[String]])
         case paragraph(String)
+        case bulletList([String])
+        case orderedList([String])
+        case blockquote(String)
+        case horizontalRule
     }
 
-    /// Splits `text` into an ordered list of blocks. Consecutive non-code,
-    /// non-heading lines are joined into a single paragraph block so the inline
-    /// renderer can apply markdown across line breaks.
     static func parse(_ text: String) -> [Block] {
         var out: [Block] = []
         var paragraphBuffer: [String] = []
@@ -41,24 +30,20 @@ enum Markdown {
         var i = 0
         while i < lines.count {
             let line = lines[i]
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
 
             // Fenced code block opener.
-            if line.trimmingCharacters(in: .whitespaces).hasPrefix("```") {
+            if trimmed.hasPrefix("```") {
                 flushParagraph()
-                let opener = line.trimmingCharacters(in: .whitespaces)
                 let lang: String? = {
-                    let trimmed = String(opener.dropFirst(3))
-                        .trimmingCharacters(in: .whitespaces)
-                    return trimmed.isEmpty ? nil : trimmed
+                    let t = String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+                    return t.isEmpty ? nil : t
                 }()
                 var codeLines: [String] = []
                 i += 1
                 while i < lines.count {
                     let l = lines[i]
-                    if l.trimmingCharacters(in: .whitespaces).hasPrefix("```") {
-                        i += 1
-                        break
-                    }
+                    if l.trimmingCharacters(in: .whitespaces).hasPrefix("```") { i += 1; break }
                     codeLines.append(l)
                     i += 1
                 }
@@ -74,14 +59,22 @@ enum Markdown {
                 continue
             }
 
-            // GFM pipe table: a pipe-line directly followed by a separator line.
-            if line.trimmingCharacters(in: .whitespaces).hasPrefix("|"),
+            // Horizontal rule: --- *** ___ (3+ same chars, optional spaces between).
+            if isHorizontalRule(trimmed) {
+                flushParagraph()
+                out.append(.horizontalRule)
+                i += 1
+                continue
+            }
+
+            // GFM pipe table.
+            if trimmed.hasPrefix("|"),
                i + 1 < lines.count,
                isTableSeparator(lines[i + 1]) {
                 flushParagraph()
                 let headers = parseTableRow(line)
                 var rows: [[String]] = []
-                i += 2    // skip header + separator
+                i += 2
                 while i < lines.count,
                       lines[i].trimmingCharacters(in: .whitespaces).hasPrefix("|") {
                     rows.append(parseTableRow(lines[i]))
@@ -91,8 +84,56 @@ enum Markdown {
                 continue
             }
 
+            // Blockquote.
+            if trimmed.hasPrefix("> ") || trimmed == ">" {
+                flushParagraph()
+                var quoteLines: [String] = []
+                while i < lines.count {
+                    let l = lines[i].trimmingCharacters(in: .whitespaces)
+                    if l.hasPrefix("> ") { quoteLines.append(String(l.dropFirst(2))); i += 1 }
+                    else if l == ">" { quoteLines.append(""); i += 1 }
+                    else { break }
+                }
+                out.append(.blockquote(quoteLines.joined(separator: "\n")))
+                continue
+            }
+
+            // Bullet list: - / * / +
+            if let item = parseBulletItem(trimmed) {
+                flushParagraph()
+                var items: [String] = [item]
+                i += 1
+                while i < lines.count {
+                    let l = lines[i].trimmingCharacters(in: .whitespaces)
+                    if let next = parseBulletItem(l) { items.append(next); i += 1 }
+                    else if l.isEmpty, i + 1 < lines.count,
+                            parseBulletItem(lines[i + 1].trimmingCharacters(in: .whitespaces)) != nil {
+                        i += 1  // skip blank line inside loose list
+                    } else { break }
+                }
+                out.append(.bulletList(items))
+                continue
+            }
+
+            // Ordered list: 1. / 1)
+            if let item = parseOrderedItem(trimmed) {
+                flushParagraph()
+                var items: [String] = [item]
+                i += 1
+                while i < lines.count {
+                    let l = lines[i].trimmingCharacters(in: .whitespaces)
+                    if let next = parseOrderedItem(l) { items.append(next); i += 1 }
+                    else if l.isEmpty, i + 1 < lines.count,
+                            parseOrderedItem(lines[i + 1].trimmingCharacters(in: .whitespaces)) != nil {
+                        i += 1
+                    } else { break }
+                }
+                out.append(.orderedList(items))
+                continue
+            }
+
             // Blank line separates paragraphs.
-            if line.trimmingCharacters(in: .whitespaces).isEmpty {
+            if trimmed.isEmpty {
                 flushParagraph()
                 i += 1
                 continue
@@ -105,10 +146,36 @@ enum Markdown {
         return out
     }
 
+    // MARK: - Line classifiers
+
+    private static func isHorizontalRule(_ line: String) -> Bool {
+        let stripped = line.filter { !$0.isWhitespace }
+        guard stripped.count >= 3 else { return false }
+        let unique = Set(stripped)
+        return unique.count == 1 && (unique.contains("-") || unique.contains("*") || unique.contains("_"))
+    }
+
+    private static func parseBulletItem(_ trimmed: String) -> String? {
+        for prefix in ["- ", "* ", "+ "] {
+            if trimmed.hasPrefix(prefix) { return String(trimmed.dropFirst(2)) }
+        }
+        return nil
+    }
+
+    private static func parseOrderedItem(_ trimmed: String) -> String? {
+        var idx = trimmed.startIndex
+        while idx < trimmed.endIndex && trimmed[idx].isNumber { idx = trimmed.index(after: idx) }
+        guard idx > trimmed.startIndex, idx < trimmed.endIndex else { return nil }
+        let sep = trimmed[idx]
+        guard sep == "." || sep == ")" else { return nil }
+        let after = trimmed.index(after: idx)
+        guard after < trimmed.endIndex, trimmed[after] == " " else { return nil }
+        return String(trimmed[trimmed.index(after: after)...])
+    }
+
     private static func isTableSeparator(_ line: String) -> Bool {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
         guard trimmed.hasPrefix("|") else { return false }
-        // Every cell after splitting must only contain `-`, `:`, or whitespace.
         let cells = trimmed
             .trimmingCharacters(in: CharacterSet(charactersIn: "|"))
             .split(separator: "|", omittingEmptySubsequences: false)
@@ -125,7 +192,6 @@ enum Markdown {
 
     private static func parseTableRow(_ line: String) -> [String] {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
-        // Strip a single leading/trailing pipe if present, then split on |.
         var inner = trimmed
         if inner.hasPrefix("|") { inner.removeFirst() }
         if inner.hasSuffix("|") { inner.removeLast() }
@@ -147,21 +213,25 @@ enum Markdown {
         return (count, String(text))
     }
 
-    /// Renders one paragraph (or heading body) as SwiftUI-friendly AttributedString.
-    /// Falls back to plain text if `AttributedString(markdown:)` fails.
+    /// Renders inline markdown. Converts GFM ~~strikethrough~~ to Apple ~strikethrough~
+    /// before passing to SwiftUI's AttributedString parser.
     static func renderInline(_ s: String) -> AttributedString {
+        let processed = s.replacingOccurrences(
+            of: #"~~([^~\n]+)~~"#, with: "~$1~", options: .regularExpression
+        )
         let options = AttributedString.MarkdownParsingOptions(
             allowsExtendedAttributes: false,
             interpretedSyntax: .inlineOnlyPreservingWhitespace
         )
-        if let parsed = try? AttributedString(markdown: s, options: options) {
+        if let parsed = try? AttributedString(markdown: processed, options: options) {
             return parsed
         }
         return AttributedString(s)
     }
 }
 
-/// Renders parsed markdown blocks as a vertical stack suitable for a chat bubble.
+// MARK: - Block renderer
+
 struct MarkdownBodyView: View {
     let text: String
     @Environment(SettingsStore.self) private var settings
@@ -173,20 +243,73 @@ struct MarkdownBodyView: View {
                 switch block {
                 case .heading(let level, let text):
                     Text(Markdown.renderInline(text))
-                        .font(.system(size: settings.scaled(headingPoints(level: level)),
-                                      weight: .semibold))
+                        .font(.system(size: settings.scaled(headingPoints(level: level)), weight: .semibold))
                         .textSelection(.enabled)
                         .padding(.top, 4)
+
                 case .code(let lang, let content):
                     CodeBlockView(language: lang, content: content)
+
                 case .table(let headers, let rows):
                     TableBlockView(headers: headers, rows: rows)
+
                 case .paragraph(let text):
                     Text(Markdown.renderInline(text))
-                        .font(.system(size: settings.scaled(13)))   // body baseline ~13pt on macOS
+                        .font(.system(size: settings.scaled(13)))
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
                         .lineSpacing(CGFloat(settings.paragraphLineSpacing))
+
+                case .bulletList(let items):
+                    VStack(alignment: .leading, spacing: 3) {
+                        ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                            HStack(alignment: .top, spacing: 6) {
+                                Text("•")
+                                    .font(.system(size: settings.scaled(13)))
+                                    .foregroundStyle(.secondary)
+                                Text(Markdown.renderInline(item))
+                                    .font(.system(size: settings.scaled(13)))
+                                    .textSelection(.enabled)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .lineSpacing(CGFloat(settings.paragraphLineSpacing))
+                            }
+                        }
+                    }
+
+                case .orderedList(let items):
+                    VStack(alignment: .leading, spacing: 3) {
+                        ForEach(Array(items.enumerated()), id: \.offset) { idx, item in
+                            HStack(alignment: .top, spacing: 6) {
+                                Text("\(idx + 1).")
+                                    .font(.system(size: settings.scaled(13)))
+                                    .foregroundStyle(.secondary)
+                                    .frame(minWidth: 20, alignment: .trailing)
+                                Text(Markdown.renderInline(item))
+                                    .font(.system(size: settings.scaled(13)))
+                                    .textSelection(.enabled)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .lineSpacing(CGFloat(settings.paragraphLineSpacing))
+                            }
+                        }
+                    }
+
+                case .blockquote(let text):
+                    HStack(alignment: .top, spacing: 10) {
+                        Rectangle()
+                            .fill(Color.secondary.opacity(0.35))
+                            .frame(width: 3)
+                            .clipShape(Capsule())
+                        Text(Markdown.renderInline(text))
+                            .font(.system(size: settings.scaled(13)))
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .lineSpacing(CGFloat(settings.paragraphLineSpacing))
+                    }
+                    .padding(.leading, 2)
+
+                case .horizontalRule:
+                    Divider().padding(.vertical, 2)
                 }
             }
         }
@@ -202,6 +325,8 @@ struct MarkdownBodyView: View {
     }
 }
 
+// MARK: - Table
+
 private struct TableBlockView: View {
     let headers: [String]
     let rows: [[String]]
@@ -215,10 +340,7 @@ private struct TableBlockView: View {
                 bodyRow(row: row, cols: cols, isAlt: idx.isMultiple(of: 2) == false)
             }
         }
-        .overlay(
-            RoundedRectangle(cornerRadius: 6)
-                .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
-        )
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3), lineWidth: 1))
         .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 
@@ -226,9 +348,7 @@ private struct TableBlockView: View {
         HStack(spacing: 0) {
             ForEach(0..<cols, id: \.self) { c in
                 cell(text: headers[safe: c] ?? "", isHeader: true)
-                if c < cols - 1 {
-                    Rectangle().fill(Color.secondary.opacity(0.3)).frame(width: 1)
-                }
+                if c < cols - 1 { Rectangle().fill(Color.secondary.opacity(0.3)).frame(width: 1) }
             }
         }
         .background(Color.secondary.opacity(0.08))
@@ -238,9 +358,7 @@ private struct TableBlockView: View {
         HStack(spacing: 0) {
             ForEach(0..<cols, id: \.self) { c in
                 cell(text: row[safe: c] ?? "", isHeader: false)
-                if c < cols - 1 {
-                    Rectangle().fill(Color.secondary.opacity(0.3)).frame(width: 1)
-                }
+                if c < cols - 1 { Rectangle().fill(Color.secondary.opacity(0.3)).frame(width: 1) }
             }
         }
         .background(isAlt ? Color.secondary.opacity(0.03) : Color.clear)
@@ -263,16 +381,34 @@ private extension Array {
     }
 }
 
+// MARK: - Code block
+
 private struct CodeBlockView: View {
     let language: String?
     let content: String
+    @State private var copied = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            if let lang = language, !lang.isEmpty {
-                Text(lang)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+            HStack {
+                if let lang = language, !lang.isEmpty {
+                    Text(lang)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(content, forType: .string)
+                    copied = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+                } label: {
+                    Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Copy code")
             }
             Text(content)
                 .font(.system(.callout, design: .monospaced))

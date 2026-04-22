@@ -1,14 +1,15 @@
 import SwiftUI
 
-/// Content of the native `Settings` scene (⌘,) — a single General tab with
-/// the three appearance knobs. Live-updates the conversation view because
-/// both read from the injected `SettingsStore`.
 struct PreferencesView: View {
     @Environment(SettingsStore.self) private var settings
+
+    @AppStorage("paseomac.usageApiUrl")   private var usageApiUrl:   String = ""
+    @AppStorage("paseomac.usageApiToken") private var usageApiToken: String = ""
 
     var body: some View {
         @Bindable var settings = settings
         TabView {
+            // MARK: General tab
             Form {
                 Section("Typography") {
                     Slider(
@@ -90,6 +91,22 @@ struct PreferencesView: View {
             .formStyle(.grouped)
             .padding(8)
             .tabItem { Label("General", systemImage: "slider.horizontal.3") }
+
+            // MARK: Integration tab
+            Form {
+                Section("Claude Usage") {
+                    TextField("Endpoint URL", text: $usageApiUrl)
+                        .font(.system(.body, design: .monospaced))
+                    SecureField("Token", text: $usageApiToken)
+                        .font(.system(.body, design: .monospaced))
+                    Text("Point to a VPS endpoint that proxies the Anthropic usage API and returns JSON with five_hour/seven_day utilization. The sidebar quota panel appears only when configured.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .formStyle(.grouped)
+            .padding(8)
+            .tabItem { Label("Integration", systemImage: "network") }
         }
         .frame(minWidth: 460, minHeight: 340)
     }

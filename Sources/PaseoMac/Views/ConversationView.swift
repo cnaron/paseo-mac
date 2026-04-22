@@ -3,14 +3,20 @@ import SwiftUI
 struct ConversationView: View {
     @Environment(AppViewModel.self) private var app
     let agentId: String
+    @State private var searchText: String = ""
 
     var body: some View {
         let vm = app.conversation(for: agentId)
-        VStack(spacing: 0) {
-            MessageList(vm: vm)
-            Divider()
-            ComposerView(vm: vm)
+        GeometryReader { geo in
+            MessageList(vm: vm, availableHeight: geo.size.height, searchText: searchText)
+                .overlay(alignment: .bottom) {
+                    if searchText.isEmpty {
+                        ComposerView(vm: vm)
+                            .padding(.bottom, 20)
+                    }
+                }
         }
+        .searchable(text: $searchText, placement: .toolbar, prompt: "Search messages")
         .navigationTitle(agent()?.displayName ?? "")
         .toolbar {
             ToolbarItem(placement: .automatic) {
@@ -25,6 +31,17 @@ struct ConversationView: View {
                         Text("Working…").font(.callout).foregroundStyle(.secondary)
                     }
                 }
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    if let cwd = agent()?.cwd {
+                        Task { await app.createAgent(cwd: cwd) }
+                    }
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .help("New agent in same directory")
+                .disabled(agent() == nil)
             }
         }
     }
@@ -49,6 +66,7 @@ private struct BubbleGroup: Identifiable {
     let toolCluster: [ConversationViewModel.ToolInfo]
     let images: [PendingImageAttachment]
     let modelUsed: String?
+    let durationSec: TimeInterval?
 }
 
 private func groupRows(_ rows: [ConversationViewModel.Row]) -> [BubbleGroup] {
@@ -71,7 +89,8 @@ private func groupRows(_ rows: [ConversationViewModel.Row]) -> [BubbleGroup] {
                 tool: nil,
                 toolCluster: cluster,
                 images: [],
-                modelUsed: nil
+                modelUsed: nil,
+                durationSec: nil
             ))
             continue
         }
@@ -84,7 +103,8 @@ private func groupRows(_ rows: [ConversationViewModel.Row]) -> [BubbleGroup] {
                 tool: nil,
                 toolCluster: [info],
                 images: [],
-                modelUsed: nil
+                modelUsed: nil,
+                durationSec: nil
             ))
             continue
         }
@@ -103,7 +123,8 @@ private func groupRows(_ rows: [ConversationViewModel.Row]) -> [BubbleGroup] {
                 tool: nil,
                 toolCluster: [],
                 images: last.images + row.images,
-                modelUsed: last.modelUsed ?? row.modelUsed
+                modelUsed: last.modelUsed ?? row.modelUsed,
+                durationSec: row.durationSec ?? last.durationSec
             ))
         } else {
             out.append(BubbleGroup(
@@ -114,11 +135,32 @@ private func groupRows(_ rows: [ConversationViewModel.Row]) -> [BubbleGroup] {
                 tool: row.tool,
                 toolCluster: [],
                 images: row.images,
-                modelUsed: row.modelUsed
+                modelUsed: row.modelUsed,
+                durationSec: row.durationSec
             ))
         }
     }
     return out
+}
+
+// MARK: - Timeline grouping helper
+
+private struct GroupedMessage: Identifiable {
+    let id: String
+    let group: BubbleGroup
+    let showConnector: Bool
+}
+
+private func groupMessages(_ rows: [ConversationViewModel.Row]) -> [GroupedMessage] {
+    let groups = groupRows(rows)
+    return groups.enumerated().map { index, group in
+        let showConnector: Bool = {
+            guard group.kind != "user" else { return false }
+            guard index + 1 < groups.count else { return false }
+            return groups[index + 1].kind != "user"
+        }()
+        return GroupedMessage(id: group.id, group: group, showConnector: showConnector)
+    }
 }
 
 // MARK: - Message list
@@ -126,73 +168,211 @@ private func groupRows(_ rows: [ConversationViewModel.Row]) -> [BubbleGroup] {
 private struct MessageList: View {
     @Bindable var vm: ConversationViewModel
     @Environment(SettingsStore.self) private var settings
+    @State private var isNearBottom: Bool = true
+    @State private var hasNewContent: Bool = false
+    var availableHeight: CGFloat = 500
+    var searchText: String = ""
+
+    private var displayedRows: [ConversationViewModel.Row] {
+        guard !searchText.isEmpty else { return vm.rows }
+        let q = searchText.lowercased()
+        return vm.rows.filter { $0.text.lowercased().contains(q) }
+    }
 
     var body: some View {
         ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: CGFloat(settings.bubbleGap)) {
-                    if let err = vm.lastError {
-                        Text(err)
-                            .font(.callout)
-                            .foregroundStyle(.red)
-                            .padding(.horizontal, 16)
+            ZStack(alignment: .bottom) {
+                ScrollView {
+                    ZStack(alignment: .bottom) {
+                        Color.clear
+                            .frame(maxWidth: .infinity, minHeight: availableHeight)
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            Color.clear.frame(height: 0).onAppear {
+                                if !vm.rows.isEmpty {
+                                    proxy.scrollTo("bottom", anchor: .bottom)
+                                }
+                            }
+                            if vm.hasOlderMessages {
+                                Button {
+                                    Task { await vm.loadOlderMessages() }
+                                } label: {
+                                    HStack(spacing: 6) {
+                                        if vm.isLoading {
+                                            ProgressView().controlSize(.mini)
+                                        } else {
+                                            Image(systemName: "arrow.up.circle")
+                                                .font(.caption.weight(.semibold))
+                                        }
+                                        Text("Load earlier messages")
+                                            .font(.callout)
+                                    }
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 7)
+                                    .background(Color.secondary.opacity(0.1), in: Capsule())
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 8)
+                            }
+                            if let err = vm.lastError {
+                                Text(err)
+                                    .font(.callout)
+                                    .foregroundStyle(.red)
+                                    .padding(.horizontal, 16)
+                            }
+                            ForEach(groupMessages(displayedRows)) { gm in
+                                MessageBubble(
+                                    group: gm.group,
+                                    showConnector: gm.showConnector,
+                                    onApprovePermission: { Task { await vm.approvePermission() } },
+                                    onDenyPermission: { Task { await vm.denyPermission() } }
+                                )
+                                .id(gm.id)
+                            }
+                            if vm.isLoading {
+                                ProgressView().frame(maxWidth: .infinity).padding()
+                            }
+                            if searchText.isEmpty && vm.isAgentWorking && !vm.isLoading && !hasCurrentTurnContent(vm.rows) {
+                                TypingIndicator()
+                                    .id("typing")
+                            }
+                            if !searchText.isEmpty {
+                                Text(displayedRows.isEmpty
+                                     ? "No results for \"\(searchText)\""
+                                     : "\(displayedRows.count) result\(displayedRows.count == 1 ? "" : "s")")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 8)
+                            }
+                            // Status bar: only shown when there is real turn data
+                            // from this session. Nothing on cold start.
+                            if searchText.isEmpty {
+                                if vm.isAgentWorking,
+                                   let model = vm.currentDisplayModel ?? vm.lastTurnModel {
+                                    TurnStatusBar(
+                                        model: model,
+                                        startedAt: vm.turnStartedAt,
+                                        isWorking: true
+                                    )
+                                } else if !vm.isAgentWorking, let model = vm.lastTurnModel {
+                                    TurnStatusBar(
+                                        model: model,
+                                        startedAt: nil,
+                                        isWorking: false,
+                                        duration: vm.lastTurnDuration
+                                    )
+                                }
+                            }
+                            Color.clear.frame(height: searchText.isEmpty ? 210 : 24) // breathing room
+                            Color.clear.frame(height: 1).id("bottom")
+                                .onAppear { isNearBottom = true; hasNewContent = false }
+                                .onDisappear { isNearBottom = false }
+                        }
+                        .padding(.vertical, 16)
                     }
-                    ForEach(groupRows(vm.rows)) { group in
-                        MessageBubble(group: group)
-                            .id(group.id)
-                    }
-                    if vm.isLoading {
-                        ProgressView().frame(maxWidth: .infinity).padding()
-                    }
-                    Color.clear.frame(height: 1).id("bottom")
                 }
-                .padding(.vertical, 16)
-            }
-            .onChange(of: vm.rows.count) { _, _ in
-                withAnimation(.easeOut(duration: 0.15)) {
-                    proxy.scrollTo("bottom", anchor: .bottom)
+                .onChange(of: vm.rows.count) { _, _ in
+                    if isNearBottom {
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            proxy.scrollTo("bottom", anchor: .bottom)
+                        }
+                    } else {
+                        hasNewContent = true
+                    }
                 }
-            }
-            // Also rescroll when the text inside the current bubble grows (streaming into
-            // the same merged group). `rows.count` doesn't change in that case.
-            .onChange(of: vm.rows.last?.text ?? "") { _, _ in
-                withAnimation(.easeOut(duration: 0.15)) {
-                    proxy.scrollTo("bottom", anchor: .bottom)
+                .onChange(of: vm.rows.last?.text ?? "") { _, _ in
+                    if isNearBottom {
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            proxy.scrollTo("bottom", anchor: .bottom)
+                        }
+                    } else {
+                        hasNewContent = true
+                    }
+                }
+                // When a turn starts, always jump to bottom so the typing
+                // indicator and streaming content stay visible.
+                .onChange(of: vm.isAgentWorking) { _, working in
+                    if working {
+                        isNearBottom = true
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            proxy.scrollTo("bottom", anchor: .bottom)
+                        }
+                    }
+                }
+
+                if !isNearBottom {
+                    jumpToBottomButton(proxy: proxy)
                 }
             }
         }
+    }
+
+    private func jumpToBottomButton(proxy: ScrollViewProxy) -> some View {
+        Button {
+            withAnimation(.easeOut(duration: 0.2)) {
+                proxy.scrollTo("bottom", anchor: .bottom)
+            }
+            hasNewContent = false
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "arrow.down")
+                    .font(.caption.weight(.semibold))
+                if hasNewContent {
+                    Circle()
+                        .fill(Color.accentColor)
+                        .frame(width: 6, height: 6)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(.ultraThinMaterial, in: Capsule())
+            .shadow(color: .black.opacity(0.15), radius: 4, y: 2)
+        }
+        .buttonStyle(.plain)
+        .padding(.bottom, 160)
+        .transition(.opacity.combined(with: .move(edge: .bottom)))
+        .animation(.easeInOut(duration: 0.2), value: hasNewContent)
     }
 }
 
 private struct MessageBubble: View {
     let group: BubbleGroup
+    let showConnector: Bool
+    var onApprovePermission: (() -> Void)? = nil
+    var onDenyPermission: (() -> Void)? = nil
+    @State private var reasoningExpanded: Bool = false
+    @State private var isHoveredForCopy: Bool = false
 
     var body: some View {
         switch group.kind {
         case "user":
             userBubble
         case "tool_cluster":
-            toolCluster
+            toolTimelineItem
         case "assistant":
-            assistantBubble
+            assistantTimelineItem
         case "reasoning":
-            reasoningView
+            reasoningTimelineItem
+        case "permission":
+            permissionTimelineItem
+        case "attention":
+            attentionTimelineItem
         default:
-            sideBubble
+            sideTimelineItem
         }
     }
 
-    // MARK: User (right-aligned bubble)
+    // MARK: User (right-aligned bubble, unchanged)
     //
     // Layout note: the `maxWidth` cap must come AFTER padding+background so
-    // the bubble hugs its content for short messages. Putting it first creates
-    // an invisible 560pt zone that the background expands to fill — the
-    // "bubble always stretches edge-to-edge" bug.
+    // the bubble hugs its content for short messages.
 
     private var userBubble: some View {
         HStack(alignment: .top) {
             Spacer(minLength: 48)
-            VStack(alignment: .trailing, spacing: 6) {
+            VStack(alignment: .trailing, spacing: 4) {
                 if !group.images.isEmpty {
                     UserBubbleImages(images: group.images)
                 }
@@ -202,128 +382,209 @@ private struct MessageBubble: View {
                         .padding(.vertical, 10)
                         .background(Color.accentColor.opacity(0.18), in: RoundedRectangle(cornerRadius: 12))
                 }
+                if let ts = group.timestamp, let label = formatTimestamp(ts) {
+                    Text(label)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary.opacity(0.7))
+                }
             }
             .frame(maxWidth: 560, alignment: .trailing)
         }
         .padding(.horizontal, 16)
+        .padding(.vertical, 10)
     }
 
-    // MARK: Assistant (spoken narrative + conclusion — left bubble)
+    // MARK: Assistant narrative — clock icon, inline text, copy button on hover
 
-    private var assistantBubble: some View {
-        HStack(alignment: .top) {
+    private var assistantTimelineItem: some View {
+        FlowStep(iconName: "clock", showLine: showConnector) {
             VStack(alignment: .leading, spacing: 4) {
-                if let m = group.modelUsed, !m.isEmpty {
-                    ModelPill(model: m)
-                }
                 MarkdownBodyView(text: group.text)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(Color.secondary.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
-            }
-            .frame(maxWidth: 680, alignment: .leading)
-            Spacer(minLength: 48)
-        }
-        .padding(.horizontal, 16)
-    }
-
-    // MARK: Reasoning (private thinking — left bar, italic, no bubble)
-
-    private var reasoningView: some View {
-        HStack(alignment: .top, spacing: 10) {
-            RoundedRectangle(cornerRadius: 2)
-                .fill(Color.secondary.opacity(0.35))
-                .frame(width: 3)
-            MarkdownBodyView(text: group.text)
-                .italic()
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: 680, alignment: .leading)
-            Spacer(minLength: 48)
-        }
-        .padding(.horizontal, 16)
-    }
-
-    // MARK: Tool cluster (consecutive tool rows, tight spacing)
-
-    private var toolCluster: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            ForEach(Array(group.toolCluster.enumerated()), id: \.offset) { _, info in
-                ToolRow(info: info)
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 2)
-    }
-
-    // MARK: Todo / error / system / other (fallback bubble)
-
-    @ViewBuilder
-    private var sideBubble: some View {
-        HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 4) {
-                if showKindHeader {
-                    Text(headerLabel)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                if let model = group.modelUsed {
+                    TurnMetaChip(model: model, durationSec: group.durationSec)
                 }
-                bubbleBody
-                    .frame(maxWidth: 680, alignment: .leading)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(background, in: RoundedRectangle(cornerRadius: 12))
-                    .foregroundStyle(foreground)
             }
-            Spacer(minLength: 48)
+        }
+        .onHover { isHoveredForCopy = $0 }
+        .overlay(alignment: .topTrailing) {
+            if isHoveredForCopy {
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(group.text, forType: .string)
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                        .font(.caption2)
+                        .padding(5)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
+                }
+                .buttonStyle(.plain)
+                .padding(4)
+                .help("Copy message")
+            }
+        }
+    }
+
+    // MARK: Reasoning — clock icon, collapsible thinking block
+
+    private var reasoningTimelineItem: some View {
+        FlowStep(iconName: "clock", showLine: showConnector) {
+            VStack(alignment: .leading, spacing: 6) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        reasoningExpanded.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("Thinking · \(wordCount(group.text)) words")
+                            .font(.caption.weight(.medium))
+                        Spacer(minLength: 0)
+                        Image(systemName: reasoningExpanded ? "chevron.up" : "chevron.down")
+                            .font(.caption2)
+                    }
+                    .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+
+                if reasoningExpanded {
+                    MarkdownBodyView(text: group.text)
+                        .foregroundStyle(.secondary)
+                        .italic()
+                        .transition(.opacity)
+                }
+            }
+        }
+    }
+
+    // MARK: Tool cluster — terminal icon, minimal label rows
+
+    private var toolTimelineItem: some View {
+        FlowStep(iconName: "bolt", showLine: showConnector) {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(Array(group.toolCluster.enumerated()), id: \.offset) { _, info in
+                    ToolRowTimeline(info: info)
+                }
+            }
+        }
+    }
+
+    // MARK: Fallback (todo / error / system)
+
+    private var sideTimelineItem: some View {
+        FlowStep(iconName: sideIcon, showLine: showConnector) {
+            Text(group.text)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .foregroundStyle(group.kind == "error" ? Color.red : Color.secondary)
+        }
+    }
+
+    // MARK: Permission request — approve / deny buttons
+
+    private var permissionTimelineItem: some View {
+        FlowStep(iconName: "exclamationmark.shield.fill", showLine: showConnector) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Permission Required")
+                    .font(.callout.bold())
+                    .foregroundStyle(.orange)
+                HStack(spacing: 8) {
+                    Button("Allow") { onApprovePermission?() }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.green)
+                        .controlSize(.small)
+                    Button("Deny") { onDenyPermission?() }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                }
+            }
+        }
+    }
+
+    // MARK: Attention required — informational banner
+
+    private var attentionTimelineItem: some View {
+        FlowStep(iconName: "exclamationmark.circle.fill", showLine: showConnector) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Attention Required")
+                    .font(.callout.bold())
+                    .foregroundStyle(.orange)
+                if !group.text.isEmpty {
+                    Text(group.text)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+            }
+        }
+    }
+
+    private var sideIcon: String {
+        switch group.kind {
+        case "error": "exclamationmark.circle"
+        case "todo": "checklist"
+        default: "info.circle"
+        }
+    }
+
+    private func wordCount(_ text: String) -> Int {
+        text.split(whereSeparator: \.isWhitespace).count
+    }
+
+    private func formatTimestamp(_ iso: String) -> String? {
+        let frac = ISO8601DateFormatter()
+        frac.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let plain = ISO8601DateFormatter()
+        guard let date = frac.date(from: iso) ?? plain.date(from: iso) else { return nil }
+        let diff = Date().timeIntervalSince(date)
+        if diff < 60 { return "just now" }
+        if diff < 3600 { return "\(Int(diff / 60))m ago" }
+        if Calendar.current.isDateInToday(date) {
+            return DateFormatter.localizedString(from: date, dateStyle: .none, timeStyle: .short)
+        }
+        return DateFormatter.localizedString(from: date, dateStyle: .short, timeStyle: .short)
+    }
+}
+
+// MARK: - Timeline connector wrapper
+
+/// Wraps assistant-side content in the Claude.ai-style timeline layout:
+/// a small icon on the left, optional thin connector line running downward
+/// to the next item, and content to the right.
+private struct FlowStep<Content: View>: View {
+    let iconName: String
+    let showLine: Bool
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: iconName)
+                .font(.system(size: 11, weight: .medium))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.secondary)
+                .frame(width: 22, height: 16)  // 16pt matches natural glyph line-height, centered
+
+            content()
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .padding(.bottom, showLine ? 14 : 8)
         }
         .padding(.horizontal, 16)
-    }
-
-    @ViewBuilder
-    private var bubbleBody: some View {
-        Text(group.text)
-            .textSelection(.enabled)
-            .fixedSize(horizontal: false, vertical: true)
-    }
-
-    // MARK: Styling shared by the left-aligned bubble
-
-    private var showKindHeader: Bool {
-        switch group.kind {
-        case "todo", "error", "system": return true
-        default: return false
-        }
-    }
-
-    private var headerLabel: String {
-        switch group.kind {
-        case "todo": "todo"
-        case "error": "error"
-        case "system": "system"
-        default: group.kind
-        }
-    }
-
-    private var background: Color {
-        switch group.kind {
-        case "todo": Color.orange.opacity(0.12)
-        case "error": Color.red.opacity(0.15)
-        default: Color.secondary.opacity(0.1)
-        }
-    }
-
-    private var foreground: Color {
-        switch group.kind {
-        case "error": .red
-        default: .primary
+        .background {
+            if showLine {
+                GeometryReader { geo in
+                    Rectangle()
+                        .fill(Color.secondary.opacity(0.18))
+                        .frame(width: 1, height: max(0, geo.size.height - 16))
+                        .position(x: 27, y: (geo.size.height + 16) / 2)
+                }
+            }
         }
     }
 }
 
-// MARK: - Tool row
+// MARK: - Tool row (timeline style)
 
-/// One tool invocation — name, target (file path / command / query), status.
-/// Tap the row (or the chevron) to reveal the detail payload when there is one.
-private struct ToolRow: View {
+/// One tool invocation in the timeline. Collapsed: name + target + badge.
+/// Tap to expand the detail payload (script output, diff, etc.).
+private struct ToolRowTimeline: View {
     let info: ConversationViewModel.ToolInfo
     @State private var expanded: Bool = false
 
@@ -331,33 +592,29 @@ private struct ToolRow: View {
         VStack(alignment: .leading, spacing: 6) {
             summaryRow
             if expanded, info.hasDetail {
-                detailView
-                    .padding(.leading, 20)
+                detailView.padding(.top, 2)
             }
         }
     }
 
     private var summaryRow: some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Image(systemName: info.iconName)
-                .foregroundStyle(.secondary)
-                .font(.caption)
-                .frame(width: 14)
-
             Text(info.name)
-                .font(.callout.weight(.semibold))
-                .foregroundStyle(.primary)
+                .font(.callout)
+                .foregroundStyle(.secondary)
 
             if let target = info.target, !target.isEmpty {
-                Text(truncate(target, max: 96))
+                Text(truncate(target, max: 64))
                     .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.secondary.opacity(0.55))
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
 
+            detailBadge
+
             if let status = statusSuffix {
-                Text("· \(status)")
+                Text(status)
                     .font(.caption)
                     .foregroundStyle(statusColor)
             }
@@ -367,7 +624,7 @@ private struct ToolRow: View {
             if info.hasDetail {
                 Image(systemName: expanded ? "chevron.down" : "chevron.right")
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.tertiary)
             }
         }
         .contentShape(Rectangle())
@@ -375,6 +632,27 @@ private struct ToolRow: View {
             guard info.hasDetail else { return }
             withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
         }
+    }
+
+    @ViewBuilder
+    private var detailBadge: some View {
+        switch info.detailKind {
+        case .plain(_, let mono) where mono:
+            badgePill("Script")
+        case .beforeAfter, .unifiedDiff:
+            badgePill("Edit")
+        default:
+            EmptyView()
+        }
+    }
+
+    private func badgePill(_ label: String) -> some View {
+        Text(label)
+            .font(.caption2)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 4))
+            .foregroundStyle(.secondary)
     }
 
     @ViewBuilder
@@ -397,9 +675,6 @@ private struct ToolRow: View {
         }
     }
 
-    /// Only surface the status when it's interesting — i.e. not a plain
-    /// "completed" finish. "running", "failed", "canceled" all surface so the
-    /// user knows something's in flight or went wrong.
     private var statusSuffix: String? {
         switch info.status {
         case "completed", "": return nil
@@ -435,11 +710,6 @@ private struct UsageChip: View {
     var body: some View {
         if let u = agent.lastUsage, hasAnything(u) {
             HStack(spacing: 6) {
-                if let cost = u.totalCostUsd {
-                    Text(formatCost(cost))
-                        .font(.caption)
-                        .monospacedDigit()
-                }
                 if let used = u.contextWindowUsedTokens,
                    let max = u.contextWindowMaxTokens, max > 0 {
                     contextBar(used: used, max: max)
@@ -451,22 +721,21 @@ private struct UsageChip: View {
     }
 
     private func hasAnything(_ u: AgentUsage) -> Bool {
-        u.totalCostUsd != nil || u.contextWindowUsedTokens != nil
+        u.contextWindowUsedTokens != nil
     }
 
     private func contextBar(used: Int, max: Int) -> some View {
         let ratio = min(max > 0 ? Double(used) / Double(max) : 0, 1.0)
         return HStack(spacing: 4) {
-            RoundedRectangle(cornerRadius: 2)
-                .stroke(Color.secondary.opacity(0.4), lineWidth: 1)
-                .background(
-                    GeometryReader { geo in
-                        RoundedRectangle(cornerRadius: 2)
-                            .fill(barColor(ratio: ratio))
-                            .frame(width: geo.size.width * ratio, alignment: .leading)
-                    }
-                )
-                .frame(width: 48, height: 6)
+            ZStack {
+                Circle()
+                    .stroke(Color.secondary.opacity(0.2), lineWidth: 3)
+                Circle()
+                    .trim(from: 0, to: ratio)
+                    .stroke(barColor(ratio: ratio), style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+            }
+            .frame(width: 16, height: 16)
             Text("\(compactTokens(used))/\(compactTokens(max))")
                 .font(.caption2)
                 .monospacedDigit()
@@ -560,7 +829,9 @@ private struct UserBubbleImages: View {
                 if let ns = NSImage(data: img.pngData) {
                     Image(nsImage: ns)
                         .resizable()
-                        .scaledToFill()
+                        .interpolation(.high)
+                        .antialiased(true)
+                        .scaledToFit()
                         .frame(maxWidth: 240, maxHeight: 240)
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                         .contentShape(Rectangle())
@@ -573,6 +844,8 @@ private struct UserBubbleImages: View {
                 VStack {
                     Image(nsImage: ns)
                         .resizable()
+                        .interpolation(.high)
+                        .antialiased(true)
                         .scaledToFit()
                         .frame(maxWidth: 900, maxHeight: 700)
                     Button("Close") { zoomed = nil }.padding(.top)
@@ -672,5 +945,154 @@ private struct DiffLine: View {
         if line.hasPrefix("-") { return Color.red.opacity(0.10) }
         if line.hasPrefix("@@") { return Color.purple.opacity(0.08) }
         return .clear
+    }
+}
+
+// MARK: - Turn status bar (live timer + model, shown during and after a turn)
+
+/// Persistent status bar below the last reply. While the agent is working it
+/// ticks every second; after completion it freezes on the final duration.
+/// Styled like Claude Code's bottom status line.
+// MARK: - Per-bubble model + duration chip
+
+private struct TurnMetaChip: View {
+    let model: String
+    let durationSec: TimeInterval?
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text(prettyModel(model))
+            if let d = durationSec {
+                Text("·")
+                    .foregroundStyle(.quaternary)
+                Text(formatDuration(d))
+                    .monospacedDigit()
+            }
+        }
+        .font(.caption2)
+        .foregroundStyle(.tertiary)
+        .padding(.top, 2)
+    }
+
+    private func prettyModel(_ raw: String) -> String {
+        var s = raw
+        if s.hasPrefix("claude-") { s.removeFirst("claude-".count) }
+        s = s.replacingOccurrences(of: "[1m]", with: " 1M")
+            .replacingOccurrences(of: "[", with: " ")
+            .replacingOccurrences(of: "]", with: "")
+        let parts = s.split(separator: "-")
+        if parts.count >= 3 {
+            let name = parts[0].capitalized
+            let ver = "\(parts[1]).\(parts[2])"
+            let rest = parts.dropFirst(3).joined(separator: " ")
+            return "\(name) \(ver)\(rest.isEmpty ? "" : " \(rest)")"
+        }
+        return raw
+    }
+
+    private func formatDuration(_ t: TimeInterval) -> String {
+        if t < 60 { return String(format: "%.1fs", t) }
+        return String(format: "%dm %ds", Int(t) / 60, Int(t) % 60)
+    }
+}
+
+private struct TurnStatusBar: View {
+    let model: String
+    let startedAt: Date?
+    let isWorking: Bool
+    var duration: TimeInterval? = nil
+
+    @State private var elapsed: TimeInterval = 0
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if isWorking {
+                ProgressView()
+                    .controlSize(.mini)
+                    .scaleEffect(0.7)
+            } else {
+                Image(systemName: "checkmark")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.green)
+            }
+            Text(prettyModel(model))
+                .font(.caption)
+            Text("·")
+                .foregroundStyle(.tertiary)
+            Text(displayTime)
+                .font(.caption.monospacedDigit())
+        }
+        .foregroundStyle(.secondary)
+        .padding(.leading, 58)  // align with timeline content column (16 padding + 22 icon + 10 gap = 48, +10 breathing room)
+        .padding(.trailing, 16)
+        .padding(.top, 4)
+        .padding(.bottom, 6)
+        .task(id: isWorking) {
+            guard isWorking, let start = startedAt else { return }
+            while !Task.isCancelled {
+                elapsed = Date().timeIntervalSince(start)
+                try? await Task.sleep(nanoseconds: 200_000_000)
+            }
+        }
+    }
+
+    private var displayTime: String {
+        let t = isWorking ? elapsed : (duration ?? elapsed)
+        if t < 60 { return String(format: "%.1fs", t) }
+        return String(format: "%dm %ds", Int(t) / 60, Int(t) % 60)
+    }
+
+    private func prettyModel(_ raw: String) -> String {
+        var s = raw
+        if s.hasPrefix("claude-") { s.removeFirst("claude-".count) }
+        s = s.replacingOccurrences(of: "[1m]", with: " 1M")
+            .replacingOccurrences(of: "[", with: " ")
+            .replacingOccurrences(of: "]", with: "")
+        let parts = s.split(separator: "-")
+        if parts.count >= 3 {
+            let name = parts[0].capitalized
+            let ver = "\(parts[1]).\(parts[2])"
+            let rest = parts.dropFirst(3).joined(separator: " ")
+            return "\(name) \(ver)\(rest.isEmpty ? "" : " \(rest)")"
+        }
+        return raw
+    }
+}
+
+/// Returns true if the most recent rows contain agent-produced content
+/// (assistant text, tool calls, reasoning). When true, the typing dots
+/// are unnecessary because the user can already see streaming output.
+private func hasCurrentTurnContent(_ rows: [ConversationViewModel.Row]) -> Bool {
+    guard let last = rows.last else { return false }
+    let agentKinds: Set<String> = ["assistant", "reasoning", "tool"]
+    return agentKinds.contains(last.kind)
+}
+
+// MARK: - Typing indicator (three-dot bounce)
+
+/// Three-dot animation in timeline style — shown when agent starts working
+/// before any streaming content has arrived.
+private struct TypingIndicator: View {
+    @State private var phase: Int = 0
+
+    var body: some View {
+        FlowStep(iconName: "clock", showLine: false) {
+            HStack(spacing: 5) {
+                ForEach(0..<3) { i in
+                    Circle()
+                        .fill(Color.secondary.opacity(0.4))
+                        .frame(width: 6, height: 6)
+                        .offset(y: phase == i ? -3 : 0)
+                        .animation(.easeInOut(duration: 0.3), value: phase)
+                }
+            }
+            .padding(.vertical, 6)
+            .task {
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 300_000_000)
+                    phase = (phase + 1) % 3
+                }
+            }
+        }
     }
 }

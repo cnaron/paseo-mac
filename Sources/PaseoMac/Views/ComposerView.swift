@@ -7,77 +7,188 @@ struct ComposerView: View {
     @Environment(AppViewModel.self) private var app
     @Environment(SettingsStore.self) private var settings
     @FocusState private var focused: Bool
-    @State private var isDropTargeted: Bool = false
     @State private var dropError: String? = nil
     /// Height of the composer at the moment a drag began. Snapshot so we can
     /// compute `start - delta.height` without compounding.
     @State private var dragStartHeight: Double? = nil
+    @State private var textFitHeight: Double = 44.0
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            resizeHandle
+        VStack(spacing: 0) {
+            // Queued messages above the card
             if !vm.queued.isEmpty {
                 queuedStrip
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 8)
             }
-            if !vm.pendingImages.isEmpty || !vm.pendingTextFiles.isEmpty {
-                attachmentStrip
-            }
-            if let err = dropError {
-                Text(err)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-            }
-            inputRow
-                .overlay(alignment: .topLeading) {
-                    if isDropTargeted {
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [6]))
-                            .allowsHitTesting(false)
-                            .padding(.horizontal, 6)
-                    }
-                }
-            pickerRow
+            composerCard
+                .padding(.horizontal, 20)
+                .frame(maxWidth: .infinity)
+
         }
-        .padding(12)
-        .onPasteCommand(of: supportedPasteTypes, perform: handlePaste)
-        .onDrop(of: [.image, .fileURL, .plainText], isTargeted: $isDropTargeted, perform: handleDrop)
     }
 
-    // MARK: Resize handle
+    // MARK: - Composer card
 
-    /// Thin draggable bar sitting above the input row. Dragging up grows the
-    /// composer, dragging down shrinks it. Height is persisted on SettingsStore
-    /// so it survives relaunch. Double-click resets to the default.
-    private var resizeHandle: some View {
+    private var composerCard: some View {
         @Bindable var settings = settings
-        return RoundedRectangle(cornerRadius: 2)
-            .fill(Color.secondary.opacity(0.35))
-            .frame(width: 36, height: 4)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 2)
-            .contentShape(Rectangle())
-            .onHover { hovering in
-                if hovering {
-                    NSCursor.resizeUpDown.push()
-                } else {
-                    NSCursor.pop()
+        return VStack(alignment: .leading, spacing: 0) {
+            // Invisible resize zone — drag upward to expand text area
+            Color.clear
+                .frame(maxWidth: .infinity).frame(height: 8)
+                .contentShape(Rectangle())
+                .onHover { if $0 { NSCursor.resizeUpDown.push() } else { NSCursor.pop() } }
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { value in
+                            let start = dragStartHeight ?? settings.composerHeight
+                            if dragStartHeight == nil { dragStartHeight = start }
+                            let proposed = start - Double(value.translation.height)
+                            let r = SettingsStore.composerHeightRange
+                            settings.composerHeight = min(max(proposed, r.lowerBound), r.upperBound)
+                        }
+                        .onEnded { _ in dragStartHeight = nil }
+                )
+                .help("Drag to resize · double-click to reset")
+                .onTapGesture(count: 2) { settings.composerHeight = 44 }
+
+            // Attachment chips
+            if !vm.pendingImages.isEmpty || !vm.pendingTextFiles.isEmpty {
+                attachmentStrip
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 6)
+            }
+            if let err = dropError {
+                Text(err).font(.caption).foregroundStyle(.red)
+                    .padding(.horizontal, 12)
+            }
+
+            // Text input (placeholder drawn natively by DropInterceptingTextView)
+            ComposerTextView(
+                text: $vm.composerText,
+                height: $textFitHeight,
+                font: .systemFont(ofSize: NSFont.systemFontSize),
+                onFileDrop: { urls in handleFileURLDrop(urls) },
+                onImageDrop: { images in handleImageDrop(images) }
+            )
+            .frame(height: max(CGFloat(settings.composerHeight), CGFloat(textFitHeight)).rounded())
+            .padding(.horizontal, 12)
+            .padding(.bottom, 4)
+
+            // Bottom action row
+            bottomActionRow
+        }
+        .background(Color(NSColor.controlBackgroundColor), in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.secondary.opacity(0.15), lineWidth: 1))
+        .shadow(color: .black.opacity(0.12), radius: 12, y: 4)
+        .frame(maxWidth: 720)
+    }
+
+    // MARK: - Bottom action row
+
+    private var bottomActionRow: some View {
+        HStack(alignment: .center, spacing: 8) {
+            // + attachment button
+            Button { openAttachmentPicker() } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 26, height: 26)
+                    .background(Color.secondary.opacity(0.1), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .help("Add attachment")
+
+            Spacer()
+
+            // Model + thinking + mode pickers (right-aligned text)
+            if let agent = app.agents.first(where: { $0.id == vm.agentId }) {
+                HStack(spacing: 2) {
+                    ModePicker(agent: agent)
+                    ModelPicker(agent: agent)
+                    ThinkingPicker(agent: agent)
+                }
+                .font(.callout)
+            }
+
+            // Send / interrupt button (circle style)
+            sendButton
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+    }
+
+    @ViewBuilder
+    private var sendButton: some View {
+        if vm.isAgentWorking {
+            HStack(spacing: 6) {
+                Button { submit() } label: {
+                    ZStack {
+                        Circle()
+                            .fill(isSendDisabled
+                                  ? Color.secondary.opacity(0.12)
+                                  : Color.accentColor.opacity(0.18))
+                            .frame(width: 28, height: 28)
+                        Image(systemName: "arrow.up")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(
+                                isSendDisabled
+                                ? Color.secondary.opacity(0.4)
+                                : Color.accentColor
+                            )
+                    }
+                }
+                .buttonStyle(.plain)
+                .disabled(isSendDisabled)
+                .keyboardShortcut(.return, modifiers: [.command])
+                .help("Queue (⌘↩)")
+
+                Button { interrupt() } label: {
+                    ZStack {
+                        Circle().fill(Color.primary).frame(width: 28, height: 28)
+                        RoundedRectangle(cornerRadius: 3)
+                            .fill(Color(NSColor.controlBackgroundColor))
+                            .frame(width: 10, height: 10)
+                    }
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut(.return, modifiers: [.command, .shift])
+                .help("Interrupt (⌘⇧↩)")
+            }
+        } else {
+            Button { submit() } label: {
+                ZStack {
+                    Circle()
+                        .fill(isSendDisabled ? Color.secondary.opacity(0.12) : Color.primary)
+                        .frame(width: 28, height: 28)
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(
+                            isSendDisabled
+                            ? Color.secondary.opacity(0.4)
+                            : Color(NSColor.controlBackgroundColor)
+                        )
                 }
             }
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { value in
-                        let start = dragStartHeight ?? settings.composerHeight
-                        if dragStartHeight == nil { dragStartHeight = start }
-                        let proposed = start - Double(value.translation.height)
-                        let r = SettingsStore.composerHeightRange
-                        settings.composerHeight = min(max(proposed, r.lowerBound), r.upperBound)
-                    }
-                    .onEnded { _ in dragStartHeight = nil }
-            )
-            .onTapGesture(count: 2) {
-                settings.composerHeight = 72.0
-            }
-            .help("Drag to resize · double-click to reset")
+            .buttonStyle(.plain)
+            .disabled(isSendDisabled)
+            .keyboardShortcut(.return, modifiers: [.command])
+            .help("Send (⌘↩)")
+        }
+    }
+
+    private func openAttachmentPicker() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        // Only types Claude Code can actually consume: images (vision) and text/source (inlined)
+        panel.allowedContentTypes = [
+            .image, .text, .sourceCode, .json, .xml, .commaSeparatedText, .shellScript,
+        ]
+        panel.begin { response in
+            guard response == .OK else { return }
+            handleFileURLDrop(panel.urls)
+        }
     }
 
     // MARK: - Attachment strip (images + text files)
@@ -96,53 +207,7 @@ struct ComposerView: View {
         }
     }
 
-    private var inputRow: some View {
-        HStack(alignment: .bottom, spacing: 8) {
-            TextEditor(text: $vm.composerText)
-                .font(.body)
-                .frame(height: CGFloat(settings.composerHeight))
-                .padding(6)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
-                )
-                .focused($focused)
-                .onAppear { focused = true }
-                .onSubmit { submit() }
-
-            VStack(spacing: 4) {
-                if vm.isAgentWorking {
-                    Button {
-                        interrupt()
-                    } label: {
-                        Label("Interrupt & send", systemImage: "bolt.fill")
-                            .labelStyle(.iconOnly)
-                            .font(.title2)
-                            .foregroundStyle(.orange)
-                    }
-                    .buttonStyle(.plain)
-                    .keyboardShortcut(.return, modifiers: [.command, .shift])
-                    .disabled(isSendDisabled)
-                    .help("Cancel current turn and send (⌘⇧↩)")
-                }
-                Button {
-                    submit()
-                } label: {
-                    Label(vm.isAgentWorking ? "Queue" : "Send",
-                          systemImage: vm.isAgentWorking ? "clock.arrow.circlepath" : "arrow.up.circle.fill")
-                        .labelStyle(.iconOnly)
-                        .font(.title2)
-                        .foregroundStyle(vm.isAgentWorking ? Color.secondary : Color.accentColor)
-                }
-                .buttonStyle(.plain)
-                .keyboardShortcut(.return, modifiers: [.command])
-                .disabled(isSendDisabled)
-                .help(vm.isAgentWorking ? "Queue after current turn (⌘↩)" : "Send (⌘↩)")
-            }
-        }
-    }
-
-    // MARK: Queued-message strip
+    // MARK: - Queued-message strip
 
     private var queuedStrip: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -150,7 +215,7 @@ struct ComposerView: View {
                 Image(systemName: "clock.arrow.circlepath")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                Text("Queued · will send when the current turn finishes")
+                Text("Queued · click to edit")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -167,6 +232,15 @@ struct ComposerView: View {
                     }
                     Spacer()
                     Button {
+                        vm.editQueued(id: q.id)
+                    } label: {
+                        Image(systemName: "pencil.circle.fill")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Edit this message")
+                    Button {
                         vm.removeQueued(id: q.id)
                     } label: {
                         Image(systemName: "xmark.circle.fill")
@@ -179,27 +253,14 @@ struct ComposerView: View {
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
                 .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+                .contentShape(Rectangle())
+                .onTapGesture { vm.editQueued(id: q.id) }
             }
         }
     }
 
     private func interrupt() {
         Task { await vm.sendInterrupting() }
-    }
-
-    // MARK: - Picker row (mode / model / thinking)
-
-    @ViewBuilder
-    private var pickerRow: some View {
-        if let agent = app.agents.first(where: { $0.id == vm.agentId }) {
-            HStack(spacing: 12) {
-                ModePicker(agent: agent)
-                ModelPicker(agent: agent)
-                ThinkingPicker(agent: agent)
-                Spacer()
-            }
-            .font(.caption)
-        }
     }
 
     // MARK: - Send gating
@@ -214,17 +275,27 @@ struct ComposerView: View {
         Task { await vm.sendComposer() }
     }
 
-    // MARK: - Paste
+    // MARK: - Drop handlers (from ComposerTextView)
 
-    private var supportedPasteTypes: [UTType] {
-        [.image, .png, .jpeg, .tiff, .gif, .bmp, .fileURL]
+    private func handleFileURLDrop(_ urls: [URL]) {
+        dropError = nil
+        for url in urls {
+            if let imgAtt = PendingImageAttachment.fromFileURL(url) {
+                vm.addImages([imgAtt])
+                continue
+            }
+            do {
+                let file = try PendingTextFile.fromFileURL(url)
+                vm.addTextFile(file)
+            } catch {
+                dropError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
+        }
     }
 
-    private func handlePaste(_: [NSItemProvider]) {
-        let images = PasteboardHelper.extractImages(from: NSPasteboard.general)
-        if !images.isEmpty {
-            vm.addImages(images)
-        }
+    private func handleImageDrop(_ images: [NSImage]) {
+        let attachments = images.compactMap { PendingImageAttachment.from(image: $0) }
+        if !attachments.isEmpty { vm.addImages(attachments) }
     }
 
     // MARK: - Drop
@@ -254,7 +325,7 @@ struct ComposerView: View {
                         Task { @MainActor in vm.addImages([imgAtt]) }
                         return
                     }
-                    // 2) Otherwise try to slurp as a text file.
+                    // 2) Text files only — binary files are not readable by Claude Code.
                     do {
                         let file = try PendingTextFile.fromFileURL(url)
                         Task { @MainActor in vm.addTextFile(file) }
@@ -289,15 +360,13 @@ private struct ModePicker: View {
                     }
                 }
             } label: {
-                Label(
-                    currentLabel(modes: modes),
-                    systemImage: currentIcon(modes: modes)
-                )
-                .foregroundStyle(modeColor)
+                Image(systemName: currentIcon(modes: modes))
+                    .font(.system(size: 12))
+                    .foregroundStyle(modeColor)
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
-            .help("Permission mode")
+            .help("Permission mode: \(currentLabel(modes: modes))")
         }
     }
 
@@ -341,7 +410,8 @@ private struct ModelPicker: View {
                     }
                 }
             } label: {
-                Label(currentLabel, systemImage: "sparkles")
+                Text(currentLabel)
+                    .foregroundStyle(.secondary)
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
@@ -378,7 +448,13 @@ private struct ThinkingPicker: View {
                     }
                 }
             } label: {
-                Label(currentLabel(options: options), systemImage: "brain")
+                HStack(spacing: 3) {
+                    Text(currentLabel(options: options))
+                        .foregroundStyle(.secondary)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                }
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
@@ -404,34 +480,39 @@ private struct ThinkingPicker: View {
 private struct ImageChip: View {
     let attachment: PendingImageAttachment
     let onRemove: () -> Void
-    @State private var thumbImage: NSImage? = nil
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
             Group {
-                if let thumb = thumbImage {
-                    Image(nsImage: thumb).resizable().scaledToFit()
+                if let ns = NSImage(data: attachment.pngData) {
+                    Image(nsImage: ns)
+                        .resizable()
+                        .interpolation(.high)
+                        .antialiased(true)
+                        .scaledToFill()
+                        .frame(width: 64, height: 64)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(Color.white.opacity(0.2), lineWidth: 0.5)
+                        )
                 } else {
-                    RoundedRectangle(cornerRadius: 6).fill(Color.secondary.opacity(0.2))
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(.ultraThinMaterial)
+                        .frame(width: 64, height: 64)
                 }
             }
-            .frame(width: 64, height: 64)
-            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
 
-            removeButton
+            Button(action: onRemove) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 15))
+                    .foregroundStyle(.white, .black.opacity(0.55))
+            }
+            .buttonStyle(.plain)
+            .padding(3)
+            .help("Remove")
         }
-        .task { thumbImage = attachment.thumbnail() }
-    }
-
-    private var removeButton: some View {
-        Button(action: onRemove) {
-            Image(systemName: "xmark.circle.fill")
-                .font(.system(size: 16))
-                .foregroundStyle(.white, .black.opacity(0.6))
-        }
-        .buttonStyle(.plain)
-        .padding(2)
-        .help("Remove attachment")
     }
 }
 
@@ -465,6 +546,46 @@ private struct TextFileChip: View {
             .padding(2)
             .help("Remove file")
         }
+    }
+}
+
+private struct FileChip: View {
+    let file: PendingFileAttachment
+    let onRemove: () -> Void
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            VStack(alignment: .leading, spacing: 4) {
+                Image(systemName: file.iconName)
+                    .font(.title3)
+                    .foregroundStyle(Color.accentColor)
+                Text(file.name)
+                    .font(.caption)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(formatSize(file.data.count))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(8)
+            .frame(width: 140, height: 64, alignment: .topLeading)
+            .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
+
+            Button(action: onRemove) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 16))
+                    .foregroundStyle(.white, .black.opacity(0.6))
+            }
+            .buttonStyle(.plain)
+            .padding(2)
+            .help("Remove file")
+        }
+    }
+
+    private func formatSize(_ bytes: Int) -> String {
+        if bytes >= 1_048_576 { return String(format: "%.1f MB", Double(bytes) / 1_048_576) }
+        if bytes >= 1024 { return "\(bytes / 1024) KB" }
+        return "\(bytes) B"
     }
 }
 

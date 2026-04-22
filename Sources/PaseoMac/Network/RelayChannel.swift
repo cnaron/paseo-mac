@@ -27,6 +27,10 @@ actor RelayChannel {
     let relayURL: URL
     private let daemonPublicKey: Data
     private let session: URLSession
+    /// How long we'll wait for the daemon's `e2ee_ready` before giving up.
+    /// Without this, the hello retry loop would spin forever when the
+    /// daemon isn't registered on the relay.
+    private let handshakeTimeout: TimeInterval
 
     // MARK: - State
 
@@ -35,6 +39,7 @@ actor RelayChannel {
     private var sharedKey: Data?
     private var ourPublicKeyB64: String?
     private var helloRetryTask: Task<Void, Never>?
+    private var handshakeTimeoutTask: Task<Void, Never>?
     private var receiveLoop: Task<Void, Never>?
     private var pendingBeforeOpen: [Data] = []
     private var openContinuation: CheckedContinuation<Void, Error>?
@@ -44,13 +49,19 @@ actor RelayChannel {
 
     // MARK: - Init
 
-    init(relayURL: URL, daemonPublicKeyB64: String, session: URLSession = .shared) throws {
+    init(
+        relayURL: URL,
+        daemonPublicKeyB64: String,
+        session: URLSession = .shared,
+        handshakeTimeout: TimeInterval = 15
+    ) throws {
         self.relayURL = relayURL
         guard let pubKey = Data(base64Encoded: daemonPublicKeyB64) else {
             throw RelayChannelError.invalidDaemonPublicKey
         }
         self.daemonPublicKey = pubKey
         self.session = session
+        self.handshakeTimeout = handshakeTimeout
         var cont: AsyncStream<Data>.Continuation!
         self.incoming = AsyncStream { cont = $0 }
         self.incomingContinuation = cont
@@ -87,6 +98,15 @@ actor RelayChannel {
             await self?.runHelloRetry()
         }
 
+        // Fail the handshake if the daemon never sends `e2ee_ready` in time.
+        // This is the common failure mode when the daemon isn't registered
+        // with the relay (e.g. VPS daemon crashed or lost its control socket).
+        let timeout = handshakeTimeout
+        self.handshakeTimeoutTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(timeout))
+            await self?.failHandshakeIfStillPending()
+        }
+
         // Block until the handshake completes or fails.
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             self.openContinuation = cont
@@ -111,6 +131,8 @@ actor RelayChannel {
         guard state != .closed(reason: reason) else { return }
         helloRetryTask?.cancel()
         helloRetryTask = nil
+        handshakeTimeoutTask?.cancel()
+        handshakeTimeoutTask = nil
         receiveLoop?.cancel()
         receiveLoop = nil
         task?.cancel(with: code, reason: reason.data(using: .utf8))
@@ -143,6 +165,18 @@ actor RelayChannel {
         }
     }
 
+    private func failHandshakeIfStillPending() {
+        guard state == .handshaking else { return }
+        debug("handshake timed out after \(handshakeTimeout)s")
+        helloRetryTask?.cancel()
+        helloRetryTask = nil
+        task?.cancel(with: .goingAway, reason: Data("handshake timeout".utf8))
+        task = nil
+        state = .closed(reason: "handshake timeout")
+        failOpenContinuation(with: RelayChannelError.handshakeTimedOut)
+        incomingContinuation.finish()
+    }
+
     private func runReceiveLoop() async {
         while !Task.isCancelled {
             guard let task else { return }
@@ -172,6 +206,8 @@ actor RelayChannel {
                 state = .open
                 helloRetryTask?.cancel()
                 helloRetryTask = nil
+                handshakeTimeoutTask?.cancel()
+                handshakeTimeoutTask = nil
                 resumeOpenContinuation()
                 await flushPendingAfterOpen()
             }
@@ -209,6 +245,8 @@ actor RelayChannel {
         state = .closed(reason: reason)
         helloRetryTask?.cancel()
         helloRetryTask = nil
+        handshakeTimeoutTask?.cancel()
+        handshakeTimeoutTask = nil
         incomingContinuation.finish()
     }
 
@@ -249,14 +287,43 @@ enum RelayChannelError: Error, LocalizedError {
     case invalidDaemonPublicKey
     case alreadyStarted
     case notConnected
+    case handshakeTimedOut
     case channelClosed(String)
 
     var errorDescription: String? {
         switch self {
-        case .invalidDaemonPublicKey: "Daemon public key is not valid base64"
-        case .alreadyStarted: "Relay channel already started"
-        case .notConnected: "Relay channel is not connected"
-        case .channelClosed(let reason): "Relay channel closed: \(reason)"
+        case .invalidDaemonPublicKey:
+            return "The offer link is malformed (daemon public key isn't valid base64). Regenerate the offer and try again."
+        case .alreadyStarted:
+            return "Relay channel already started."
+        case .notConnected:
+            return "Relay channel is not connected."
+        case .handshakeTimedOut:
+            return "Couldn't reach the daemon through the relay (handshake timed out). Check that the daemon is running on the VPS and that its offer link is current — if the daemon was restarted or reinstalled, you may need a fresh offer."
+        case .channelClosed(let reason):
+            return Self.friendlyClosedMessage(reason: reason)
         }
+    }
+
+    /// Humanize the raw reason string we get from `URLError` / WS close frames.
+    private static func friendlyClosedMessage(reason: String) -> String {
+        let lower = reason.lowercased()
+        // Relay explicitly closed us because the daemon side went away.
+        if lower.contains("client disconnected")
+            || lower.contains("going away")
+            || lower.contains("1001")
+            || lower.contains("1006") {
+            return "The relay dropped the connection — usually this means the daemon restarted or lost its link to the relay. Try reconnecting; if it keeps failing, restart the daemon (`paseo daemon restart` on the VPS)."
+        }
+        if lower.contains("cannot connect") || lower.contains("could not connect") || lower.contains("offline") {
+            return "Can't reach the relay server. Check your network connection and that the relay hostname in the offer is correct."
+        }
+        if lower.contains("timed out") || lower.contains("timeout") {
+            return "Relay connection timed out. Network may be flaky, or the relay is unreachable."
+        }
+        if lower.contains("decrypt") {
+            return "Decryption failed — the offer's daemon key doesn't match the running daemon. Regenerate the offer link on the VPS."
+        }
+        return "Relay connection closed: \(reason)"
     }
 }

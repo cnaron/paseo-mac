@@ -14,18 +14,28 @@ struct PendingImageAttachment: Identifiable, Hashable, Sendable {
     let mimeType: String    // always "image/png" for now
 
     static func from(image: NSImage) -> PendingImageAttachment? {
-        guard let tiff = image.tiffRepresentation,
-              let rep = NSBitmapImageRep(data: tiff),
-              let png = rep.representation(using: .png, properties: [:]) else {
+        // Use the best available bitmap rep to get actual pixel dimensions,
+        // not logical points — critical for Retina screenshots (2x/3x).
+        let rep: NSBitmapImageRep?
+        if let tiff = image.tiffRepresentation {
+            rep = NSBitmapImageRep(data: tiff)
+        } else {
+            rep = image.representations
+                .compactMap { $0 as? NSBitmapImageRep }
+                .max(by: { $0.pixelsWide < $1.pixelsWide })
+        }
+        guard let bitmapRep = rep,
+              let png = bitmapRep.representation(using: .png, properties: [.interlaced: false]) else {
             return nil
         }
-        let w = Int(image.size.width.rounded())
-        let h = Int(image.size.height.rounded())
+        // pixelsWide/High = actual device pixels (2x on Retina)
+        let w = bitmapRep.pixelsWide
+        let h = bitmapRep.pixelsHigh
         return PendingImageAttachment(
             id: UUID(),
             pngData: png,
-            width: w,
-            height: h,
+            width: max(w, 1),
+            height: max(h, 1),
             mimeType: "image/png"
         )
     }
@@ -133,5 +143,76 @@ enum PasteboardHelper {
             return false
         }
         return type.conforms(to: .image)
+    }
+}
+
+
+/// A generic file attachment (binary or otherwise) displayed as a chip with
+/// icon + filename in the composer. Unlike PendingTextFile (which inlines
+/// content as a code block), this type sends the file as a base64 attachment
+/// through the daemon protocol.
+struct PendingFileAttachment: Identifiable, Hashable, Sendable {
+    let id: UUID
+    let name: String
+    let data: Data
+    let mimeType: String
+    let fileExtension: String
+
+    /// Max file size for upload: 10 MB
+    static let maxBytes = 10 * 1024 * 1024
+
+    static func fromFileURL(_ url: URL) throws -> PendingFileAttachment {
+        let values = try url.resourceValues(forKeys: [.fileSizeKey])
+        if let size = values.fileSize, size > maxBytes {
+            throw PendingFileError.tooLarge(actual: size, limit: maxBytes)
+        }
+        let data = try Data(contentsOf: url)
+        let ext = url.pathExtension.lowercased()
+        let mime = mimeTypeForExtension(ext)
+        return PendingFileAttachment(
+            id: UUID(),
+            name: url.lastPathComponent,
+            data: data,
+            mimeType: mime,
+            fileExtension: ext
+        )
+    }
+
+    /// SF Symbol name based on file type
+    var iconName: String {
+        switch fileExtension {
+        case "pdf": return "doc.richtext"
+        case "zip", "gz", "tar", "rar", "7z": return "doc.zipper"
+        case "mp3", "wav", "aac", "m4a", "flac": return "waveform"
+        case "mp4", "mov", "avi", "mkv": return "film"
+        case "doc", "docx": return "doc.text"
+        case "xls", "xlsx": return "tablecells"
+        case "ppt", "pptx": return "rectangle.on.rectangle"
+        default: return "doc"
+        }
+    }
+
+    private static func mimeTypeForExtension(_ ext: String) -> String {
+        switch ext {
+        case "pdf": return "application/pdf"
+        case "zip": return "application/zip"
+        case "json": return "application/json"
+        case "xml": return "application/xml"
+        case "mp3": return "audio/mpeg"
+        case "mp4": return "video/mp4"
+        case "mov": return "video/quicktime"
+        default: return "application/octet-stream"
+        }
+    }
+}
+
+enum PendingFileError: LocalizedError {
+    case tooLarge(actual: Int, limit: Int)
+
+    var errorDescription: String? {
+        switch self {
+        case .tooLarge(let a, let l):
+            return "File too large (\(a / 1024 / 1024) MB > \(l / 1024 / 1024) MB)"
+        }
     }
 }
