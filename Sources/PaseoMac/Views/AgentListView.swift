@@ -32,6 +32,7 @@ struct AgentListView: View {
                 .environment(app)
             Divider()
             UsagePanel()
+                .environment(app)
             Divider()
             ConnectionFooter(showConnect: $showConnect)
                 .environment(app)
