@@ -101,7 +101,11 @@ final class UsageViewModel {
     }
 }
 
-private func parseISO(_ s: String) -> Date? { ISO8601DateFormatter().date(from: s) }
+private func parseISO(_ s: String) -> Date? {
+    let f = ISO8601DateFormatter()
+    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return f.date(from: s) ?? ISO8601DateFormatter().date(from: s)
+}
 
 // MARK: - View
 
@@ -109,15 +113,18 @@ struct UsagePanel: View {
     @State private var vm = UsageViewModel()
 
     var body: some View {
-        Group {
-            switch vm.state {
-            case .idle, .loading, .unconfigured, .failed:
-                EmptyView()
-            case .loaded(let usage):
-                loadedView(usage)
+        // Color.clear with fixed height ensures this view always has presence in
+        // the hierarchy, so .onAppear fires even before data is loaded.
+        Color.clear
+            .frame(height: 0)
+            .onAppear { Task { await vm.refreshIfNeeded() } }
+            .onChange(of: vm.state.isLoaded) { _, loaded in
+                _ = loaded  // observe state changes
             }
+
+        if case .loaded(let usage) = vm.state {
+            loadedView(usage)
         }
-        .task { await vm.refreshIfNeeded() }
     }
 
     private func loadedView(_ usage: ClaudeUsageData) -> some View {
@@ -144,6 +151,13 @@ struct UsagePanel: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 7)
+    }
+}
+
+private extension UsageViewModel.State {
+    var isLoaded: Bool {
+        if case .loaded = self { return true }
+        return false
     }
 }
 
