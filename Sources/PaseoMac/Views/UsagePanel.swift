@@ -9,6 +9,10 @@ struct ClaudeUsageData {
     let sevenDay: Int?
     let fiveHourResetAt: Date?
     let sevenDayResetAt: Date?
+    let sevenDaySonnet: Int?
+    let sevenDaySonnetResetAt: Date?
+    let sevenDayOpus: Int?
+    let sevenDayOpusResetAt: Date?
     let fetchedAt: Date
 
     var fetchedTimestamp: String {
@@ -26,7 +30,7 @@ struct UsagePanel: View {
 
     var body: some View {
         if let usage {
-            VStack(alignment: .leading, spacing: 5) {
+            VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     Text(usage.planName)
                         .font(.caption2.weight(.semibold))
@@ -46,9 +50,15 @@ struct UsagePanel: View {
                 if let pct = usage.sevenDay {
                     UsageBar(label: "7d", percent: pct, resetAt: usage.sevenDayResetAt)
                 }
-            Text("Updated " + usage.fetchedTimestamp)
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+                if let pct = usage.sevenDaySonnet {
+                    SubQuotaRow(label: "Sonnet", percent: pct, resetAt: usage.sevenDaySonnetResetAt)
+                }
+                if let pct = usage.sevenDayOpus {
+                    SubQuotaRow(label: "Opus", percent: pct, resetAt: usage.sevenDayOpusResetAt)
+                }
+                Text("Updated \(usage.fetchedTimestamp)")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 7)
@@ -73,23 +83,52 @@ private struct UsageBar: View {
             Text("\(percent)%")
                 .font(.caption2.monospacedDigit())
                 .foregroundStyle(barColor)
-                .frame(width: 30, alignment: .trailing)
+                .frame(width: 28, alignment: .trailing)
+            Text(Self.resetText(resetAt))
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.tertiary)
+                .frame(width: 42, alignment: .trailing)
         }
-        .help(helpText)
     }
 
     private var barColor: Color {
         percent >= 90 ? .red : percent >= 70 ? .orange : .blue
     }
 
-    private var helpText: String {
-        guard let reset = resetAt else { return "" }
-        let interval = reset.timeIntervalSinceNow
-        if interval <= 0 { return "Resetting…" }
-        let h = Int(interval / 3600)
-        let m = Int(interval.truncatingRemainder(dividingBy: 3600) / 60)
-        if h >= 24 { return "Resets in \(h / 24)d \(h % 24)h" }
-        if h > 0   { return "Resets in \(h)h \(m)m" }
-        return "Resets in \(m)m"
+    static func resetText(_ date: Date?) -> String {
+        guard let date else { return "" }
+        let s = date.timeIntervalSinceNow
+        if s <= 0 { return "now" }
+        let h = Int(s / 3600)
+        let m = Int(s.truncatingRemainder(dividingBy: 3600) / 60)
+        if h >= 24 { return "\(h / 24)d \(h % 24)h" }
+        if h > 0   { return "\(h)h \(m)m" }
+        return "\(m)m"
+    }
+}
+
+private struct SubQuotaRow: View {
+    let label: String
+    let percent: Int
+    let resetAt: Date?
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Text(label)
+                .font(.caption2)
+                .foregroundStyle(.quaternary)
+                .frame(width: 40, alignment: .leading)
+            ProgressView(value: Double(percent), total: 100)
+                .progressViewStyle(.linear)
+                .tint(.blue.opacity(0.4))
+            Text("\(percent)%")
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.quaternary)
+                .frame(width: 28, alignment: .trailing)
+            Text(UsageBar.resetText(resetAt))
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.quaternary)
+                .frame(width: 42, alignment: .trailing)
+        }
     }
 }

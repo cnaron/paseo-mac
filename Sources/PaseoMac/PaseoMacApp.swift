@@ -34,6 +34,7 @@ struct PaseoMacApp: App {
         Settings {
             PreferencesView()
                 .environment(settings)
+                .environment(appModel)
         }
     }
 }

@@ -31,6 +31,18 @@
 - **配额面板需要额外配置。** 侧边栏用量进度条需要在 VPS 上自建代理端点（见下方说明）。官方 App 的处理方式不同。
 - **仅支持 macOS 14+。** 使用了 SwiftUI Observation（`@Observable`），需要 Sonoma 或更高版本。
 
+## 内存与体积对比
+
+在 Apple Silicon（M 系列 Mac）上实测：
+
+| | PaseoMac | 官方 Paseo |
+|---|---|---|
+| App 体积 | 3.8 MB | ~350 MB（含 Chromium）|
+| 运行内存 | ~80 MB | ~450 MB 典型值 |
+| 运行时 | SwiftUI 原生 | Electron |
+
+内存数据为近似值。PaseoMac 在已连接并加载对话时实测。官方 Paseo 数据为典型 Electron 应用（内嵌 Chromium）的参考值，实际因机器和使用情况而异。
+
 ## 安装
 
 从 [Releases](https://github.com/cnaron/paseo-mac/releases) 下载 **PaseoMac.zip**，解压后拖入 Applications 文件夹。
@@ -85,6 +97,10 @@ location = /api/claude-usage {
 ```
 
 **App 端** — 打开**偏好设置（⌘,）→ Integration**，填入端点 URL 和 token。
+
+## 致谢
+
+本项目完全由 [Claude Code](https://claude.ai/code)（Anthropic）生成，所有源代码由 Claude Sonnet 和 Opus 编写。
 
 ## 许可证
 

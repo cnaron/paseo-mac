@@ -41,6 +41,7 @@ final class AppViewModel {
 
     /// Claude subscription usage — fetched from VPS proxy after connect.
     var usageData: ClaudeUsageData? = nil
+    var statsData: ClaudeStatsData? = nil
 
     // MARK: Internals
 
@@ -89,6 +90,7 @@ final class AppViewModel {
 
             // Fetch usage quota from VPS proxy.
             Task { [weak self] in await self?.fetchUsage() }
+            Task { [weak self] in await self?.fetchStats() }
 
         } catch {
             self.connectionState = .failed(error.localizedDescription)
@@ -106,6 +108,7 @@ final class AppViewModel {
         liveStatus.removeAll()
         providers = []
         usageData = nil
+        statsData = nil
         connectionState = .disconnected
     }
 
@@ -243,9 +246,13 @@ final class AppViewModel {
             }
             let fiveHour: Period?
             let sevenDay: Period?
+            let sevenDaySonnet: Period?
+            let sevenDayOpus: Period?
             let subscriptionType: String?
             enum CodingKeys: String, CodingKey {
                 case fiveHour = "five_hour"; case sevenDay = "seven_day"
+                case sevenDaySonnet = "seven_day_sonnet"
+                case sevenDayOpus = "seven_day_opus"
                 case subscriptionType = "subscription_type"
             }
         }
@@ -272,7 +279,87 @@ final class AppViewModel {
             sevenDay: parsed.sevenDay?.utilization.map { clamp($0) },
             fiveHourResetAt: parsed.fiveHour?.resetsAt.flatMap(parseISO),
             sevenDayResetAt: parsed.sevenDay?.resetsAt.flatMap(parseISO),
+            sevenDaySonnet: parsed.sevenDaySonnet?.utilization.flatMap { $0 > 0 ? clamp($0) : nil },
+            sevenDaySonnetResetAt: parsed.sevenDaySonnet?.resetsAt.flatMap(parseISO),
+            sevenDayOpus: parsed.sevenDayOpus?.utilization.flatMap { $0 > 0 ? clamp($0) : nil },
+            sevenDayOpusResetAt: parsed.sevenDayOpus?.resetsAt.flatMap(parseISO),
             fetchedAt: Date()
+        )
+    }
+
+    func fetchStats() async {
+        let urlString = UserDefaults.standard.string(forKey: "paseomac.usageApiUrl") ?? ""
+        let token     = UserDefaults.standard.string(forKey: "paseomac.usageApiToken") ?? ""
+        guard !urlString.isEmpty,
+              let usageURL = URL(string: urlString) else { return }
+        let url = usageURL.deletingLastPathComponent().appendingPathComponent("claude-stats")
+
+        var req = URLRequest(url: url)
+        if !token.isEmpty { req.setValue(token, forHTTPHeaderField: "X-Usage-Token") }
+        req.timeoutInterval = 15
+
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              (resp as? HTTPURLResponse)?.statusCode == 200 else { return }
+
+        struct StatsResp: Decodable {
+            struct DailyActivity: Decodable {
+                let date: String
+                let messageCount: Int?
+                let sessionCount: Int?
+                let toolCallCount: Int?
+            }
+            struct DailyTokens: Decodable {
+                let date: String
+                let tokensByModel: [String: Int]
+            }
+            struct ModelEntry: Decodable {
+                let inputTokens: Int?
+                let outputTokens: Int?
+                let cacheReadInputTokens: Int?
+                let cacheCreationInputTokens: Int?
+            }
+            let lastComputedDate: String?
+            let dailyActivity: [DailyActivity]?
+            let dailyModelTokens: [DailyTokens]?
+            let modelUsage: [String: ModelEntry]?
+            let totalMessages: Int?
+            let totalSessions: Int?
+        }
+        guard let parsed = try? JSONDecoder().decode(StatsResp.self, from: data) else { return }
+
+        var tokensByDate: [String: [String: Int]] = [:]
+        for entry in parsed.dailyModelTokens ?? [] {
+            tokensByDate[entry.date] = entry.tokensByModel
+        }
+
+        var daily: [ClaudeStatsData.DailyEntry] = []
+        for act in parsed.dailyActivity ?? [] {
+            daily.append(ClaudeStatsData.DailyEntry(
+                date: act.date,
+                messageCount: act.messageCount ?? 0,
+                sessionCount: act.sessionCount ?? 0,
+                toolCallCount: act.toolCallCount ?? 0,
+                tokensByModel: tokensByDate[act.date] ?? [:]
+            ))
+        }
+        daily.sort { $0.date > $1.date }
+
+        let models: [ClaudeStatsData.ModelUsage] = (parsed.modelUsage ?? [:]).map { key, val in
+            ClaudeStatsData.ModelUsage(
+                modelId: key,
+                inputTokens: val.inputTokens ?? 0,
+                outputTokens: val.outputTokens ?? 0,
+                cacheReadTokens: val.cacheReadInputTokens ?? 0,
+                cacheWriteTokens: val.cacheCreationInputTokens ?? 0
+            )
+        }.sorted { $0.apiEquivCostUSD > $1.apiEquivCostUSD }
+
+        statsData = ClaudeStatsData(
+            lastComputedDate: parsed.lastComputedDate ?? "",
+            daily: daily,
+            modelUsage: models,
+            totalMessages: parsed.totalMessages ?? 0,
+            totalSessions: parsed.totalSessions ?? 0
         )
     }
 
@@ -375,5 +462,83 @@ private extension AgentSnapshot {
             archivedAt: archivedAt, requiresAttention: requiresAttention,
             attentionReason: attentionReason
         )
+    }
+}
+
+
+// MARK: - Stats data
+
+struct ClaudeStatsData {
+    struct DailyEntry: Identifiable {
+        var id: String { date }
+        let date: String
+        let messageCount: Int
+        let sessionCount: Int
+        let toolCallCount: Int
+        let tokensByModel: [String: Int]
+        var totalTokens: Int { tokensByModel.values.reduce(0, +) }
+
+        var displayDate: String {
+            let parts = date.split(separator: "-")
+            guard parts.count == 3,
+                  let month = Int(parts[1]),
+                  let day = Int(parts[2]),
+                  month >= 1, month <= 12 else { return date }
+            let months = ["Jan","Feb","Mar","Apr","May","Jun",
+                          "Jul","Aug","Sep","Oct","Nov","Dec"]
+            return "\(months[month - 1]) \(day)"
+        }
+    }
+
+    struct ModelUsage: Identifiable {
+        var id: String { modelId }
+        let modelId: String
+        let inputTokens: Int
+        let outputTokens: Int
+        let cacheReadTokens: Int
+        let cacheWriteTokens: Int
+
+        var displayName: String {
+            let l = modelId.lowercased()
+            if l.contains("opus")   { return "Opus" }
+            if l.contains("haiku")  { return "Haiku" }
+            if l.contains("sonnet") { return "Sonnet" }
+            return modelId
+        }
+
+        var apiEquivCostUSD: Double {
+            let (pi, po, pr, pw) = pricing
+            return Double(inputTokens)      / 1_000_000 * pi
+                 + Double(outputTokens)     / 1_000_000 * po
+                 + Double(cacheReadTokens)  / 1_000_000 * pr
+                 + Double(cacheWriteTokens) / 1_000_000 * pw
+        }
+
+        private var pricing: (Double, Double, Double, Double) {
+            let l = modelId.lowercased()
+            if l.contains("opus")  { return (15,   75,   1.50, 3.75) }
+            if l.contains("haiku") { return (0.80,  4,   0.08, 1.00) }
+            return                          (3,     15,  0.30, 0.75)
+        }
+    }
+
+    let lastComputedDate: String
+    let daily: [DailyEntry]
+    let modelUsage: [ModelUsage]
+    let totalMessages: Int
+    let totalSessions: Int
+
+    static func fmtTokens(_ n: Int) -> String {
+        if n >= 1_000_000_000 { return String(format: "%.1fB", Double(n) / 1_000_000_000) }
+        if n >= 1_000_000     { return String(format: "%.1fM", Double(n) / 1_000_000) }
+        if n >= 1_000         { return String(format: "%.0fK", Double(n) / 1_000) }
+        return "\(n)"
+    }
+
+    static func fmtCost(_ usd: Double) -> String {
+        if usd >= 10_000 { return String(format: "$%.0fK", usd / 1000) }
+        if usd >= 100    { return String(format: "$%.0f",  usd) }
+        if usd >= 1      { return String(format: "$%.1f",  usd) }
+        return String(format: "$%.2f", usd)
     }
 }

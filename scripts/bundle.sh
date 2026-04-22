@@ -25,6 +25,9 @@ cp "$ROOT/Resources/Info.plist" "$CONTENTS/Info.plist"
 # Copy icon if present
 if [[ -f "$ROOT/Resources/AppIcon.icns" ]]; then
     cp "$ROOT/Resources/AppIcon.icns" "$RESOURCES/AppIcon.icns"
+if [[ -f "$ROOT/Resources/Credits.html" ]]; then
+    cp "$ROOT/Resources/Credits.html" "$RESOURCES/Credits.html"
+fi
 fi
 
 # Code sign ad-hoc so Gatekeeper / launchd will run it

@@ -2,6 +2,7 @@ import SwiftUI
 
 struct PreferencesView: View {
     @Environment(SettingsStore.self) private var settings
+    @Environment(AppViewModel.self) private var app
 
     @AppStorage("paseomac.usageApiUrl")   private var usageApiUrl:   String = ""
     @AppStorage("paseomac.usageApiToken") private var usageApiToken: String = ""
@@ -107,7 +108,114 @@ struct PreferencesView: View {
             .formStyle(.grouped)
             .padding(8)
             .tabItem { Label("Integration", systemImage: "network") }
+            // MARK: Usage tab
+            StatsTabView(app: app)
+                .tabItem { Label("Usage", systemImage: "chart.bar") }
         }
-        .frame(minWidth: 460, minHeight: 340)
+        .frame(minWidth: 520, minHeight: 420)
+    }
+}
+
+private struct StatsTabView: View {
+    let app: AppViewModel
+
+    var body: some View {
+        Group {
+            if let stats = app.statsData {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        HStack {
+                            Text("Last computed: \(stats.lastComputedDate)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button("Refresh") { Task { await app.fetchStats() } }
+                                .font(.caption)
+                                .buttonStyle(.plain)
+                                .foregroundStyle(.blue)
+                        }
+
+                        Divider()
+                        Text("Recent Activity").font(.headline)
+
+                        Grid(alignment: .trailing, horizontalSpacing: 10, verticalSpacing: 4) {
+                            GridRow {
+                                Text("Date").gridColumnAlignment(.leading)
+                                Text("Sessions")
+                                Text("Messages")
+                                Text("Tool calls")
+                                Text("Tokens")
+                            }
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+
+                            ForEach(stats.daily.prefix(14)) { entry in
+                                GridRow {
+                                    Text(entry.displayDate).gridColumnAlignment(.leading)
+                                    Text("\(entry.sessionCount)")
+                                    Text("\(entry.messageCount)")
+                                    Text("\(entry.toolCallCount)")
+                                    Text(ClaudeStatsData.fmtTokens(entry.totalTokens))
+                                }
+                                .font(.caption.monospacedDigit())
+                            }
+                        }
+
+                        Divider()
+                        Text("Totals by Model").font(.headline)
+
+                        Grid(alignment: .trailing, horizontalSpacing: 10, verticalSpacing: 4) {
+                            GridRow {
+                                Text("Model").gridColumnAlignment(.leading)
+                                Text("Input")
+                                Text("Output")
+                                Text("Cache R")
+                                Text("Cache W")
+                                Text("API equiv.")
+                            }
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+
+                            ForEach(stats.modelUsage) { m in
+                                GridRow {
+                                    Text(m.displayName).gridColumnAlignment(.leading)
+                                    Text(ClaudeStatsData.fmtTokens(m.inputTokens))
+                                    Text(ClaudeStatsData.fmtTokens(m.outputTokens))
+                                    Text(ClaudeStatsData.fmtTokens(m.cacheReadTokens))
+                                    Text(ClaudeStatsData.fmtTokens(m.cacheWriteTokens))
+                                    Text(ClaudeStatsData.fmtCost(m.apiEquivCostUSD))
+                                        .foregroundStyle(.secondary)
+                                }
+                                .font(.caption.monospacedDigit())
+                            }
+
+                            let total = stats.modelUsage.reduce(0) { $0 + $1.apiEquivCostUSD }
+                            GridRow {
+                                Text("Total").gridColumnAlignment(.leading).fontWeight(.semibold)
+                                Text("").gridCellColumns(4)
+                                Text(ClaudeStatsData.fmtCost(total)).fontWeight(.semibold)
+                            }
+                            .font(.caption.monospacedDigit())
+                        }
+
+                        Text("API-equivalent cost — you pay a flat subscription. Cache reads are high because Claude Code re-reads the full conversation history from cache on every turn.")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding()
+                }
+            } else {
+                VStack(spacing: 10) {
+                    Text("No stats data available.")
+                        .foregroundStyle(.secondary)
+                    Text("Configure the usage endpoint in Integration, then reconnect.")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                    Button("Fetch Now") { Task { await app.fetchStats() } }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
     }
 }
