@@ -14,17 +14,18 @@ struct ClaudeUsageData {
 // MARK: - View
 
 struct UsagePanel: View {
-    @Environment(AppViewModel.self) private var app
+    let usage: ClaudeUsageData?
+    var onRefresh: (() -> Void)? = nil
 
     var body: some View {
-        if let usage = app.usageData {
+        if let usage {
             VStack(alignment: .leading, spacing: 5) {
                 HStack {
                     Text(usage.planName)
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Button { Task { await app.fetchUsage() } } label: {
+                    Button { onRefresh?() } label: {
                         Image(systemName: "arrow.clockwise")
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
