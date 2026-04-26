@@ -6,19 +6,29 @@ struct ConversationView: View {
     @State private var searchText: String = ""
 
     var body: some View {
+        let isPending = agentId == AppViewModel.pendingAgentId
         let vm = app.conversation(for: agentId)
         GeometryReader { geo in
-            MessageList(vm: vm, availableHeight: geo.size.height, searchText: searchText)
-                .overlay(alignment: .bottom) {
-                    if searchText.isEmpty {
-                        ComposerView(vm: vm)
-                            .padding(.bottom, 20)
-                    }
+            Group {
+                if isPending {
+                    Color.clear
+                } else {
+                    MessageList(vm: vm, availableHeight: geo.size.height, searchText: searchText)
                 }
+            }
+            .overlay(alignment: .bottom) {
+                if searchText.isEmpty {
+                    ComposerView(vm: vm)
+                        .padding(.bottom, 20)
+                }
+            }
         }
         .searchable(text: $searchText, placement: .toolbar, prompt: "Search messages")
-        .navigationTitle(agent()?.displayName ?? "")
+        .navigationTitle(isPending ? "New Conversation" : (agent()?.displayName ?? ""))
         .toolbar {
+            ToolbarItem(placement: .principal) {
+                ClaudeCodeVersionChip()
+            }
             ToolbarItem(placement: .automatic) {
                 if let a = agent() {
                     UsageChip(agent: a)
@@ -221,21 +231,26 @@ private struct MessageList: View {
                                     .foregroundStyle(.red)
                                     .padding(.horizontal, 16)
                             }
+                            let lastAssistantId = groupMessages(displayedRows)
+                                .last(where: { $0.group.kind == "assistant" })?.id
                             ForEach(groupMessages(displayedRows)) { gm in
                                 MessageBubble(
                                     group: gm.group,
                                     showConnector: gm.showConnector,
+                                    isStreaming: vm.isAgentWorking && gm.id == lastAssistantId,
                                     onApprovePermission: { Task { await vm.approvePermission() } },
                                     onDenyPermission: { Task { await vm.denyPermission() } }
                                 )
                                 .id(gm.id)
+                                .transition(.opacity)
                             }
                             if vm.isLoading {
                                 ProgressView().frame(maxWidth: .infinity).padding()
                             }
                             if searchText.isEmpty && vm.isAgentWorking && !vm.isLoading && !hasCurrentTurnContent(vm.rows) {
-                                TypingIndicator()
+                                ThinkingIndicator()
                                     .id("typing")
+                                    .transition(.opacity)
                             }
                             if !searchText.isEmpty {
                                 Text(displayedRows.isEmpty
@@ -306,7 +321,27 @@ private struct MessageList: View {
                     jumpToBottomButton(proxy: proxy)
                 }
             }
+            .overlay(alignment: .trailing) {
+                let ug = userGroups
+                if !ug.isEmpty {
+                    UserMessageTimeline(
+                        items: ug, proxy: proxy,
+                        hasOlderMessages: vm.hasOlderMessages,
+                        isLoadingMore: vm.isLoading,
+                        onLoadMore: { Task { await vm.loadOlderMessages() } }
+                    )
+                    .padding(.trailing, 20)
+                    .padding(.vertical, 60)
+                }
+            }
         }
+    }
+
+
+    private var userGroups: [UserMessageTimeline.Item] {
+        groupMessages(displayedRows)
+            .filter { $0.group.kind == "user" }
+            .map { UserMessageTimeline.Item(id: $0.id, text: $0.group.text) }
     }
 
     private func jumpToBottomButton(proxy: ScrollViewProxy) -> some View {
@@ -340,10 +375,14 @@ private struct MessageList: View {
 private struct MessageBubble: View {
     let group: BubbleGroup
     let showConnector: Bool
+    var isStreaming: Bool = false
     var onApprovePermission: (() -> Void)? = nil
     var onDenyPermission: (() -> Void)? = nil
     @State private var reasoningExpanded: Bool = false
     @State private var isHoveredForCopy: Bool = false
+    @State private var isExpanded: Bool = false
+
+    private var isLong: Bool { group.text.count > 500 }
 
     var body: some View {
         switch group.kind {
@@ -377,10 +416,39 @@ private struct MessageBubble: View {
                     UserBubbleImages(images: group.images)
                 }
                 if !group.text.isEmpty {
-                    MarkdownBodyView(text: group.text)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                        .background(Color.accentColor.opacity(0.18), in: RoundedRectangle(cornerRadius: 12))
+                    VStack(alignment: .trailing, spacing: 6) {
+                        Group {
+                            if isLong && !isExpanded {
+                                MarkdownBodyView(text: group.text)
+                                    .frame(maxHeight: 160)
+                                    .clipped()
+                                    .mask(
+                                        VStack(spacing: 0) {
+                                            Color.black
+                                            LinearGradient(
+                                                colors: [.black, .clear],
+                                                startPoint: .top,
+                                                endPoint: .bottom
+                                            )
+                                            .frame(height: 56)
+                                        }
+                                    )
+                            } else {
+                                MarkdownBodyView(text: group.text)
+                            }
+                        }
+                        if isLong {
+                            Button(isExpanded ? "Show less ↑" : "Show more ↓") {
+                                withAnimation(.easeInOut(duration: 0.18)) { isExpanded.toggle() }
+                            }
+                            .font(.caption2)
+                            .foregroundStyle(Color.accentColor)
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(Color.accentColor.opacity(0.18), in: RoundedRectangle(cornerRadius: 12))
                 }
                 if let ts = group.timestamp, let label = formatTimestamp(ts) {
                     Text(label)
@@ -399,7 +467,7 @@ private struct MessageBubble: View {
     private var assistantTimelineItem: some View {
         FlowStep(iconName: "clock", showLine: showConnector) {
             VStack(alignment: .leading, spacing: 4) {
-                MarkdownBodyView(text: group.text)
+                MarkdownBodyView(text: group.text, isStreaming: isStreaming)
                 if let model = group.modelUsed {
                     TurnMetaChip(model: model, durationSec: group.durationSec)
                 }
@@ -560,7 +628,7 @@ private struct FlowStep<Content: View>: View {
                 .font(.system(size: 11, weight: .medium))
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(.secondary)
-                .frame(width: 22, height: 16)  // 16pt matches natural glyph line-height, centered
+                .frame(width: 22, height: 16, alignment: .top)  // glyph top = content top
 
             content()
                 .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -598,17 +666,32 @@ private struct ToolRowTimeline: View {
     }
 
     private var summaryRow: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
+        HStack(alignment: .center, spacing: 6) {
             Text(info.name)
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
             if let target = info.target, !target.isEmpty {
-                Text(truncate(target, max: 64))
-                    .font(.callout)
-                    .foregroundStyle(Color.secondary.opacity(0.55))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                if target.hasPrefix("/") {
+                    Button {
+                        let (filePath, _) = parseFilePath(target)
+                        NSWorkspace.shared.open(URL(fileURLWithPath: filePath))
+                    } label: {
+                        Text(truncate(target, max: 64))
+                            .font(.callout)
+                            .foregroundStyle(Color.accentColor.opacity(0.8))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open file")
+                } else {
+                    Text(truncate(target, max: 64))
+                        .font(.callout)
+                        .foregroundStyle(Color.secondary.opacity(0.55))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
             }
 
             detailBadge
@@ -696,6 +779,15 @@ private struct ToolRowTimeline: View {
         let head = s.prefix(max / 2 - 1)
         let tail = s.suffix(max / 2 - 1)
         return "\(head)…\(tail)"
+    }
+
+    private func parseFilePath(_ raw: String) -> (String, Int?) {
+        if let colon = raw.lastIndex(of: ":"),
+           colon > raw.startIndex,
+           let line = Int(raw[raw.index(after: colon)...]) {
+            return (String(raw[..<colon]), line)
+        }
+        return (raw, nil)
     }
 }
 
@@ -820,20 +912,21 @@ private struct UserBubbleImages: View {
     let images: [PendingImageAttachment]
     @State private var zoomed: PendingImageAttachment? = nil
 
+    // Single image gets a larger cell; grids use a smaller fixed cell.
+    private var cellSize: CGFloat { images.count == 1 ? 130 : 76 }
+
     var body: some View {
-        LazyVGrid(
-            columns: gridColumns(count: images.count),
-            spacing: 6
-        ) {
+        LazyVGrid(columns: gridColumns(count: images.count), spacing: 4) {
             ForEach(images) { img in
                 if let ns = NSImage(data: img.pngData) {
                     Image(nsImage: ns)
                         .resizable()
                         .interpolation(.high)
                         .antialiased(true)
-                        .scaledToFit()
-                        .frame(maxWidth: 240, maxHeight: 240)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .scaledToFill()          // fills frame, crops surplus
+                        .frame(width: cellSize, height: cellSize)
+                        .clipped()
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
                         .contentShape(Rectangle())
                         .onTapGesture { zoomed = img }
                 }
@@ -841,16 +934,24 @@ private struct UserBubbleImages: View {
         }
         .sheet(item: $zoomed) { img in
             if let ns = NSImage(data: img.pngData) {
-                VStack {
+                ZStack(alignment: .topTrailing) {
                     Image(nsImage: ns)
                         .resizable()
                         .interpolation(.high)
                         .antialiased(true)
                         .scaledToFit()
-                        .frame(maxWidth: 900, maxHeight: 700)
-                    Button("Close") { zoomed = nil }.padding(.top)
+                        .frame(maxWidth: 960, maxHeight: 760)
+                        .padding(24)
+                    Button {
+                        zoomed = nil
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.title2)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(14)
                 }
-                .padding()
             }
         }
     }
@@ -858,7 +959,7 @@ private struct UserBubbleImages: View {
     private func gridColumns(count: Int) -> [GridItem] {
         let cols = min(count, 2)
         return Array(
-            repeating: GridItem(.flexible(), spacing: 6, alignment: .trailing),
+            repeating: GridItem(.fixed(cellSize), spacing: 4),
             count: max(cols, 1)
         )
     }
@@ -1059,6 +1160,44 @@ private struct TurnStatusBar: View {
     }
 }
 
+// MARK: - Claude Code version chip (toolbar)
+
+private struct ClaudeCodeVersionChip: View {
+    @Environment(AppViewModel.self) private var app
+
+    var body: some View {
+        if let version = app.claudeCodeCurrentVersion, version != "unknown" {
+            HStack(spacing: 3) {
+                Text("CC")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                Text("v\(version)")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(app.claudeCodeUpdateAvailable ? AnyShapeStyle(.orange) : AnyShapeStyle(.tertiary))
+                if app.isUpdatingClaudeCode {
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .scaleEffect(0.5)
+                        .frame(width: 12, height: 12)
+                } else if app.claudeCodeUpdateAvailable {
+                    Button {
+                        Task { await app.updateClaudeCode() }
+                    } label: {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Update Claude Code to v\(app.claudeCodeLatestVersion ?? "")")
+                }
+            }
+            .help(app.claudeCodeUpdateAvailable
+                  ? "Claude Code v\(version) · Update to v\(app.claudeCodeLatestVersion ?? "?")"
+                  : "Claude Code v\(version) · Up to date")
+        }
+    }
+}
+
 /// Returns true if the most recent rows contain agent-produced content
 /// (assistant text, tool calls, reasoning). When true, the typing dots
 /// are unnecessary because the user can already see streaming output.
@@ -1068,30 +1207,159 @@ private func hasCurrentTurnContent(_ rows: [ConversationViewModel.Row]) -> Bool 
     return agentKinds.contains(last.kind)
 }
 
-// MARK: - Typing indicator (three-dot bounce)
+// MARK: - User message timeline (right rail)
 
-/// Three-dot animation in timeline style — shown when agent starts working
-/// before any streaming content has arrived.
-private struct TypingIndicator: View {
+private struct UserMessageTimeline: View {
+    struct Item: Identifiable { let id: String; let text: String }
+    let items: [Item]
+    let proxy: ScrollViewProxy
+    var hasOlderMessages: Bool = false
+    var isLoadingMore: Bool = false
+    var onLoadMore: (() -> Void)? = nil
+    @State private var hoveredId: String? = nil
+
+    private let nodeH: CGFloat = 28
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if hasOlderMessages {
+                Button { onLoadMore?() } label: {
+                    Group {
+                        if isLoadingMore {
+                            ProgressView()
+                                .progressViewStyle(.circular)
+                                .scaleEffect(0.45)
+                        } else {
+                            Image(systemName: "chevron.up")
+                                .font(.system(size: 8, weight: .bold))
+                                .foregroundStyle(Color.accentColor)
+                        }
+                    }
+                    .frame(width: 22, height: 20)
+                }
+                .buttonStyle(.plain)
+                .help("Load earlier messages")
+                Rectangle()
+                    .fill(Color.accentColor.opacity(0.18))
+                    .frame(width: 1.5, height: 4)
+            }
+            ForEach(Array(items.enumerated()), id: \.element.id) { i, item in
+                TimelineNodeView(
+                    isFirst: i == 0 && !hasOlderMessages,
+                    isLast: i == items.count - 1,
+                    isHovered: hoveredId == item.id,
+                    previewText: item.text,
+                    height: nodeH
+                )
+                .onHover { h in
+                    withAnimation(.spring(response: 0.16, dampingFraction: 0.72)) {
+                        hoveredId = h ? item.id : nil
+                    }
+                }
+                .onTapGesture {
+                    withAnimation(.easeOut(duration: 0.25)) {
+                        proxy.scrollTo(item.id, anchor: .top)
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 8)
+        .frame(width: 22)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 11))
+        .shadow(color: .black.opacity(0.10), radius: 6, y: 2)
+    }
+}
+
+private struct TimelineNodeView: View {
+    let isFirst: Bool
+    let isLast: Bool
+    let isHovered: Bool
+    let previewText: String
+    let height: CGFloat
+    private let dot: CGFloat = 6
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Rectangle()
+                .fill(Color.accentColor.opacity(isFirst ? 0 : 0.18))
+                .frame(width: 1.5, height: (height - dot) / 2)
+            Circle()
+                .fill(isHovered ? Color.accentColor : Color.accentColor.opacity(0.38))
+                .frame(width: dot, height: dot)
+                .scaleEffect(isHovered ? 1.65 : 1.0)
+                .animation(.spring(response: 0.18, dampingFraction: 0.6), value: isHovered)
+            Rectangle()
+                .fill(Color.accentColor.opacity(isLast ? 0 : 0.18))
+                .frame(width: 1.5, height: (height - dot) / 2)
+        }
+        .frame(width: 22, height: height)
+        .contentShape(Rectangle())
+        .overlay(alignment: .leading) {
+            if isHovered {
+                TimelinePreviewCard(text: previewText)
+                    .offset(x: -(200 + 10))
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .scale(scale: 0.94, anchor: .trailing)),
+                        removal: .opacity
+                    ))
+            }
+        }
+    }
+}
+
+private struct TimelinePreviewCard: View {
+    let text: String
+
+    private var preview: String {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleaned = t
+            .replacingOccurrences(of: #"```[\s\S]*?```"#, with: "…", options: .regularExpression)
+            .replacingOccurrences(of: #"[*_`#>]"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.count > 130 ? String(cleaned.prefix(130)) + "…" : cleaned
+    }
+
+    var body: some View {
+        Text(preview.isEmpty ? text.prefix(130) + (text.count > 130 ? "…" : "") : preview)
+            .font(.caption2)
+            .lineLimit(4)
+            .multilineTextAlignment(.leading)
+            .padding(.horizontal, 11)
+            .padding(.vertical, 9)
+            .frame(width: 200, alignment: .leading)
+            .background(.thickMaterial, in: RoundedRectangle(cornerRadius: 10))
+            .shadow(color: .black.opacity(0.13), radius: 8, y: 3)
+    }
+}
+
+// MARK: - Thinking indicator (shown while agent hasn't yet produced content)
+
+/// Matches the reasoning block header visually so the transition to real
+/// reasoning content is seamless.
+private struct ThinkingIndicator: View {
     @State private var phase: Int = 0
 
     var body: some View {
         FlowStep(iconName: "clock", showLine: false) {
-            HStack(spacing: 5) {
-                ForEach(0..<3) { i in
-                    Circle()
-                        .fill(Color.secondary.opacity(0.4))
-                        .frame(width: 6, height: 6)
-                        .offset(y: phase == i ? -3 : 0)
-                        .animation(.easeInOut(duration: 0.3), value: phase)
+            HStack(spacing: 4) {
+                Text("Thinking")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 3) {
+                    ForEach(0..<3) { i in
+                        Circle()
+                            .fill(Color.secondary.opacity(phase == i ? 0.75 : 0.25))
+                            .frame(width: 4, height: 4)
+                            .animation(.easeInOut(duration: 0.4), value: phase)
+                    }
                 }
+                Spacer(minLength: 0)
             }
-            .padding(.vertical, 6)
-            .task {
-                while !Task.isCancelled {
-                    try? await Task.sleep(nanoseconds: 300_000_000)
-                    phase = (phase + 1) % 3
-                }
+        }
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 450_000_000)
+                phase = (phase + 1) % 3
             }
         }
     }

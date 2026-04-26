@@ -213,6 +213,29 @@ enum Markdown {
         return (count, String(text))
     }
 
+
+    /// Strips an unclosed fenced code block at the end so streaming partial text parses cleanly.
+    static func cleanForStreaming(_ text: String) -> String {
+        var fenceCount = 0
+        var inFence = false
+        for line in text.components(separatedBy: "\n") {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if t.hasPrefix("```") {
+                inFence = !inFence
+                fenceCount += inFence ? 1 : 0
+            }
+        }
+        if inFence {
+            if let r = text.range(of: "\n```", options: .backwards) {
+                return String(text[..<r.lowerBound])
+            }
+            if let r = text.range(of: "```", options: .backwards) {
+                return String(text[..<r.lowerBound])
+            }
+        }
+        return text
+    }
+
     /// Renders inline markdown. Converts GFM ~~strikethrough~~ to Apple ~strikethrough~
     /// before passing to SwiftUI's AttributedString parser.
     static func renderInline(_ s: String) -> AttributedString {
@@ -232,15 +255,19 @@ enum Markdown {
 
 // MARK: - Block renderer
 
+
 struct MarkdownBodyView: View {
     let text: String
+    var isStreaming: Bool = false
     @Environment(SettingsStore.self) private var settings
+    @State private var shownBlockCount: Int = 0
 
     var body: some View {
-        let blocks = Markdown.parse(text)
+        let displayText = isStreaming ? Markdown.cleanForStreaming(text) : text
+        let blocks = Markdown.parse(displayText)
         VStack(alignment: .leading, spacing: 12) {
-            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
-                switch block {
+            ForEach(Array(blocks.enumerated()), id: \.offset) { i, block in
+                Group { switch block {
                 case .heading(let level, let text):
                     Text(Markdown.renderInline(text))
                         .font(.system(size: settings.scaled(headingPoints(level: level)), weight: .semibold))
@@ -310,7 +337,30 @@ struct MarkdownBodyView: View {
 
                 case .horizontalRule:
                     Divider().padding(.vertical, 2)
+                } }
+                .opacity(i < shownBlockCount ? 1 : 0)
+                .mask {
+                    if isStreaming && i == blocks.count - 1 {
+                        VStack(spacing: 0) {
+                            Color.black
+                            LinearGradient(
+                                colors: [.black, .clear],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                            .frame(height: 32)
+                        }
+                    } else {
+                        Color.black
+                    }
                 }
+                .animation(.easeOut(duration: 0.45), value: isStreaming)
+            }
+        }
+        .onAppear { shownBlockCount = blocks.count }
+        .onChange(of: blocks.count) { _, newCount in
+            if newCount > shownBlockCount {
+                withAnimation(.easeOut(duration: 0.22)) { shownBlockCount = newCount }
             }
         }
     }

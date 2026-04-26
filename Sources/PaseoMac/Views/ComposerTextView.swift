@@ -81,6 +81,7 @@ struct ComposerTextView: NSViewRepresentable {
                 let fitted = lm.usedRect(for: tc).height + 8
                 parent.height = Double(max(44, fitted))
             }
+            tv.scrollRangeToVisible(tv.selectedRange())
         }
     }
 }

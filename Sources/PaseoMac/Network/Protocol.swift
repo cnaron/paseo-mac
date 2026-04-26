@@ -62,6 +62,19 @@ struct CreateAgentRequest: Encodable {
     let type = "create_agent_request"
     let requestId: String
     let config: Config
+    var initialPrompt: String? = nil
+
+    private enum CodingKeys: String, CodingKey {
+        case type, requestId, config, initialPrompt
+    }
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(type, forKey: .type)
+        try c.encode(requestId, forKey: .requestId)
+        try c.encode(config, forKey: .config)
+        try c.encodeIfPresent(initialPrompt, forKey: .initialPrompt)
+    }
+
     struct Config: Encodable {
         let provider: String
         let cwd: String

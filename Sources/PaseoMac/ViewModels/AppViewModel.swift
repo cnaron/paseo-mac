@@ -24,7 +24,16 @@ final class AppViewModel {
 
     var connectionState: ConnectionState = .disconnected
     var agents: [AgentSnapshot] = []
-    var selectedAgentId: String? = nil
+    var selectedAgentId: String? = nil {
+        didSet {
+            if let id = selectedAgentId, id != AppViewModel.pendingAgentId {
+                UserDefaults.standard.set(id, forKey: "paseomac.lastSelectedAgentId")
+            }
+        }
+    }
+    var pendingNewAgentCwd: String? = nil
+    var pendingNewAgentProvider: String = "anthropic"
+    static let pendingAgentId = "__pending__"
     var savedOfferRaw: String? {
         get { UserDefaults.standard.string(forKey: storedOfferKey) }
         set {
@@ -42,6 +51,19 @@ final class AppViewModel {
     /// Claude subscription usage — fetched from VPS proxy after connect.
     var usageData: ClaudeUsageData? = nil
     var statsData: ClaudeStatsData? = nil
+
+    /// Claude Code CLI version state.
+    var claudeCodeCurrentVersion: String? = nil
+    var claudeCodeLatestVersion: String? = nil
+    var isCheckingClaudeCodeVersion = false
+    var isUpdatingClaudeCode = false
+
+    var claudeCodeUpdateAvailable: Bool {
+        guard let current = claudeCodeCurrentVersion,
+              let latest = claudeCodeLatestVersion,
+              !current.isEmpty, current != "unknown" else { return false }
+        return latest != current
+    }
 
     // MARK: Internals
 
@@ -91,6 +113,7 @@ final class AppViewModel {
             // Fetch usage quota from VPS proxy.
             Task { [weak self] in await self?.fetchUsage() }
             Task { [weak self] in await self?.fetchStats() }
+            Task { [weak self] in await self?.checkClaudeCodeVersion() }
 
         } catch {
             self.connectionState = .failed(error.localizedDescription)
@@ -109,6 +132,9 @@ final class AppViewModel {
         providers = []
         usageData = nil
         statsData = nil
+        claudeCodeCurrentVersion = nil
+        pendingNewAgentCwd = nil
+        claudeCodeLatestVersion = nil
         connectionState = .disconnected
     }
 
@@ -127,17 +153,26 @@ final class AppViewModel {
     // MARK: - Agent creation
 
     func createAgent(cwd: String) async {
-        guard let client else { return }
         let provider = currentAgent()?.provider ?? "anthropic"
+        pendingNewAgentCwd = cwd
+        pendingNewAgentProvider = provider
+        selectedAgentId = AppViewModel.pendingAgentId
+    }
+
+    func submitPendingAgent(text: String) async {
+        guard let cwd = pendingNewAgentCwd, let client else { return }
+        let provider = pendingNewAgentProvider
+        pendingNewAgentCwd = nil
+        selectedAgentId = nil
         let before = Set(agents.map(\.id))
         do {
-            try await client.createAgent(cwd: cwd, provider: provider)
+            try await client.createAgent(cwd: cwd, provider: provider, initialPrompt: text)
         } catch { return }
-        for _ in 0..<10 {
+        for _ in 0..<20 {
             try? await Task.sleep(nanoseconds: 500_000_000)
             try? await refreshAgents()
-            if let newId = agents.first(where: { !before.contains($0.id) })?.id {
-                selectedAgentId = newId
+            if let newAgent = agents.first(where: { !before.contains($0.id) }) {
+                selectedAgentId = newAgent.id
                 return
             }
         }
@@ -164,8 +199,13 @@ final class AppViewModel {
         guard let client else { return }
         let list = try await client.listAgents(limit: 100)
         self.agents = list
-        if selectedAgentId == nil, let first = list.first {
-            selectedAgentId = first.id
+        if selectedAgentId == nil {
+            let saved = UserDefaults.standard.string(forKey: "paseomac.lastSelectedAgentId")
+            if let saved, list.contains(where: { $0.id == saved }) {
+                selectedAgentId = saved
+            } else if let first = list.first {
+                selectedAgentId = first.id
+            }
         }
     }
 
@@ -363,6 +403,79 @@ final class AppViewModel {
         )
     }
 
+    // MARK: - Claude Code version
+
+    private func claudeVersionBaseURL() -> URL? {
+        let urlString = UserDefaults.standard.string(forKey: "paseomac.usageApiUrl") ?? ""
+        guard !urlString.isEmpty, let url = URL(string: urlString) else { return nil }
+        return url.deletingLastPathComponent()
+    }
+
+    func checkClaudeCodeVersion() async {
+        guard !isCheckingClaudeCodeVersion else { return }
+        isCheckingClaudeCodeVersion = true
+        defer { isCheckingClaudeCodeVersion = false }
+
+        let token = UserDefaults.standard.string(forKey: "paseomac.usageApiToken") ?? ""
+
+        if let base = claudeVersionBaseURL() {
+            let versionURL = base.appendingPathComponent("claude-code-version")
+            var req = URLRequest(url: versionURL)
+            if !token.isEmpty { req.setValue(token, forHTTPHeaderField: "X-Usage-Token") }
+            req.timeoutInterval = 10
+            if let (data, resp) = try? await URLSession.shared.data(for: req),
+               (resp as? HTTPURLResponse)?.statusCode == 200,
+               let json = try? JSONDecoder().decode([String: String].self, from: data),
+               let v = json["version"] {
+                claudeCodeCurrentVersion = v
+            }
+        }
+
+        struct NpmResp: Decodable { let version: String }
+        if let npmURL = URL(string: "https://registry.npmjs.org/@anthropic-ai/claude-code/latest") {
+            var req = URLRequest(url: npmURL)
+            req.timeoutInterval = 10
+            if let (data, resp) = try? await URLSession.shared.data(for: req),
+               (resp as? HTTPURLResponse)?.statusCode == 200,
+               let parsed = try? JSONDecoder().decode(NpmResp.self, from: data) {
+                claudeCodeLatestVersion = parsed.version
+            }
+        }
+    }
+
+    func updateClaudeCode() async {
+        guard !isUpdatingClaudeCode, let base = claudeVersionBaseURL() else { return }
+        isUpdatingClaudeCode = true
+        defer { isUpdatingClaudeCode = false }
+
+        let versionBefore = claudeCodeCurrentVersion
+        let token = UserDefaults.standard.string(forKey: "paseomac.usageApiToken") ?? ""
+        let updateURL = base.appendingPathComponent("claude-code-update")
+        var req = URLRequest(url: updateURL)
+        req.httpMethod = "POST"
+        if !token.isEmpty { req.setValue(token, forHTTPHeaderField: "X-Usage-Token") }
+        req.timeoutInterval = 130
+
+        _ = try? await URLSession.shared.data(for: req)
+        await checkClaudeCodeVersion()
+
+        // If version actually changed, cancel running agents so next message uses new Claude Code.
+        // Context is preserved — Paseo resumes via session ID.
+        if claudeCodeCurrentVersion != versionBefore {
+            await cancelRunningAgentsForVersionUpdate()
+        }
+    }
+
+    private func cancelRunningAgentsForVersionUpdate() async {
+        guard let client else { return }
+        let runningIds = agents
+            .filter { (liveStatus[$0.id]?.status ?? $0.status) == "running" }
+            .map(\.id)
+        for agentId in runningIds {
+            _ = try? await client.cancelAgent(agentId: agentId)
+        }
+    }
+
     // MARK: - Inbound events
 
     private func ingest(session: SessionInbound) async {
@@ -378,6 +491,12 @@ final class AppViewModel {
                 timestamp: msg.payload.timestamp,
                 currentModel: currentModel
             )
+            if case .turnCompleted = msg.payload.event {
+                Task { [weak self] in
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    try? await self?.refreshAgents()
+                }
+            }
         case .agentStatus(let msg):
             if let snap = msg.payload.info,
                let idx = agents.firstIndex(where: { $0.id == snap.id }) {

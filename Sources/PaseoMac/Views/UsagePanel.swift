@@ -27,42 +27,142 @@ struct ClaudeUsageData {
 struct UsagePanel: View {
     let usage: ClaudeUsageData?
     var onRefresh: (() -> Void)? = nil
+    var currentVersion: String? = nil
+    var latestVersion: String? = nil
+    var isCheckingVersion: Bool = false
+    var isUpdating: Bool = false
+    var onCheckVersion: (() -> Void)? = nil
+    var onUpdate: (() -> Void)? = nil
+
+    private var updateAvailable: Bool {
+        guard let current = currentVersion, let latest = latestVersion,
+              !current.isEmpty, current != "unknown" else { return false }
+        return latest != current
+    }
 
     var body: some View {
-        if let usage {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text(usage.planName)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button { onRefresh?() } label: {
+        VStack(spacing: 0) {
+            if let usage {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text(usage.planName)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button { onRefresh?() } label: {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Refresh usage")
+                    }
+                    if let pct = usage.fiveHour {
+                        UsageBar(label: "5h", percent: pct, resetAt: usage.fiveHourResetAt)
+                    }
+                    if let pct = usage.sevenDay {
+                        UsageBar(label: "7d", percent: pct, resetAt: usage.sevenDayResetAt)
+                    }
+                    if let pct = usage.sevenDaySonnet {
+                        SubQuotaRow(label: "Sonnet", percent: pct, resetAt: usage.sevenDaySonnetResetAt)
+                    }
+                    if let pct = usage.sevenDayOpus {
+                        SubQuotaRow(label: "Opus", percent: pct, resetAt: usage.sevenDayOpusResetAt)
+                    }
+                    Text("Updated \(usage.fetchedTimestamp)")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 7)
+            }
+            if currentVersion != nil || latestVersion != nil {
+                if usage != nil { Divider() }
+                ClaudeCodeVersionRow(
+                    currentVersion: currentVersion,
+                    latestVersion: latestVersion,
+                    isChecking: isCheckingVersion,
+                    isUpdating: isUpdating,
+                    updateAvailable: updateAvailable,
+                    onCheck: onCheckVersion,
+                    onUpdate: onUpdate
+                )
+            }
+        }
+    }
+}
+
+// MARK: - Claude Code version row
+
+private struct ClaudeCodeVersionRow: View {
+    let currentVersion: String?
+    let latestVersion: String?
+    let isChecking: Bool
+    let isUpdating: Bool
+    let updateAvailable: Bool
+    var onCheck: (() -> Void)? = nil
+    var onUpdate: (() -> Void)? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 4) {
+                Text("Claude Code")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if isChecking {
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .scaleEffect(0.5)
+                        .frame(width: 12, height: 12)
+                } else {
+                    Button { onCheck?() } label: {
                         Image(systemName: "arrow.clockwise")
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
                     }
                     .buttonStyle(.plain)
-                    .help("Refresh usage")
+                    .help("Check for Claude Code updates")
                 }
-                if let pct = usage.fiveHour {
-                    UsageBar(label: "5h", percent: pct, resetAt: usage.fiveHourResetAt)
-                }
-                if let pct = usage.sevenDay {
-                    UsageBar(label: "7d", percent: pct, resetAt: usage.sevenDayResetAt)
-                }
-                if let pct = usage.sevenDaySonnet {
-                    SubQuotaRow(label: "Sonnet", percent: pct, resetAt: usage.sevenDaySonnetResetAt)
-                }
-                if let pct = usage.sevenDayOpus {
-                    SubQuotaRow(label: "Opus", percent: pct, resetAt: usage.sevenDayOpusResetAt)
-                }
-                Text("Updated \(usage.fetchedTimestamp)")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 7)
+            HStack(spacing: 4) {
+                if let current = currentVersion {
+                    Text("v\(current)")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(updateAvailable ? AnyShapeStyle(.orange) : AnyShapeStyle(.tertiary))
+                } else {
+                    Text("—")
+                        .font(.caption2)
+                        .foregroundStyle(.quaternary)
+                }
+                if updateAvailable, let latest = latestVersion {
+                    Image(systemName: "arrow.right")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                    Text("v\(latest)")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.orange)
+                    Spacer()
+                    if isUpdating {
+                        ProgressView()
+                            .progressViewStyle(.circular)
+                            .scaleEffect(0.5)
+                            .frame(width: 12, height: 12)
+                    } else {
+                        Button("Update") { onUpdate?() }
+                            .font(.caption2.weight(.medium))
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.orange)
+                    }
+                } else if !updateAvailable, latestVersion != nil, currentVersion != nil {
+                    Text("· latest")
+                        .font(.caption2)
+                        .foregroundStyle(.quaternary)
+                }
+            }
         }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
     }
 }
 

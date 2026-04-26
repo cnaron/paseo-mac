@@ -18,8 +18,13 @@ struct ComposerView: View {
             // Queued messages above the card
             if !vm.queued.isEmpty {
                 queuedStrip
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 8)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(.ultraThinMaterial,
+                                in: RoundedRectangle(cornerRadius: 14))
+                    .shadow(color: .black.opacity(0.08), radius: 8, y: -2)
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 6)
             }
             composerCard
                 .padding(.horizontal, 20)
@@ -71,7 +76,7 @@ struct ComposerView: View {
                 onFileDrop: { urls in handleFileURLDrop(urls) },
                 onImageDrop: { images in handleImageDrop(images) }
             )
-            .frame(height: max(CGFloat(settings.composerHeight), CGFloat(textFitHeight)).rounded())
+            .frame(height: max(CGFloat(settings.composerHeight), min(CGFloat(textFitHeight), 120)).rounded())
             .padding(.horizontal, 12)
             .padding(.bottom, 4)
 
@@ -272,7 +277,15 @@ struct ComposerView: View {
     }
 
     private func submit() {
-        Task { await vm.sendComposer() }
+        if app.pendingNewAgentCwd != nil {
+            let text = vm.composerText.trimmingCharacters(in: .whitespacesAndNewlines)
+            vm.composerText = ""
+            vm.pendingImages = []
+            vm.pendingTextFiles = []
+            Task { await app.submitPendingAgent(text: text) }
+        } else {
+            Task { await vm.sendComposer() }
+        }
     }
 
     // MARK: - Drop handlers (from ComposerTextView)

@@ -281,10 +281,11 @@ actor DaemonClient {
         return resp.payload
     }
 
-    func createAgent(cwd: String, provider: String, model: String? = nil) async throws {
+    func createAgent(cwd: String, provider: String, model: String? = nil, initialPrompt: String? = nil) async throws {
         let requestId = UUID().uuidString
         let config = CreateAgentRequest.Config(provider: provider, cwd: cwd, model: model, modeId: nil)
-        let req = CreateAgentRequest(requestId: requestId, config: config)
+        var req = CreateAgentRequest(requestId: requestId, config: config)
+        req.initialPrompt = initialPrompt
         try await rawSend(.session(.createAgent(req)))
     }
 
