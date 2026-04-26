@@ -339,28 +339,13 @@ struct MarkdownBodyView: View {
                     Divider().padding(.vertical, 2)
                 } }
                 .opacity(i < shownBlockCount ? 1 : 0)
-                .mask {
-                    if isStreaming && i == blocks.count - 1 {
-                        VStack(spacing: 0) {
-                            Color.black
-                            LinearGradient(
-                                colors: [.black, .clear],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                            .frame(height: 32)
-                        }
-                    } else {
-                        Color.black
-                    }
-                }
-                .animation(.easeOut(duration: 0.45), value: isStreaming)
+                .offset(y: i < shownBlockCount ? 0 : 6)
             }
         }
         .onAppear { shownBlockCount = blocks.count }
         .onChange(of: blocks.count) { _, newCount in
             if newCount > shownBlockCount {
-                withAnimation(.easeOut(duration: 0.22)) { shownBlockCount = newCount }
+                withAnimation(.spring(response: 0.32, dampingFraction: 0.78)) { shownBlockCount = newCount }
             }
         }
     }
