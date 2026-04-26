@@ -286,6 +286,7 @@ private struct MessageList: View {
                                 .onDisappear { isNearBottom = false }
                         }
                         .padding(.vertical, 16)
+                        .padding(.trailing, 44)
                     }
                 }
                 .onChange(of: vm.rows.count) { _, _ in
