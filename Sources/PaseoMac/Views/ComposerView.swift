@@ -76,7 +76,7 @@ struct ComposerView: View {
                 onFileDrop: { urls in handleFileURLDrop(urls) },
                 onImageDrop: { images in handleImageDrop(images) }
             )
-            .frame(height: max(CGFloat(settings.composerHeight), min(CGFloat(textFitHeight), 120)).rounded())
+            .frame(height: CGFloat(settings.composerHeight))
             .padding(.horizontal, 12)
             .padding(.bottom, 4)
 
