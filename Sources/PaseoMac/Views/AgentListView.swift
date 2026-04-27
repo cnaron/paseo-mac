@@ -152,7 +152,7 @@ private struct StatusIndicator: View {
 
     @State private var pulse = false
 
-    private var shouldPulse: Bool { isActivelyWorking || requiresAttention }
+    private var shouldPulse: Bool { isActivelyWorking }
 
     var body: some View {
         Circle()
