@@ -341,10 +341,14 @@ private struct MessageList: View {
             }
             hasNewContent = false
         } label: {
-            HStack(spacing: 4) {
+            HStack(spacing: 5) {
                 Image(systemName: "arrow.down")
                     .font(.caption.weight(.semibold))
-                if hasNewContent {
+                if vm.isAgentWorking && !isNearBottom {
+                    Text("Replying…")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(Color.accentColor)
+                } else if hasNewContent {
                     Circle()
                         .fill(Color.accentColor)
                         .frame(width: 6, height: 6)
