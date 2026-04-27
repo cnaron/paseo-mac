@@ -317,7 +317,7 @@ private struct MessageList: View {
             }
             .overlay(alignment: .trailing) {
                 let ug = grouped.filter { $0.group.kind == "user" }
-                    .map { UserMessageTimeline.Item(id: $0.id, text: $0.group.text) }
+                    .map { UserMessageTimeline.Item(id: $0.id, text: $0.group.text, hasImages: !$0.group.images.isEmpty) }
                 if !ug.isEmpty {
                     UserMessageTimeline(
                         items: ug, proxy: proxy,
@@ -1201,7 +1201,7 @@ private func hasCurrentTurnContent(_ rows: [ConversationViewModel.Row]) -> Bool 
 // MARK: - User message timeline (right rail)
 
 private struct UserMessageTimeline: View {
-    struct Item: Identifiable { let id: String; let text: String }
+    struct Item: Identifiable { let id: String; let text: String; var hasImages: Bool = false }
     let items: [Item]
     let proxy: ScrollViewProxy
     var hasOlderMessages: Bool = false
@@ -1240,6 +1240,7 @@ private struct UserMessageTimeline: View {
                     isLast: i == items.count - 1,
                     isHovered: hoveredId == item.id,
                     previewText: item.text,
+                    hasImages: item.hasImages,
                     height: nodeH
                 )
                 .onHover { h in
@@ -1266,6 +1267,7 @@ private struct TimelineNodeView: View {
     let isLast: Bool
     let isHovered: Bool
     let previewText: String
+    var hasImages: Bool = false
     let height: CGFloat
     private let dot: CGFloat = 6
 
@@ -1274,11 +1276,18 @@ private struct TimelineNodeView: View {
             Rectangle()
                 .fill(Color.accentColor.opacity(isFirst ? 0 : 0.18))
                 .frame(width: 1.5, height: (height - dot) / 2)
-            Circle()
-                .fill(isHovered ? Color.accentColor : Color.accentColor.opacity(0.38))
-                .frame(width: dot, height: dot)
-                .scaleEffect(isHovered ? 1.65 : 1.0)
-                .animation(.spring(response: 0.18, dampingFraction: 0.6), value: isHovered)
+            ZStack {
+                Circle()
+                    .fill(isHovered ? Color.accentColor : Color.accentColor.opacity(0.38))
+                    .frame(width: dot, height: dot)
+                if hasImages && !isHovered {
+                    Image(systemName: "photo.fill")
+                        .font(.system(size: 5, weight: .bold))
+                        .foregroundStyle(.white)
+                }
+            }
+            .scaleEffect(isHovered ? 1.65 : 1.0)
+            .animation(.spring(response: 0.18, dampingFraction: 0.6), value: isHovered)
             Rectangle()
                 .fill(Color.accentColor.opacity(isLast ? 0 : 0.18))
                 .frame(width: 1.5, height: (height - dot) / 2)
