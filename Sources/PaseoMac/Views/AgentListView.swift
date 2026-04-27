@@ -23,6 +23,10 @@ struct AgentListView: View {
                 }
             }
             .listStyle(.sidebar)
+            if app.daemonVersionMismatch {
+                Divider()
+                DaemonVersionMismatchBanner(app: app)
+            }
             if app.claudeCodeUpdateAvailable {
                 Divider()
                 ClaudeCodeUpdateBanner(app: app)
@@ -418,6 +422,35 @@ private struct ConnectionFooter: View {
 }
 
 // MARK: - Claude Code update banner
+
+private struct DaemonVersionMismatchBanner: View {
+    let app: AppViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Daemon version mismatch")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.primary)
+                Spacer()
+                Button { app.versionMismatchDismissed = true } label: {
+                    Image(systemName: "xmark")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+            if let host = app.daemonHostname, let ver = app.daemonVersion {
+                Text("\(host) is running v\(ver). Expected v\(AppViewModel.compatibleDaemonPrefix).x. For the best experience, keep the daemon and client compatible.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+    }
+}
 
 private struct ClaudeCodeUpdateBanner: View {
     let app: AppViewModel

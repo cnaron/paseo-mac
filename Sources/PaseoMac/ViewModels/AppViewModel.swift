@@ -49,6 +49,20 @@ final class AppViewModel {
     var liveStatus: [String: LiveStatus] = [:]
     var providers: [ProviderSnapshot] = []
 
+    var daemonVersion: String? = nil
+    var daemonHostname: String? = nil
+    var versionMismatchDismissed: Bool = false
+
+    /// Compatible Paseo daemon version prefix (major.minor)
+    static let compatibleDaemonPrefix = "0.1"
+
+    var daemonVersionMismatch: Bool {
+        guard !versionMismatchDismissed,
+              let v = daemonVersion else { return false }
+        let prefix = Self.compatibleDaemonPrefix
+        return !v.hasPrefix(prefix + ".") && v != prefix
+    }
+
     /// Claude subscription usage — fetched from VPS proxy after connect.
     var usageData: ClaudeUsageData? = nil
     var statsData: ClaudeStatsData? = nil
@@ -142,6 +156,9 @@ final class AppViewModel {
         claudeCodeCurrentVersion = nil
         pendingNewAgentCwd = nil
         claudeCodeLatestVersion = nil
+        daemonVersion = nil
+        daemonHostname = nil
+        versionMismatchDismissed = false
         connectionState = .disconnected
     }
 
@@ -507,7 +524,11 @@ final class AppViewModel {
                 requiresAttention: msg.payload.info?.requiresAttention ?? false,
                 attentionReason: msg.payload.info?.attentionReason
             )
-        case .serverInfo, .status, .fetchAgentsResponse, .fetchAgentTimelineResponse,
+        case .serverInfo(let info):
+            daemonVersion = info.version
+            daemonHostname = info.hostname
+            versionMismatchDismissed = false
+        case .status, .fetchAgentsResponse, .fetchAgentTimelineResponse,
              .sendAgentMessageResponse, .setAgentModeResponse, .setAgentModelResponse,
              .setAgentThinkingResponse, .getProvidersSnapshotResponse, .cancelAgentResponse,
              .unknown:
