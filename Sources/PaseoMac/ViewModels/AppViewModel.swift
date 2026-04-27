@@ -74,6 +74,11 @@ final class AppViewModel {
 
     // MARK: - Lifecycle
 
+    var selectedAgentIsWorking: Bool {
+        guard let id = selectedAgentId else { return false }
+        return conversations[id]?.isAgentWorking ?? false
+    }
+
     func autoConnectIfPossible() {
         guard case .disconnected = connectionState else { return }
         guard let raw = savedOfferRaw, !raw.isEmpty else { return }

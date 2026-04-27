@@ -19,21 +19,7 @@ struct AgentListView: View {
                         }
                         .tag(AppViewModel.pendingAgentId as String?)
                     }
-                    ForEach(app.agents) { agent in
-                        AgentRow(
-                            agent: agent,
-                            live: app.liveStatus[agent.id],
-                            onDelete: { Task { await app.archiveAgent(agentId: agent.id) } }
-                        )
-                        .tag(agent.id as String?)
-                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                            Button(role: .destructive) {
-                                Task { await app.archiveAgent(agentId: agent.id) }
-                            } label: {
-                                Label("Delete", systemImage: "trash")
-                            }
-                        }
-                    }
+                    agentRows
                 }
             }
             .listStyle(.sidebar)
@@ -82,34 +68,52 @@ struct AgentListView: View {
     }
 }
 
+extension AgentListView {
+    @ViewBuilder
+    private var agentRows: some View {
+        let isWorking = app.selectedAgentIsWorking
+        let selId = app.selectedAgentId
+        ForEach(app.agents) { agent in
+            AgentRow(
+                agent: agent,
+                live: app.liveStatus[agent.id],
+                isActivelyWorking: isWorking && agent.id == selId,
+                onDelete: { Task { await app.archiveAgent(agentId: agent.id) } }
+            )
+            .tag(agent.id as String?)
+            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                Button(role: .destructive) {
+                    Task { await app.archiveAgent(agentId: agent.id) }
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+            }
+        }
+    }
+}
+
 private struct AgentRow: View {
     let agent: AgentSnapshot
     let live: AppViewModel.LiveStatus?
+    var isActivelyWorking: Bool = false
     var onDelete: (() -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 8) {
             StatusIndicator(
                 status: effectiveStatus,
-                requiresAttention: effectiveAttention
+                requiresAttention: effectiveAttention,
+                isActivelyWorking: isActivelyWorking
             )
             VStack(alignment: .leading, spacing: 2) {
                 Text(agent.displayName)
                     .font(.body)
                     .lineLimit(1)
-                if effectiveAttention {
-                    Text("Needs input · \(shortCwd)")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(Color.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                } else {
-                    Text(effectiveStatus == "running" ? "\(shortCwd) · running" : shortCwd)
-                        .font(.caption)
-                        .foregroundStyle(effectiveStatus == "running" ? Color.green : Color.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
+                Text(effectiveStatus == "running" ? "\(shortCwd) · running" : shortCwd)
+                    .font(.caption)
+                    .foregroundStyle(effectiveStatus == "running" ? Color.green : Color.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
             Spacer()
         }
@@ -144,8 +148,11 @@ private struct AgentRow: View {
 private struct StatusIndicator: View {
     let status: String
     let requiresAttention: Bool
+    var isActivelyWorking: Bool = false
 
     @State private var pulse = false
+
+    private var shouldPulse: Bool { isActivelyWorking || requiresAttention }
 
     var body: some View {
         Circle()
@@ -155,26 +162,22 @@ private struct StatusIndicator: View {
                 Circle()
                     .stroke(Color.white.opacity(0.6), lineWidth: 1)
             )
-            .scaleEffect((pulse && status == "running") || (pulse && requiresAttention) ? 1.35 : 1.0)
+            .scaleEffect(pulse && shouldPulse ? 1.35 : 1.0)
             .animation(
-                (status == "running" || requiresAttention)
+                shouldPulse
                     ? .easeInOut(duration: 0.9).repeatForever(autoreverses: true)
                     : .default,
                 value: pulse
             )
-            .onAppear { pulse = true }
-            .onChange(of: status) { _, _ in
+            .onAppear { pulse = shouldPulse }
+            .onChange(of: shouldPulse) { _, active in
                 pulse = false
-                DispatchQueue.main.async { pulse = true }
-            }
-            .onChange(of: requiresAttention) { _, _ in
-                pulse = false
-                DispatchQueue.main.async { pulse = true }
+                if active { DispatchQueue.main.async { pulse = true } }
             }
     }
 
     private var color: Color {
-        if requiresAttention { return .yellow }
+        if requiresAttention { return .accentColor }
         switch status {
         case "running": return .green
         case "idle": return .cyan
