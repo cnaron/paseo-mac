@@ -68,6 +68,7 @@ actor DaemonClient {
     private var receiveTask: Task<Void, Never>?
     private var keepaliveTask: Task<Void, Never>?
     private static let keepaliveInterval: TimeInterval = 20
+    private var consecutivePingFailures = 0
 
     /// Fires for every inbound session message we didn't match to a pending request.
     let events: AsyncStream<SessionInbound>
@@ -106,16 +107,32 @@ actor DaemonClient {
 
     private func startKeepalive() {
         keepaliveTask?.cancel()
+        consecutivePingFailures = 0
         keepaliveTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: UInt64(DaemonClient.keepaliveInterval * 1_000_000_000))
                 guard !Task.isCancelled, let self else { return }
                 let alive = await self.pingTransport()
-                if !alive {
-                    await self.handleKeepaliveFailure()
+                if alive {
+                    await self.resetPingFailures()
+                } else {
+                    let shouldDisconnect = await self.recordPingFailure()
+                    if shouldDisconnect {
+                        await self.handleKeepaliveFailure()
+                    }
                 }
             }
         }
+    }
+
+    private func resetPingFailures() {
+        consecutivePingFailures = 0
+    }
+
+    private func recordPingFailure() -> Bool {
+        consecutivePingFailures += 1
+        debugLog("[keepalive] ping failed (\(consecutivePingFailures)/2)")
+        return consecutivePingFailures >= 2
     }
 
     private func pingTransport() async -> Bool {
@@ -132,7 +149,7 @@ actor DaemonClient {
     }
 
     private func handleKeepaliveFailure() {
-        debugLog("[keepalive] ping failed — treating as disconnect")
+        debugLog("[keepalive] 2 consecutive ping failures — treating as disconnect")
         failAllPending(with: DaemonError.notConnected)
     }
 

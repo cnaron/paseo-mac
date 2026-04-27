@@ -54,12 +54,14 @@ struct ComposerTextView: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? DropInterceptingTextView else { return }
         if textView.string != text {
-            // Don't reset the textView while the user is actively editing.
-            // `isUserEditing` is set via textDidBeginEditing/textDidEndEditing — more
-            // reliable than checking firstResponder, which can transiently change
-            // during SwiftUI layout passes.
+            // Protect against resetting text the user is actively typing.
+            // Guard 1: isUserEditing (textDidBeginEditing/textDidEndEditing).
+            // Guard 2: recency — if user typed within the last 0.5s, the binding
+            //   update may not have propagated yet, so skip to avoid swallowing chars.
             // Exception: always apply when text is empty (send action cleared it).
-            if !context.coordinator.isUserEditing || text.isEmpty {
+            let typedRecently = Date().timeIntervalSince(context.coordinator.lastUserTypedAt) < 0.5
+            let protected = context.coordinator.isUserEditing || typedRecently
+            if !protected || text.isEmpty {
                 let sel = textView.selectedRange()
                 textView.string = text
                 let safe = NSRange(
@@ -83,9 +85,8 @@ struct ComposerTextView: NSViewRepresentable {
         var sentHistory: [String] = []
         var historyIndex: Int = -1
         var savedDraft: String = ""
-        /// Set by textDidBeginEditing/textDidEndEditing — true while the user
-        /// has keyboard focus in the text view. More reliable than polling firstResponder.
         var isUserEditing: Bool = false
+        var lastUserTypedAt: Date = .distantPast
 
         init(_ parent: ComposerTextView) { self.parent = parent }
 
@@ -117,6 +118,7 @@ struct ComposerTextView: NSViewRepresentable {
         func textDidChange(_ notification: Notification) {
             guard let tv = textView else { return }
             historyIndex = -1  // reset history nav on manual edit
+            lastUserTypedAt = Date()
             parent.text = tv.string
             tv.needsDisplay = true  // redraw placeholder
             if let lm = tv.layoutManager, let tc = tv.textContainer {
