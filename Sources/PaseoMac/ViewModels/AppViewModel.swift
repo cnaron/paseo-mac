@@ -126,6 +126,15 @@ final class AppViewModel {
 
             try await refreshAgents()
 
+            // After reconnect, reload conversations that may have missed streaming
+            // content while the client was offline. Skip agents that are still
+            // running — their streaming events will arrive via the new event stream,
+            // and reloading mid-turn would race with and overwrite those updates.
+            let runningIds = Set(agents.filter { $0.status == "running" }.map(\.id))
+            for (agentId, vm) in conversations where !runningIds.contains(agentId) {
+                Task { await vm.loadInitial() }
+            }
+
             Task { [weak self] in
                 if let list = try? await self?.client?.getProvidersSnapshot() {
                     self?.providers = list
