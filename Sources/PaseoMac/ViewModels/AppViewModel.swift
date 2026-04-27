@@ -84,6 +84,7 @@ final class AppViewModel {
 
     private var client: DaemonClient?
     private var eventTask: Task<Void, Never>?
+    private var reconnectTask: Task<Void, Never>?
     private var conversations: [String: ConversationViewModel] = [:]
 
     // MARK: - Lifecycle
@@ -142,6 +143,8 @@ final class AppViewModel {
     }
 
     func disconnect() async {
+        reconnectTask?.cancel()
+        reconnectTask = nil
         eventTask?.cancel()
         eventTask = nil
         if let c = client { await c.disconnect() }
@@ -165,6 +168,25 @@ final class AppViewModel {
     private func handleUnexpectedDisconnect() async {
         client = nil
         connectionState = .disconnected
+        scheduleReconnect()
+    }
+
+    private func scheduleReconnect() {
+        guard let raw = savedOfferRaw, !raw.isEmpty else { return }
+        reconnectTask?.cancel()
+        reconnectTask = Task { [weak self] in
+            var delay: UInt64 = 3_000_000_000  // 3s, 6s, 12s
+            for attempt in 1...4 {
+                try? await Task.sleep(nanoseconds: delay)
+                guard !Task.isCancelled else { return }
+                guard let self else { return }
+                guard case .disconnected = connectionState else { return }
+                await self.connect(withOfferRaw: raw)
+                if case .connected = connectionState { return }
+                delay = min(delay * 2, 30_000_000_000)
+                _ = attempt
+            }
+        }
     }
 
     // MARK: - Agent creation

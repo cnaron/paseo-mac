@@ -66,6 +66,8 @@ actor DaemonClient {
 
     private var pending: [String: CheckedContinuation<SessionInbound, Error>] = [:]
     private var receiveTask: Task<Void, Never>?
+    private var keepaliveTask: Task<Void, Never>?
+    private static let keepaliveInterval: TimeInterval = 25
 
     /// Fires for every inbound session message we didn't match to a pending request.
     let events: AsyncStream<SessionInbound>
@@ -99,9 +101,40 @@ actor DaemonClient {
             capabilities: nil
         )
         try await rawSend(.hello(hello))
+        startKeepalive()
+    }
+
+    private func startKeepalive() {
+        keepaliveTask?.cancel()
+        keepaliveTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64(DaemonClient.keepaliveInterval * 1_000_000_000))
+                guard !Task.isCancelled else { return }
+                guard let self else { return }
+                // Send a WebSocket-level ping; failure means the connection is dead.
+                if case .direct(let ws) = await self.transport {
+                    await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                        ws.sendPing { error in
+                            if let error = error {
+                                Task { await self.handleKeepaliveFailure(error) }
+                            }
+                            cont.resume()
+                        }
+                    }
+                }
+                // Relay transport uses its own keepalive at the relay layer; skip.
+            }
+        }
+    }
+
+    private func handleKeepaliveFailure(_ error: Error) {
+        debugLog("[keepalive] ping failed: \(error) — treating as disconnect")
+        failAllPending(with: error)
     }
 
     func disconnect() {
+        keepaliveTask?.cancel()
+        keepaliveTask = nil
         receiveTask?.cancel()
         receiveTask = nil
         switch transport {
