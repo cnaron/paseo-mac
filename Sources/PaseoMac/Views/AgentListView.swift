@@ -100,7 +100,7 @@ private struct AgentRow: View {
                 if effectiveAttention {
                     Text("Needs input · \(shortCwd)")
                         .font(.caption.weight(.medium))
-                        .foregroundStyle(Color.orange)
+                        .foregroundStyle(Color.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 } else {
@@ -174,7 +174,7 @@ private struct StatusIndicator: View {
     }
 
     private var color: Color {
-        if requiresAttention { return .orange }
+        if requiresAttention { return .yellow }
         switch status {
         case "running": return .green
         case "idle": return .cyan
