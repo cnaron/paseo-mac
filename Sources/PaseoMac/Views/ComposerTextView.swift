@@ -8,6 +8,7 @@ struct ComposerTextView: NSViewRepresentable {
     @Binding var text: String
     @Binding var height: Double
     var font: NSFont = .systemFont(ofSize: NSFont.systemFontSize)
+    var sentHistory: [String] = []
     var onFileDrop: ([URL]) -> Void = { _ in }
     var onImageDrop: ([NSImage]) -> Void = { _ in }
 
@@ -43,6 +44,8 @@ struct ComposerTextView: NSViewRepresentable {
 
         textView.placeholder = "Reply…"
         context.coordinator.textView = textView
+        textView.historyUp = { context.coordinator.navigateHistory(up: true) }
+        textView.historyDown = { context.coordinator.navigateHistory(up: false) }
         // Become first responder so ⌘V reaches paste(_:) immediately
         DispatchQueue.main.async { textView.window?.makeFirstResponder(textView) }
         return scrollView
@@ -62,6 +65,7 @@ struct ComposerTextView: NSViewRepresentable {
         textView.font = font
         textView.fileDrop = onFileDrop
         textView.imageDrop = onImageDrop
+        context.coordinator.sentHistory = sentHistory
     }
 
     // MARK: - Coordinator
@@ -69,11 +73,32 @@ struct ComposerTextView: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextViewDelegate {
         let parent: ComposerTextView
         weak var textView: NSTextView?
+        var sentHistory: [String] = []
+        var historyIndex: Int = -1
+        var savedDraft: String = ""
 
         init(_ parent: ComposerTextView) { self.parent = parent }
 
+        func navigateHistory(up: Bool) {
+            guard let tv = textView else { return }
+            if up {
+                if historyIndex == -1 { savedDraft = tv.string }
+                let next = historyIndex + 1
+                guard next < sentHistory.count else { return }
+                historyIndex = next
+            } else {
+                guard historyIndex >= 0 else { return }
+                historyIndex -= 1
+            }
+            let newText = historyIndex >= 0 ? sentHistory[historyIndex] : savedDraft
+            tv.string = newText
+            parent.text = newText
+            tv.setSelectedRange(NSRange(location: newText.count, length: 0))
+        }
+
         func textDidChange(_ notification: Notification) {
             guard let tv = textView else { return }
+            historyIndex = -1  // reset history nav on manual edit
             parent.text = tv.string
             tv.needsDisplay = true  // redraw placeholder
             if let lm = tv.layoutManager, let tc = tv.textContainer {
@@ -143,6 +168,29 @@ final class DropInterceptingTextView: NSTextView {
 
     /// Intercept ⌘V at the key-event level before SwiftUI or AppKit menus
     /// can route it elsewhere. Calls our own paste(_:) directly.
+    var historyUp: (() -> Void)?
+    var historyDown: (() -> Void)?
+
+    override func keyDown(with event: NSEvent) {
+        // ↑ at start of text (or empty) → history back
+        if event.specialKey == .upArrow {
+            let atStart = selectedRange().location == 0
+            if string.isEmpty || atStart {
+                historyUp?()
+                return
+            }
+        }
+        // ↓ at end of text → history forward
+        if event.specialKey == .downArrow {
+            let atEnd = selectedRange().location == string.count
+            if string.isEmpty || atEnd {
+                historyDown?()
+                return
+            }
+        }
+        super.keyDown(with: event)
+    }
+
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let cmd = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if cmd == .command && event.charactersIgnoringModifiers == "v" {

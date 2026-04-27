@@ -73,6 +73,8 @@ struct ComposerView: View {
                 text: $vm.composerText,
                 height: $textFitHeight,
                 font: .systemFont(ofSize: NSFont.systemFontSize),
+                sentHistory: vm.rows.filter { $0.kind == "user" && !$0.text.isEmpty }
+                    .map { $0.text }.reversed(),
                 onFileDrop: { urls in handleFileURLDrop(urls) },
                 onImageDrop: { images in handleImageDrop(images) }
             )
