@@ -89,6 +89,7 @@ struct ComposerView: View {
         .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.secondary.opacity(0.15), lineWidth: 1))
         .shadow(color: .black.opacity(0.12), radius: 12, y: 4)
         .frame(maxWidth: 720)
+        .onChange(of: vm.composerText) { vm.saveDraft() }
     }
 
     // MARK: - Bottom action row

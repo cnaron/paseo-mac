@@ -265,6 +265,38 @@ final class ConversationViewModel {
     init(agentId: String, getClient: @escaping () -> DaemonClient?) {
         self.agentId = agentId
         self.getClient = getClient
+        let ud = UserDefaults.standard
+        self.composerText = ud.string(forKey: "draft_\(agentId)") ?? ""
+        if let data = ud.data(forKey: "queued_\(agentId)"),
+           let items = try? JSONDecoder().decode([PersistedQueued].self, from: data) {
+            self.queued = items.map { QueuedMessage(text: $0.text, messageId: $0.messageId, images: []) }
+        }
+    }
+
+    // MARK: - Draft persistence
+
+    private struct PersistedQueued: Codable {
+        let text: String
+        let messageId: String
+    }
+
+    func saveDraft() {
+        let ud = UserDefaults.standard
+        if composerText.isEmpty {
+            ud.removeObject(forKey: "draft_\(agentId)")
+        } else {
+            ud.set(composerText, forKey: "draft_\(agentId)")
+        }
+    }
+
+    func saveQueued() {
+        let ud = UserDefaults.standard
+        let items = queued.map { PersistedQueued(text: $0.text, messageId: $0.messageId) }
+        if items.isEmpty {
+            ud.removeObject(forKey: "queued_\(agentId)")
+        } else if let data = try? JSONEncoder().encode(items) {
+            ud.set(data, forKey: "queued_\(agentId)")
+        }
     }
 
     // MARK: - Loading
@@ -319,9 +351,11 @@ final class ConversationViewModel {
         guard let pending = drainComposerForSend() else { return }
         if isAgentWorking {
             queued.append(pending)
+            saveQueued()
         } else {
             await dispatch(pending)
         }
+        saveDraft()
     }
 
     /// "Interrupt and send" path: cancels whatever the agent is doing right
@@ -339,6 +373,7 @@ final class ConversationViewModel {
 
     func removeQueued(id: UUID) {
         queued.removeAll { $0.id == id }
+        saveQueued()
     }
 
     /// Pull a queued message back into the composer for editing.
@@ -347,6 +382,7 @@ final class ConversationViewModel {
         let msg = queued.remove(at: idx)
         composerText = msg.text
         pendingImages = msg.images
+        saveQueued()
     }
 
     /// Pull the composer's current content into a QueuedMessage and clear it.
@@ -401,6 +437,7 @@ final class ConversationViewModel {
     private func flushQueueIfNeeded() {
         guard !queued.isEmpty else { return }
         let next = queued.removeFirst()
+        saveQueued()
         Task { await dispatch(next) }
     }
 
