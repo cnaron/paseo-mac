@@ -291,7 +291,8 @@ private struct MessageList: View {
                     }
                 }
                 .onChange(of: vm.rows.count) { _, _ in
-                    if isNearBottom {
+                    let lastIsUser = vm.rows.last?.kind == "user"
+                    if isNearBottom || lastIsUser {
                         withAnimation(.easeOut(duration: 0.15)) {
                             proxy.scrollTo("bottom", anchor: .bottom)
                         }
