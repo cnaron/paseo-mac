@@ -4,6 +4,7 @@ struct ConversationView: View {
     @Environment(AppViewModel.self) private var app
     let agentId: String
     @State private var searchText: String = ""
+    @State private var showFileBrowser: Bool = false
 
     var body: some View {
         let isPending = agentId == AppViewModel.pendingAgentId
@@ -63,6 +64,19 @@ struct ConversationView: View {
                 }
                 .help("New agent in same directory")
                 .disabled(agent() == nil)
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button { showFileBrowser = true } label: {
+                    Image(systemName: "folder")
+                }
+                .help("Browse files")
+                .disabled(agent()?.cwd == nil)
+            }
+        }
+        .sheet(isPresented: $showFileBrowser) {
+            if let cwd = agent()?.cwd {
+                FileBrowserView(rootPath: cwd)
+                    .frame(minWidth: 640, minHeight: 480)
             }
         }
     }
@@ -1251,7 +1265,6 @@ private struct UserMessageTimeline: View {
                     isLast: i == items.count - 1,
                     isHovered: hoveredId == item.id,
                     previewText: item.text,
-                    hasImages: item.hasImages,
                     height: nodeH
                 )
                 .onHover { h in
@@ -1278,7 +1291,6 @@ private struct TimelineNodeView: View {
     let isLast: Bool
     let isHovered: Bool
     let previewText: String
-    var hasImages: Bool = false
     let height: CGFloat
     private let dot: CGFloat = 6
 
@@ -1287,16 +1299,9 @@ private struct TimelineNodeView: View {
             Rectangle()
                 .fill(Color.accentColor.opacity(isFirst ? 0 : 0.18))
                 .frame(width: 1.5, height: (height - dot) / 2)
-            ZStack {
-                Circle()
-                    .fill(isHovered ? Color.accentColor : Color.accentColor.opacity(0.38))
-                    .frame(width: dot, height: dot)
-                if hasImages && !isHovered {
-                    Image(systemName: "photo.fill")
-                        .font(.system(size: 5, weight: .bold))
-                        .foregroundStyle(.white)
-                }
-            }
+            Circle()
+                .fill(isHovered ? Color.accentColor : Color.accentColor.opacity(0.38))
+                .frame(width: dot, height: dot)
             .scaleEffect(isHovered ? 1.65 : 1.0)
             .animation(.spring(response: 0.18, dampingFraction: 0.6), value: isHovered)
             Rectangle()

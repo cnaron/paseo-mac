@@ -54,13 +54,20 @@ struct ComposerTextView: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? DropInterceptingTextView else { return }
         if textView.string != text {
-            let sel = textView.selectedRange()
-            textView.string = text
-            let safe = NSRange(
-                location: min(sel.location, textView.string.count),
-                length: 0
-            )
-            textView.setSelectedRange(safe)
+            // Don't reset the textView while the user is actively typing — streaming
+            // re-renders can fire between a keyDown and its textDidChange callback,
+            // causing the just-typed character to be dropped. Only force-update when
+            // text was cleared externally (send action) or the textView is not focused.
+            let isEditing = textView.window?.firstResponder === textView
+            if !isEditing || text.isEmpty {
+                let sel = textView.selectedRange()
+                textView.string = text
+                let safe = NSRange(
+                    location: min(sel.location, textView.string.count),
+                    length: 0
+                )
+                textView.setSelectedRange(safe)
+            }
         }
         textView.font = font
         textView.fileDrop = onFileDrop
