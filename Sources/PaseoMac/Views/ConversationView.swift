@@ -337,7 +337,7 @@ private struct MessageList: View {
 
     private func jumpToBottomButton(proxy: ScrollViewProxy) -> some View {
         Button {
-            withAnimation(.easeOut(duration: 0.2)) {
+            withAnimation(.easeOut(duration: 0.08)) {
                 proxy.scrollTo("bottom", anchor: .bottom)
             }
             hasNewContent = false
