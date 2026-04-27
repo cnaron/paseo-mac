@@ -308,16 +308,7 @@ private struct MessageList: View {
                         hasNewContent = true
                     }
                 }
-                // When a turn starts, always jump to bottom so the typing
-                // indicator and streaming content stay visible.
-                .onChange(of: vm.isAgentWorking) { _, working in
-                    if working {
-                        isNearBottom = true
-                        withAnimation(.easeOut(duration: 0.15)) {
-                            proxy.scrollTo("bottom", anchor: .bottom)
-                        }
-                    }
-                }
+
 
                 if !isNearBottom {
                     jumpToBottomButton(proxy: proxy)
