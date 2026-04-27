@@ -176,6 +176,13 @@ final class AppViewModel {
         selectedAgentId = AppViewModel.pendingAgentId
     }
 
+    func cancelPendingAgent() {
+        pendingNewAgentCwd = nil
+        if selectedAgentId == AppViewModel.pendingAgentId {
+            selectedAgentId = agents.first?.id
+        }
+    }
+
     func submitPendingAgent(text: String) async {
         guard let cwd = pendingNewAgentCwd, let client else { return }
         let provider = pendingNewAgentProvider
@@ -196,13 +203,13 @@ final class AppViewModel {
     }
 
     func archiveAgent(agentId: String) async {
-        guard let client else { return }
         agents.removeAll { $0.id == agentId }
         liveStatus.removeValue(forKey: agentId)
         conversations.removeValue(forKey: agentId)
         if selectedAgentId == agentId {
             selectedAgentId = agents.first?.id
         }
+        guard let client else { return }
         do {
             try await client.archiveAgent(agentId: agentId)
         } catch {

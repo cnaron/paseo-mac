@@ -11,7 +11,18 @@ struct ConversationView: View {
         GeometryReader { geo in
             Group {
                 if isPending {
-                    Color.clear
+                    VStack(spacing: 12) {
+                        Spacer()
+                        Image(systemName: "ellipsis.bubble")
+                            .font(.system(size: 36, weight: .light))
+                            .foregroundStyle(.tertiary)
+                        Text("Type a message to start the conversation")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Color.clear.frame(height: 120)
+                    }
+                    .frame(maxWidth: .infinity)
                 } else {
                     MessageList(vm: vm, availableHeight: geo.size.height, searchText: searchText)
                 }

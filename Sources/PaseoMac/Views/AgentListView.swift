@@ -16,8 +16,22 @@ struct AgentListView: View {
                                 .frame(width: 16)
                             Text("New conversation")
                                 .foregroundStyle(.primary)
+                            Spacer()
+                            Button {
+                                app.cancelPendingAgent()
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Cancel new conversation")
                         }
                         .tag(AppViewModel.pendingAgentId as String?)
+                        .contextMenu {
+                            Button(role: .destructive) { app.cancelPendingAgent() } label: {
+                                Label("Cancel", systemImage: "xmark")
+                            }
+                        }
                     }
                     agentRows
                 }
@@ -181,12 +195,12 @@ private struct StatusIndicator: View {
     }
 
     private var color: Color {
-        if requiresAttention { return .accentColor }
         switch status {
         case "running": return .green
-        case "idle": return .cyan
         case "error", "failed": return .red
-        default: return .gray
+        default:
+            if requiresAttention { return .accentColor }
+            return status == "idle" ? .cyan : .gray
         }
     }
 }
