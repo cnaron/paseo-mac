@@ -316,7 +316,7 @@ private struct MessageList: View {
                 }
             }
             .overlay(alignment: .trailing) {
-                let ug = grouped.filter { $0.group.kind == "user" }
+                let ug = grouped.filter { $0.group.kind == "user" && ($0.group.text.trimmingCharacters(in: .whitespacesAndNewlines).count > 2 || !$0.group.images.isEmpty) }
                     .map { UserMessageTimeline.Item(id: $0.id, text: $0.group.text, hasImages: !$0.group.images.isEmpty) }
                 if !ug.isEmpty {
                     UserMessageTimeline(
