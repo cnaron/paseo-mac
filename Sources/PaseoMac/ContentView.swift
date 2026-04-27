@@ -2,7 +2,6 @@ import SwiftUI
 
 struct ContentView: View {
     @Environment(AppViewModel.self) private var app
-    @Environment(\.scenePhase) private var scenePhase
     @State private var showConnect: Bool = false
 
     var body: some View {
@@ -19,12 +18,6 @@ struct ContentView: View {
         }
         .task {
             app.autoConnectIfPossible()
-            app.startWakeObserver()
-        }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .active {
-                app.autoConnectIfPossible()
-            }
         }
         .onChange(of: app.connectionState) { _, newState in
             // Surface the connect sheet on first launch or when a reconnect is needed.

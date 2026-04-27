@@ -80,23 +80,6 @@ final class AppViewModel {
         Task { await connect(withOfferRaw: raw) }
     }
 
-    func reconnectOnWake() async {
-        guard let _ = savedOfferRaw, !(savedOfferRaw?.isEmpty ?? true) else { return }
-        if case .connecting = connectionState { return }
-        await disconnect()
-        autoConnectIfPossible()
-    }
-
-    func startWakeObserver() {
-        NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didWakeNotification,
-            object: nil, queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                await self?.reconnectOnWake()
-            }
-        }
-    }
 
     func connect(withOfferRaw raw: String) async {
         connectionState = .connecting
@@ -158,15 +141,8 @@ final class AppViewModel {
     }
 
     private func handleUnexpectedDisconnect() async {
-        guard let raw = savedOfferRaw, !raw.isEmpty else {
-            connectionState = .disconnected
-            return
-        }
         client = nil
-        connectionState = .connecting
-        try? await Task.sleep(nanoseconds: 2_000_000_000)
-        guard !Task.isCancelled else { return }
-        await connect(withOfferRaw: raw)
+        connectionState = .disconnected
     }
 
     // MARK: - Agent creation
