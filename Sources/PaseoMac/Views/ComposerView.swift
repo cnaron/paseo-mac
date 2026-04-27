@@ -12,6 +12,7 @@ struct ComposerView: View {
     /// compute `start - delta.height` without compounding.
     @State private var dragStartHeight: Double? = nil
     @State private var textFitHeight: Double = 44.0
+    @State private var sentHistory: [String] = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -73,8 +74,7 @@ struct ComposerView: View {
                 text: $vm.composerText,
                 height: $textFitHeight,
                 font: .systemFont(ofSize: NSFont.systemFontSize),
-                sentHistory: vm.rows.filter { $0.kind == "user" && !$0.text.isEmpty }
-                    .map { $0.text }.reversed(),
+                sentHistory: sentHistory,
                 onFileDrop: { urls in handleFileURLDrop(urls) },
                 onImageDrop: { images in handleImageDrop(images) }
             )
@@ -90,6 +90,13 @@ struct ComposerView: View {
         .shadow(color: .black.opacity(0.12), radius: 12, y: 4)
         .frame(maxWidth: 720)
         .onChange(of: vm.composerText) { vm.saveDraft() }
+        .onChange(of: vm.rows.count) { updateSentHistory() }
+        .onAppear { updateSentHistory() }
+    }
+
+    private func updateSentHistory() {
+        sentHistory = vm.rows.filter { $0.kind == "user" && !$0.text.isEmpty }
+            .map { $0.text }.reversed()
     }
 
     // MARK: - Bottom action row

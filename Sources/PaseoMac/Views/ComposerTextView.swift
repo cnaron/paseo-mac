@@ -54,12 +54,12 @@ struct ComposerTextView: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? DropInterceptingTextView else { return }
         if textView.string != text {
-            // Don't reset the textView while the user is actively typing — streaming
-            // re-renders can fire between a keyDown and its textDidChange callback,
-            // causing the just-typed character to be dropped. Only force-update when
-            // text was cleared externally (send action) or the textView is not focused.
-            let isEditing = textView.window?.firstResponder === textView
-            if !isEditing || text.isEmpty {
+            // Don't reset the textView while the user is actively editing.
+            // `isUserEditing` is set via textDidBeginEditing/textDidEndEditing — more
+            // reliable than checking firstResponder, which can transiently change
+            // during SwiftUI layout passes.
+            // Exception: always apply when text is empty (send action cleared it).
+            if !context.coordinator.isUserEditing || text.isEmpty {
                 let sel = textView.selectedRange()
                 textView.string = text
                 let safe = NSRange(
@@ -83,8 +83,19 @@ struct ComposerTextView: NSViewRepresentable {
         var sentHistory: [String] = []
         var historyIndex: Int = -1
         var savedDraft: String = ""
+        /// Set by textDidBeginEditing/textDidEndEditing — true while the user
+        /// has keyboard focus in the text view. More reliable than polling firstResponder.
+        var isUserEditing: Bool = false
 
         init(_ parent: ComposerTextView) { self.parent = parent }
+
+        func textDidBeginEditing(_ notification: Notification) {
+            isUserEditing = true
+        }
+
+        func textDidEndEditing(_ notification: Notification) {
+            isUserEditing = false
+        }
 
         func navigateHistory(up: Bool) {
             guard let tv = textView else { return }
