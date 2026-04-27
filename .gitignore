@@ -1,0 +1,20 @@
+# Swift / SPM
+.build/
+.swiftpm/
+Package.resolved
+*.xcodeproj
+!*.xcodeproj/project.pbxproj
+*.xcworkspace
+DerivedData/
+
+# macOS
+.DS_Store
+
+# App bundle output
+build/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+.vendor/
