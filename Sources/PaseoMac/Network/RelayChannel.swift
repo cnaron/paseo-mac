@@ -127,6 +127,15 @@ actor RelayChannel {
         }
     }
 
+    /// Sends a WebSocket-level PING to the relay server to keep the connection alive.
+    /// Returns `true` if the ping succeeded, `false` if the connection is dead.
+    func sendKeepalivePing() async -> Bool {
+        guard state == .open, let task else { return false }
+        return await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+            task.sendPing { error in cont.resume(returning: error == nil) }
+        }
+    }
+
     func close(code: URLSessionWebSocketTask.CloseCode = .normalClosure, reason: String = "bye") {
         guard state != .closed(reason: reason) else { return }
         helloRetryTask?.cancel()

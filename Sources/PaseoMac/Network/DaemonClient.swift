@@ -67,7 +67,7 @@ actor DaemonClient {
     private var pending: [String: CheckedContinuation<SessionInbound, Error>] = [:]
     private var receiveTask: Task<Void, Never>?
     private var keepaliveTask: Task<Void, Never>?
-    private static let keepaliveInterval: TimeInterval = 25
+    private static let keepaliveInterval: TimeInterval = 20
 
     /// Fires for every inbound session message we didn't match to a pending request.
     let events: AsyncStream<SessionInbound>
@@ -109,27 +109,31 @@ actor DaemonClient {
         keepaliveTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: UInt64(DaemonClient.keepaliveInterval * 1_000_000_000))
-                guard !Task.isCancelled else { return }
-                guard let self else { return }
-                // Send a WebSocket-level ping; failure means the connection is dead.
-                if case .direct(let ws) = await self.transport {
-                    await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-                        ws.sendPing { error in
-                            if let error = error {
-                                Task { await self.handleKeepaliveFailure(error) }
-                            }
-                            cont.resume()
-                        }
-                    }
+                guard !Task.isCancelled, let self else { return }
+                let alive = await self.pingTransport()
+                if !alive {
+                    await self.handleKeepaliveFailure()
                 }
-                // Relay transport uses its own keepalive at the relay layer; skip.
             }
         }
     }
 
-    private func handleKeepaliveFailure(_ error: Error) {
-        debugLog("[keepalive] ping failed: \(error) — treating as disconnect")
-        failAllPending(with: error)
+    private func pingTransport() async -> Bool {
+        switch transport {
+        case .direct(let ws):
+            return await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+                ws.sendPing { error in cont.resume(returning: error == nil) }
+            }
+        case .relay(let channel):
+            return await channel.sendKeepalivePing()
+        case .none:
+            return false
+        }
+    }
+
+    private func handleKeepaliveFailure() {
+        debugLog("[keepalive] ping failed — treating as disconnect")
+        failAllPending(with: DaemonError.notConnected)
     }
 
     func disconnect() {

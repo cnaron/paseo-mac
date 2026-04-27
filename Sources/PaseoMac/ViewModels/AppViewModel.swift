@@ -175,16 +175,30 @@ final class AppViewModel {
         guard let raw = savedOfferRaw, !raw.isEmpty else { return }
         reconnectTask?.cancel()
         reconnectTask = Task { [weak self] in
-            var delay: UInt64 = 3_000_000_000  // 3s, 6s, 12s
-            for attempt in 1...4 {
+            // First retry after 1s, then 3s, 6s, 12s — gives fast recovery after
+            // transient drops while still backing off for sustained failures.
+            var delay: UInt64 = 1_000_000_000
+            while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: delay)
-                guard !Task.isCancelled else { return }
-                guard let self else { return }
+                guard !Task.isCancelled, let self else { return }
                 guard case .disconnected = connectionState else { return }
                 await self.connect(withOfferRaw: raw)
                 if case .connected = connectionState { return }
-                delay = min(delay * 2, 30_000_000_000)
-                _ = attempt
+                delay = min(delay * 3, 30_000_000_000)  // 1s → 3s → 9s → 27s → 30s cap
+            }
+        }
+    }
+
+    func startWakeObserver() {
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, case .disconnected = self.connectionState,
+                      let raw = self.savedOfferRaw, !raw.isEmpty else { return }
+                await self.connect(withOfferRaw: raw)
             }
         }
     }

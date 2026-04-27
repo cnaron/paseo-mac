@@ -18,6 +18,7 @@ struct ContentView: View {
         }
         .task {
             app.autoConnectIfPossible()
+            app.startWakeObserver()
         }
         .onChange(of: app.connectionState) { _, newState in
             // Surface the connect sheet on first launch or when a reconnect is needed.
@@ -34,27 +35,30 @@ struct ContentView: View {
 
     @ViewBuilder
     private var detailView: some View {
-        switch app.connectionState {
-        case .disconnected, .failed:
-            VStack(spacing: 12) {
-                ContentUnavailableView(
-                    "Not connected",
-                    systemImage: "antenna.radiowaves.left.and.right.slash",
-                    description: Text("Paste a pairing offer to connect to your daemon.")
-                )
-                Button("Connect…") { showConnect = true }
-                    .buttonStyle(.borderedProminent)
-            }
-        case .connecting:
-            VStack(spacing: 12) {
-                ProgressView()
-                Text("Connecting…").foregroundStyle(.secondary)
-            }
-        case .connected:
-            if let id = app.selectedAgentId {
-                ConversationView(agentId: id)
-                    .id(id)
-            } else {
+        // Always show the conversation view if an agent is selected — even when
+        // disconnected, so the user can keep reading cached history.
+        // Only fall through to status screens when there's nothing to show.
+        if let id = app.selectedAgentId {
+            ConversationView(agentId: id)
+                .id(id)
+        } else {
+            switch app.connectionState {
+            case .disconnected, .failed:
+                VStack(spacing: 12) {
+                    ContentUnavailableView(
+                        "Not connected",
+                        systemImage: "antenna.radiowaves.left.and.right.slash",
+                        description: Text("Paste a pairing offer to connect to your daemon.")
+                    )
+                    Button("Connect…") { showConnect = true }
+                        .buttonStyle(.borderedProminent)
+                }
+            case .connecting:
+                VStack(spacing: 12) {
+                    ProgressView()
+                    Text("Connecting…").foregroundStyle(.secondary)
+                }
+            case .connected:
                 ContentUnavailableView(
                     "Select an agent",
                     systemImage: "sidebar.left",
