@@ -5,6 +5,7 @@ struct ConversationView: View {
     let agentId: String
     @State private var searchText: String = ""
     @State private var isSearchVisible: Bool = false
+    @State private var isResumingArchived: Bool = false
     @FocusState private var searchFocused: Bool
 
     var body: some View {
@@ -36,12 +37,29 @@ struct ConversationView: View {
                 }
                 .overlay(alignment: .bottom) {
                     if searchText.isEmpty {
-                        if app.isArchivedAgent(agentId) {
-                            ArchivedConversationBanner(cwd: agent()?.cwd ?? "")
-                                .padding(.bottom, 20)
+                        if app.isArchivedAgent(agentId) && !isResumingArchived {
+                            ArchivedConversationBanner(
+                                cwd: agent()?.cwd ?? "",
+                                onResume: { isResumingArchived = true }
+                            )
+                            .padding(.bottom, 20)
                         } else {
-                            ComposerView(vm: vm)
-                                .padding(.bottom, 20)
+                            VStack(spacing: 0) {
+                                if isResumingArchived && app.isArchivedAgent(agentId) {
+                                    HStack(spacing: 5) {
+                                        Image(systemName: "archivebox")
+                                            .font(.caption2)
+                                        Text("Resuming archived conversation")
+                                            .font(.caption2)
+                                    }
+                                    .foregroundStyle(.secondary)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 4)
+                                    .background(Color.secondary.opacity(0.07))
+                                }
+                                ComposerView(vm: vm)
+                            }
+                            .padding(.bottom, 20)
                         }
                     }
                 }
@@ -81,6 +99,14 @@ struct ConversationView: View {
                     Image(systemName: isSearchVisible ? "magnifyingglass.circle.fill" : "magnifyingglass")
                 }
                 .help(isSearchVisible ? "Close search" : "Search messages (⌘F)")
+            }
+        }
+        .onChange(of: agentId) { isResumingArchived = false }
+        .onChange(of: vm.rows.count) { _, _ in
+            // If a message was sent to an archived agent and it responded,
+            // refresh so it appears in active agents list.
+            if isResumingArchived {
+                Task { try? await app.refreshAgents() }
             }
         }
         .onKeyPress(.escape) {
@@ -144,22 +170,32 @@ struct ConversationView: View {
 
 private struct ArchivedConversationBanner: View {
     let cwd: String
+    var onResume: () -> Void = {}
     @Environment(AppViewModel.self) private var app
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "archivebox")
-                .foregroundStyle(.secondary)
-            Text("This conversation is archived")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-            Spacer()
-            Button("New conversation here") {
-                Task { await app.createAgent(cwd: cwd) }
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "archivebox")
+                    .foregroundStyle(.secondary)
+                Text("This conversation is archived")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Spacer()
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
-            .disabled(cwd.isEmpty)
+            HStack(spacing: 8) {
+                Button("Resume conversation") {
+                    onResume()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                Button("New conversation") {
+                    Task { await app.createAgent(cwd: cwd) }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(cwd.isEmpty)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
