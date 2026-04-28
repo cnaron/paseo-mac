@@ -25,6 +25,8 @@ final class AppViewModel {
 
     var connectionState: ConnectionState = .disconnected
     var agents: [AgentSnapshot] = []
+    var archivedAgents: [AgentSnapshot] = []
+    var isLoadingArchived: Bool = false
     var selectedAgentId: String? = nil {
         didSet {
             if let id = selectedAgentId, id != AppViewModel.pendingAgentId {
@@ -270,6 +272,26 @@ final class AppViewModel {
         }
     }
 
+    func loadArchivedAgents() async {
+        guard let client else { return }
+        isLoadingArchived = true
+        defer { isLoadingArchived = false }
+        do {
+            archivedAgents = try await client.listArchivedAgents()
+        } catch {
+            archivedAgents = []
+        }
+    }
+
+    func clearArchivedAgents() {
+        archivedAgents = []
+        // Deselect if the currently selected agent is archived
+        if let id = selectedAgentId,
+           archivedAgents.contains(where: { $0.id == id }) {
+            selectedAgentId = agents.first?.id
+        }
+    }
+
     // MARK: - Data access
 
     func refreshAgents() async throws {
@@ -304,7 +326,11 @@ final class AppViewModel {
 
     func currentAgent() -> AgentSnapshot? {
         guard let id = selectedAgentId else { return nil }
-        return agents.first { $0.id == id }
+        return agents.first { $0.id == id } ?? archivedAgents.first { $0.id == id }
+    }
+
+    func isArchivedAgent(_ agentId: String) -> Bool {
+        archivedAgents.contains(where: { $0.id == agentId })
     }
 
     // MARK: - Model / mode / thinking dispatch

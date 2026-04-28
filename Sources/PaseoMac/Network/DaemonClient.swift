@@ -228,6 +228,22 @@ actor DaemonClient {
         return resp.payload.agents
     }
 
+    func listArchivedAgents(limit: Int = 200) async throws -> [AgentSnapshot] {
+        let requestId = UUID().uuidString
+        let req = FetchAgentsRequest(
+            requestId: requestId,
+            filter: .init(includeArchived: true, statuses: nil, requiresAttention: nil),
+            sort: [.init(key: "updated_at", direction: "desc")],
+            page: .init(limit: limit, cursor: nil),
+            subscribe: nil
+        )
+        let reply = try await requestResponse(requestId: requestId, outbound: .session(.fetchAgents(req)))
+        guard case let .fetchAgentsResponse(resp) = reply else {
+            throw DaemonError.protocolError("Expected fetch_agents_response, got \(reply)")
+        }
+        return resp.payload.agents.filter { $0.archivedAt != nil }
+    }
+
     func fetchTimeline(
         agentId: String,
         direction: String = "tail",

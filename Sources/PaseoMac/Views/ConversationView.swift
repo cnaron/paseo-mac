@@ -36,8 +36,13 @@ struct ConversationView: View {
                 }
                 .overlay(alignment: .bottom) {
                     if searchText.isEmpty {
-                        ComposerView(vm: vm)
-                            .padding(.bottom, 20)
+                        if app.isArchivedAgent(agentId) {
+                            ArchivedConversationBanner(cwd: agent()?.cwd ?? "")
+                                .padding(.bottom, 20)
+                        } else {
+                            ComposerView(vm: vm)
+                                .padding(.bottom, 20)
+                        }
                     }
                 }
             }
@@ -131,7 +136,35 @@ struct ConversationView: View {
     }
 
     private func agent() -> AgentSnapshot? {
-        app.agents.first { $0.id == agentId }
+        app.agents.first { $0.id == agentId } ?? app.archivedAgents.first { $0.id == agentId }
+    }
+}
+
+// MARK: - Archived conversation banner
+
+private struct ArchivedConversationBanner: View {
+    let cwd: String
+    @Environment(AppViewModel.self) private var app
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "archivebox")
+                .foregroundStyle(.secondary)
+            Text("This conversation is archived")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button("New conversation here") {
+                Task { await app.createAgent(cwd: cwd) }
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .disabled(cwd.isEmpty)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .padding(.horizontal, 16)
     }
 }
 

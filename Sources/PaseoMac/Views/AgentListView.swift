@@ -35,6 +35,17 @@ struct AgentListView: View {
                     }
                     agentRows
                 }
+                if !app.archivedAgents.isEmpty {
+                    Section("Archived") {
+                        if app.isLoadingArchived {
+                            ProgressView().frame(maxWidth: .infinity).padding(.vertical, 4)
+                        }
+                        ForEach(app.archivedAgents) { agent in
+                            ArchivedAgentRow(agent: agent)
+                                .tag(agent.id as String?)
+                        }
+                    }
+                }
             }
             .listStyle(.sidebar)
             if app.daemonVersionMismatch {
@@ -72,6 +83,21 @@ struct AgentListView: View {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
                 .help("Refresh agents")
+            }
+            ToolbarItem(placement: .automatic) {
+                Button {
+                    Task {
+                        if app.archivedAgents.isEmpty {
+                            await app.loadArchivedAgents()
+                        } else {
+                            app.clearArchivedAgents()
+                        }
+                    }
+                } label: {
+                    Label("Archived", systemImage: app.archivedAgents.isEmpty ? "clock" : "clock.fill")
+                }
+                .help(app.archivedAgents.isEmpty ? "Show archived sessions" : "Hide archived sessions")
+                .disabled(app.connectionState != .connected)
             }
         }
         .overlay {
@@ -157,6 +183,47 @@ private struct AgentRow: View {
         guard parts.count > 2 else { return agent.cwd }
         let tail = parts.suffix(2).joined(separator: "/")
         return "…/" + tail
+    }
+}
+
+private struct ArchivedAgentRow: View {
+    let agent: AgentSnapshot
+    @Environment(AppViewModel.self) private var app
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "archivebox")
+                .foregroundStyle(.tertiary)
+                .font(.caption)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(agent.displayName)
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Text(shortCwd)
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer()
+        }
+        .padding(.vertical, 2)
+        .help(agent.cwd)
+        .contextMenu {
+            Button {
+                Task { await app.createAgent(cwd: agent.cwd) }
+            } label: {
+                Label("New Conversation Here", systemImage: "plus.bubble")
+            }
+        }
+    }
+
+    private var shortCwd: String {
+        let parts = agent.cwd.split(separator: "/").map(String.init)
+        guard parts.count > 2 else { return agent.cwd }
+        return "…/" + parts.suffix(2).joined(separator: "/")
     }
 }
 
