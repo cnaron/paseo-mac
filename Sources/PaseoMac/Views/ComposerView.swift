@@ -117,14 +117,18 @@ struct ComposerView: View {
             Spacer()
 
             // Model + thinking + mode pickers (right-aligned text)
-            if let agent = app.agents.first(where: { $0.id == vm.agentId }) {
-                HStack(spacing: 2) {
+            HStack(spacing: 2) {
+                if app.pendingNewAgentCwd != nil {
+                    PendingModePicker()
+                    PendingModelPicker()
+                    PendingProviderPicker()
+                } else if let agent = app.agents.first(where: { $0.id == vm.agentId }) {
                     ModePicker(agent: agent)
                     ModelPicker(agent: agent)
                     ThinkingPicker(agent: agent)
                 }
-                .font(.callout)
             }
+            .font(.callout)
 
             // Send / interrupt button (circle style)
             sendButton
@@ -495,6 +499,136 @@ private struct ThinkingPicker: View {
     }
     private func currentLabel(options: [SelectOption]) -> String {
         options.first(where: { $0.id == agent.effectiveThinkingOptionId })?.label ?? "Thinking"
+    }
+}
+
+// MARK: - Pending-agent pickers (used before a new conversation is created)
+
+private struct PendingProviderPicker: View {
+    @Environment(AppViewModel.self) private var app
+
+    var body: some View {
+        let ready = app.providers.filter { $0.status == "ready" }
+        if ready.count > 1 {
+            Menu {
+                ForEach(ready) { prov in
+                    Button {
+                        if prov.provider != app.pendingNewAgentProvider {
+                            app.pendingNewAgentProvider = prov.provider
+                            app.pendingNewAgentModel = nil
+                            app.pendingNewAgentModeId = nil
+                        }
+                    } label: {
+                        Text((prov.label ?? prov.provider) + (prov.provider == app.pendingNewAgentProvider ? "  ✓" : ""))
+                    }
+                }
+            } label: {
+                Text(currentProviderLabel(ready))
+                    .foregroundStyle(.secondary)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Provider")
+        }
+    }
+
+    private func currentProviderLabel(_ providers: [ProviderSnapshot]) -> String {
+        providers.first(where: { $0.provider == app.pendingNewAgentProvider })?.label ?? app.pendingNewAgentProvider
+    }
+}
+
+private struct PendingModelPicker: View {
+    @Environment(AppViewModel.self) private var app
+
+    var body: some View {
+        if let models = availableModels, !models.isEmpty {
+            Menu {
+                ForEach(models) { m in
+                    Button {
+                        app.pendingNewAgentModel = m.id
+                    } label: {
+                        Text(m.label + (m.id == effectiveModelId ? "  ✓" : ""))
+                    }
+                }
+            } label: {
+                Text(currentModelLabel)
+                    .foregroundStyle(.secondary)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Model")
+        }
+    }
+
+    private var availableModels: [ModelDefinition]? {
+        app.providers.first(where: { $0.provider == app.pendingNewAgentProvider })?.models
+    }
+    private var effectiveModelId: String? {
+        app.pendingNewAgentModel ?? availableModels?.first(where: { $0.isDefault == true })?.id ?? availableModels?.first?.id
+    }
+    private var currentModelLabel: String {
+        guard let models = availableModels else { return "Model" }
+        let id = effectiveModelId
+        return models.first(where: { $0.id == id })?.label ?? "Model"
+    }
+}
+
+private struct PendingModePicker: View {
+    @Environment(AppViewModel.self) private var app
+
+    var body: some View {
+        if let modes = availableModes, !modes.isEmpty {
+            Menu {
+                ForEach(modes) { mode in
+                    Button {
+                        app.pendingNewAgentModeId = mode.id
+                    } label: {
+                        Label(
+                            mode.label + (mode.id == effectiveModeId ? "  ✓" : ""),
+                            systemImage: iconFor(mode: mode)
+                        )
+                    }
+                }
+            } label: {
+                Image(systemName: currentIcon)
+                    .font(.system(size: 12))
+                    .foregroundStyle(modeColor)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Permission mode: \(currentModeLabel)")
+        }
+    }
+
+    private var availableModes: [AgentMode]? {
+        app.providers.first(where: { $0.provider == app.pendingNewAgentProvider })?.modes
+    }
+    private var effectiveModeId: String? {
+        if let id = app.pendingNewAgentModeId { return id }
+        let prov = app.providers.first(where: { $0.provider == app.pendingNewAgentProvider })
+        return prov?.defaultModeId ?? availableModes?.first?.id
+    }
+    private var currentModeLabel: String {
+        availableModes?.first(where: { $0.id == effectiveModeId })?.label ?? "Mode"
+    }
+    private var currentIcon: String {
+        iconFor(mode: availableModes?.first { $0.id == effectiveModeId })
+    }
+    private var modeColor: Color {
+        switch effectiveModeId {
+        case "bypassPermissions": return .red
+        case "acceptEdits": return .orange
+        case "plan": return .blue
+        default: return .secondary
+        }
+    }
+    private func iconFor(mode: AgentMode?) -> String {
+        switch mode?.id {
+        case "bypassPermissions": return "shield.slash"
+        case "acceptEdits": return "checkmark.shield"
+        case "plan": return "list.bullet.rectangle"
+        default: return "shield"
+        }
     }
 }
 

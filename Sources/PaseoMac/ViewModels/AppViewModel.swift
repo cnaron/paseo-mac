@@ -34,6 +34,8 @@ final class AppViewModel {
     }
     var pendingNewAgentCwd: String? = nil
     var pendingNewAgentProvider: String = "anthropic"
+    var pendingNewAgentModel: String? = nil
+    var pendingNewAgentModeId: String? = nil
     static let pendingAgentId = "__pending__"
     var savedOfferRaw: String? {
         get { UserDefaults.standard.string(forKey: storedOfferKey) }
@@ -215,9 +217,11 @@ final class AppViewModel {
     // MARK: - Agent creation
 
     func createAgent(cwd: String) async {
-        let provider = currentAgent()?.provider ?? "anthropic"
+        let agent = currentAgent()
+        pendingNewAgentProvider = agent?.provider ?? "anthropic"
+        pendingNewAgentModel = agent?.model
+        pendingNewAgentModeId = agent?.currentModeId
         pendingNewAgentCwd = cwd
-        pendingNewAgentProvider = provider
         selectedAgentId = AppViewModel.pendingAgentId
     }
 
@@ -231,11 +235,15 @@ final class AppViewModel {
     func submitPendingAgent(text: String) async {
         guard let cwd = pendingNewAgentCwd, let client else { return }
         let provider = pendingNewAgentProvider
+        let model = pendingNewAgentModel
+        let modeId = pendingNewAgentModeId
         pendingNewAgentCwd = nil
+        pendingNewAgentModel = nil
+        pendingNewAgentModeId = nil
         selectedAgentId = nil
         let before = Set(agents.map(\.id))
         do {
-            try await client.createAgent(cwd: cwd, provider: provider, initialPrompt: text)
+            try await client.createAgent(cwd: cwd, provider: provider, model: model, modeId: modeId, initialPrompt: text)
         } catch { return }
         for _ in 0..<20 {
             try? await Task.sleep(nanoseconds: 500_000_000)
