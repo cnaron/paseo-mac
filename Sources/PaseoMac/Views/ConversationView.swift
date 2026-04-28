@@ -386,18 +386,14 @@ private struct MessageList: View {
                 .onChange(of: vm.rows.count) { _, _ in
                     let lastIsUser = vm.rows.last?.kind == "user"
                     if isNearBottom || lastIsUser {
-                        withAnimation(.easeOut(duration: 0.15)) {
-                            proxy.scrollTo("bottom", anchor: .bottom)
-                        }
+                        proxy.scrollTo("bottom", anchor: .bottom)
                     } else {
                         hasNewContent = true
                     }
                 }
                 .onChange(of: vm.rows.last?.text ?? "") { _, _ in
                     if isNearBottom {
-                        withAnimation(.easeOut(duration: 0.15)) {
-                            proxy.scrollTo("bottom", anchor: .bottom)
-                        }
+                        proxy.scrollTo("bottom", anchor: .bottom)
                     } else {
                         hasNewContent = true
                     }
@@ -430,7 +426,7 @@ private struct MessageList: View {
 
     private func jumpToBottomButton(proxy: ScrollViewProxy) -> some View {
         Button {
-            withAnimation(.easeOut(duration: 0.08)) {
+            withAnimation(.easeOut(duration: 0.18)) {
                 proxy.scrollTo("bottom", anchor: .bottom)
             }
             hasNewContent = false
