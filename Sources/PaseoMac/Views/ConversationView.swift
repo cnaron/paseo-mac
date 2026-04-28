@@ -5,9 +5,6 @@ struct ConversationView: View {
     let agentId: String
     @State private var searchText: String = ""
     @State private var isSearchVisible: Bool = false
-    @State private var showFileBrowser: Bool = false
-    /// Hoisted out of FileBrowserView so the inspector closure re-render can't reset it.
-    @State private var browserSelectedFile: String? = nil
     @FocusState private var searchFocused: Bool
 
     var body: some View {
@@ -80,22 +77,6 @@ struct ConversationView: View {
                 }
                 .help(isSearchVisible ? "Close search" : "Search messages (⌘F)")
             }
-            ToolbarItem(placement: .primaryAction) {
-                Button { showFileBrowser.toggle() } label: {
-                    Image(systemName: "sidebar.trailing")
-                }
-                .help(showFileBrowser ? "Close file browser" : "Browse files")
-                .disabled(agent()?.cwd == nil)
-            }
-        }
-        .inspector(isPresented: $showFileBrowser) {
-            if let cwd = agent()?.cwd {
-                FileBrowserView(rootPath: cwd, selectedFile: $browserSelectedFile)
-                    .inspectorColumnWidth(min: 260, ideal: 340, max: 560)
-            }
-        }
-        .onChange(of: showFileBrowser) { _, shown in
-            if !shown { browserSelectedFile = nil }
         }
         .onKeyPress(.escape) {
             if isSearchVisible { hideSearch(); return .handled }
