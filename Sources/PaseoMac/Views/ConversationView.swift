@@ -341,10 +341,11 @@ private struct MessageList: View {
                         Color.clear
                             .frame(maxWidth: .infinity, minHeight: availableHeight)
                         LazyVStack(alignment: .leading, spacing: 0) {
-                            Color.clear.frame(height: 0).onAppear {
-                                if !vm.rows.isEmpty {
-                                    proxy.scrollTo("bottom", anchor: .bottom)
-                                }
+                            Color.clear.frame(height: 0).task {
+                                // Defer so LazyVStack finishes layout before scrollTo
+                                guard !vm.rows.isEmpty else { return }
+                                try? await Task.sleep(nanoseconds: 50_000_000)
+                                proxy.scrollTo("bottom", anchor: .bottom)
                             }
                             if vm.hasOlderMessages {
                                 Button {
@@ -433,11 +434,12 @@ private struct MessageList: View {
                         .padding(.trailing, 44)
                     }
                 }
-                .onChange(of: vm.rows.count) { _, _ in
+                .defaultScrollAnchor(.bottom)
+                .onChange(of: vm.rows.count) { old, new in
                     let lastIsUser = vm.rows.last?.kind == "user"
                     if isNearBottom || lastIsUser {
                         proxy.scrollTo("bottom", anchor: .bottom)
-                    } else {
+                    } else if new > old {
                         hasNewContent = true
                     }
                 }
