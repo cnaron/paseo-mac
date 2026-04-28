@@ -66,17 +66,17 @@ struct ConversationView: View {
                 .disabled(agent() == nil)
             }
             ToolbarItem(placement: .primaryAction) {
-                Button { showFileBrowser = true } label: {
-                    Image(systemName: "folder")
+                Button { showFileBrowser.toggle() } label: {
+                    Image(systemName: "sidebar.trailing")
                 }
-                .help("Browse files")
+                .help(showFileBrowser ? "Close file browser" : "Browse files")
                 .disabled(agent()?.cwd == nil)
             }
         }
-        .sheet(isPresented: $showFileBrowser) {
+        .inspector(isPresented: $showFileBrowser) {
             if let cwd = agent()?.cwd {
                 FileBrowserView(rootPath: cwd)
-                    .frame(minWidth: 640, minHeight: 480)
+                    .inspectorColumnWidth(min: 260, ideal: 340, max: 560)
             }
         }
     }
