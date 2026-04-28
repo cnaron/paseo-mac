@@ -76,15 +76,13 @@ struct AgentListView: View {
         }
         .navigationTitle("PaseoMac")
         .toolbar {
-            ToolbarItem(placement: .automatic) {
+            ToolbarItemGroup(placement: .automatic) {
                 Button {
                     Task { try? await app.refreshAgents() }
                 } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
                 .help("Refresh agents")
-            }
-            ToolbarItem(placement: .automatic) {
                 Button {
                     Task {
                         if app.archivedAgents.isEmpty {
