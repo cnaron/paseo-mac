@@ -67,9 +67,6 @@ struct ConversationView: View {
         }
         .navigationTitle(isPending ? "New Conversation" : (agent()?.displayName ?? ""))
         .toolbar {
-            ToolbarItem(placement: .principal) {
-                ClaudeCodeVersionChip()
-            }
             ToolbarItem(placement: .automatic) {
                 if let a = agent() {
                     UsageChip(agent: a)
