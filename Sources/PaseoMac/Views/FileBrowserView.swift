@@ -4,8 +4,9 @@ import SwiftUI
 
 struct FileBrowserView: View {
     let rootPath: String
+    /// Owned by ConversationView so the inspector closure re-render can't reset it.
+    @Binding var selectedFile: String?
     @Environment(SettingsStore.self) private var settings
-    @State private var selectedFile: String? = nil
     @State private var expandedDirs: Set<String> = []
 
     var body: some View {
@@ -44,10 +45,7 @@ struct FileBrowserView: View {
                         path: rootPath,
                         depth: 0,
                         expandedDirs: $expandedDirs,
-                        selectedPath: Binding(
-                            get: { selectedFile },
-                            set: { selectedFile = $0 }
-                        ),
+                        selectedPath: $selectedFile,
                         onOpen: { selectedFile = $0 }
                     )
                 }

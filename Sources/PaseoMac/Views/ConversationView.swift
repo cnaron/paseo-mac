@@ -4,38 +4,47 @@ struct ConversationView: View {
     @Environment(AppViewModel.self) private var app
     let agentId: String
     @State private var searchText: String = ""
+    @State private var isSearchVisible: Bool = false
     @State private var showFileBrowser: Bool = false
+    /// Hoisted out of FileBrowserView so the inspector closure re-render can't reset it.
+    @State private var browserSelectedFile: String? = nil
+    @FocusState private var searchFocused: Bool
 
     var body: some View {
         let isPending = agentId == AppViewModel.pendingAgentId
         let vm = app.conversation(for: agentId)
-        GeometryReader { geo in
-            Group {
-                if isPending {
-                    VStack(spacing: 12) {
-                        Spacer()
-                        Image(systemName: "ellipsis.bubble")
-                            .font(.system(size: 36, weight: .light))
-                            .foregroundStyle(.tertiary)
-                        Text("Type a message to start the conversation")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Color.clear.frame(height: 120)
-                    }
-                    .frame(maxWidth: .infinity)
-                } else {
-                    MessageList(vm: vm, availableHeight: geo.size.height, searchText: searchText)
-                }
+        VStack(spacing: 0) {
+            // Inline search bar (toggled by toolbar button)
+            if isSearchVisible {
+                searchBar
             }
-            .overlay(alignment: .bottom) {
-                if searchText.isEmpty {
-                    ComposerView(vm: vm)
-                        .padding(.bottom, 20)
+            GeometryReader { geo in
+                Group {
+                    if isPending {
+                        VStack(spacing: 12) {
+                            Spacer()
+                            Image(systemName: "ellipsis.bubble")
+                                .font(.system(size: 36, weight: .light))
+                                .foregroundStyle(.tertiary)
+                            Text("Type a message to start the conversation")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Color.clear.frame(height: 120)
+                        }
+                        .frame(maxWidth: .infinity)
+                    } else {
+                        MessageList(vm: vm, availableHeight: geo.size.height, searchText: searchText)
+                    }
+                }
+                .overlay(alignment: .bottom) {
+                    if searchText.isEmpty {
+                        ComposerView(vm: vm)
+                            .padding(.bottom, 20)
+                    }
                 }
             }
         }
-        .searchable(text: $searchText, placement: .toolbar, prompt: "Search messages")
         .navigationTitle(isPending ? "New Conversation" : (agent()?.displayName ?? ""))
         .toolbar {
             ToolbarItem(placement: .principal) {
@@ -66,6 +75,12 @@ struct ConversationView: View {
                 .disabled(agent() == nil)
             }
             ToolbarItem(placement: .primaryAction) {
+                Button { toggleSearch() } label: {
+                    Image(systemName: isSearchVisible ? "magnifyingglass.circle.fill" : "magnifyingglass")
+                }
+                .help(isSearchVisible ? "Close search" : "Search messages (⌘F)")
+            }
+            ToolbarItem(placement: .primaryAction) {
                 Button { showFileBrowser.toggle() } label: {
                     Image(systemName: "sidebar.trailing")
                 }
@@ -75,10 +90,63 @@ struct ConversationView: View {
         }
         .inspector(isPresented: $showFileBrowser) {
             if let cwd = agent()?.cwd {
-                FileBrowserView(rootPath: cwd)
+                FileBrowserView(rootPath: cwd, selectedFile: $browserSelectedFile)
                     .inspectorColumnWidth(min: 260, ideal: 340, max: 560)
             }
         }
+        .onChange(of: showFileBrowser) { _, shown in
+            if !shown { browserSelectedFile = nil }
+        }
+        .onKeyPress(.escape) {
+            if isSearchVisible { hideSearch(); return .handled }
+            return .ignored
+        }
+    }
+
+    private var searchBar: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                    .font(.system(size: 13))
+                TextField("Search messages", text: $searchText)
+                    .textFieldStyle(.plain)
+                    .font(.callout)
+                    .focused($searchFocused)
+                if !searchText.isEmpty {
+                    Button { searchText = "" } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+                Button { hideSearch() } label: {
+                    Text("Done")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 9)
+            Divider()
+        }
+        .background(Color(NSColor.windowBackgroundColor))
+    }
+
+    private func toggleSearch() {
+        if isSearchVisible {
+            hideSearch()
+        } else {
+            isSearchVisible = true
+            DispatchQueue.main.async { searchFocused = true }
+        }
+    }
+
+    private func hideSearch() {
+        isSearchVisible = false
+        searchText = ""
+        searchFocused = false
     }
 
     private func agent() -> AgentSnapshot? {
