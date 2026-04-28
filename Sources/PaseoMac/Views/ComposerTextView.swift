@@ -53,25 +53,38 @@ struct ComposerTextView: NSViewRepresentable {
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? DropInterceptingTextView else { return }
-        if textView.string != text {
-            // Protect against resetting text the user is actively typing.
-            // Guard 1: isUserEditing (textDidBeginEditing/textDidEndEditing).
-            // Guard 2: recency — if user typed within the last 0.5s, the binding
-            //   update may not have propagated yet, so skip to avoid swallowing chars.
-            // Exception: always apply when text is empty (send action cleared it).
-            let typedRecently = Date().timeIntervalSince(context.coordinator.lastUserTypedAt) < 0.5
-            let protected = context.coordinator.isUserEditing || typedRecently
-            if !protected || text.isEmpty {
-                let sel = textView.selectedRange()
-                textView.string = text
-                let safe = NSRange(
-                    location: min(sel.location, textView.string.count),
-                    length: 0
-                )
-                textView.setSelectedRange(safe)
+
+        // Never touch content or font while the IME has marked text (中文/日文 输入法).
+        // Setting textView.string or even textView.font during IME composition can
+        // silently cancel the in-progress candidate, causing "swallowed" characters.
+        let hasIME = textView.markedRange().length > 0
+
+        if !hasIME && textView.string != text {
+            if text.isEmpty {
+                // Programmatic clear (send action). Always apply.
+                // Also reset the recency guard so it doesn't block the next clear.
+                context.coordinator.lastUserTypedAt = .distantPast
+                textView.string = ""
+                textView.setSelectedRange(NSRange(location: 0, length: 0))
+            } else {
+                // External non-empty change (draft restore, history nav, editQueued).
+                // Block if the user typed recently — they're ahead of binding propagation.
+                let typedRecently = Date().timeIntervalSince(context.coordinator.lastUserTypedAt) < 1.0
+                let protected = context.coordinator.isUserEditing || typedRecently
+                if !protected {
+                    let sel = textView.selectedRange()
+                    textView.string = text
+                    let safe = NSRange(
+                        location: min(sel.location, textView.string.count),
+                        length: 0
+                    )
+                    textView.setSelectedRange(safe)
+                }
             }
         }
-        textView.font = font
+
+        // Skip font update during IME for the same reason (can disrupt composition).
+        if !hasIME { textView.font = font }
         textView.fileDrop = onFileDrop
         textView.imageDrop = onImageDrop
         context.coordinator.sentHistory = sentHistory
