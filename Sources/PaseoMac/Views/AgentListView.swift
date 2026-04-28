@@ -57,6 +57,9 @@ struct AgentListView: View {
                 ClaudeCodeUpdateBanner(app: app)
             }
             Divider()
+            ArchivedToggleRow()
+                .environment(app)
+            Divider()
             NewAgentBar()
                 .environment(app)
             Divider()
@@ -76,26 +79,13 @@ struct AgentListView: View {
         }
         .navigationTitle("PaseoMac")
         .toolbar {
-            ToolbarItemGroup(placement: .automatic) {
+            ToolbarItem(placement: .automatic) {
                 Button {
                     Task { try? await app.refreshAgents() }
                 } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
                 .help("Refresh agents")
-                Button {
-                    Task {
-                        if app.archivedAgents.isEmpty {
-                            await app.loadArchivedAgents()
-                        } else {
-                            app.clearArchivedAgents()
-                        }
-                    }
-                } label: {
-                    Label("Archived", systemImage: app.archivedAgents.isEmpty ? "clock" : "clock.fill")
-                }
-                .help(app.archivedAgents.isEmpty ? "Show archived sessions" : "Hide archived sessions")
-                .disabled(app.connectionState != .connected)
             }
         }
         .overlay {
@@ -267,6 +257,42 @@ private struct StatusIndicator: View {
             if requiresAttention { return .accentColor }
             return status == "idle" ? .cyan : .gray
         }
+    }
+}
+
+// MARK: - Archived sessions toggle row
+
+private struct ArchivedToggleRow: View {
+    @Environment(AppViewModel.self) private var app
+
+    var body: some View {
+        Button {
+            Task {
+                if app.archivedAgents.isEmpty {
+                    await app.loadArchivedAgents()
+                } else {
+                    app.clearArchivedAgents()
+                }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: app.archivedAgents.isEmpty ? "clock" : "clock.fill")
+                    .foregroundStyle(app.archivedAgents.isEmpty ? Color.secondary : Color.accentColor)
+                    .frame(width: 16)
+                Text(app.archivedAgents.isEmpty ? "Show archived" : "Hide archived")
+                    .font(.caption)
+                    .foregroundStyle(app.archivedAgents.isEmpty ? Color.secondary : Color.primary)
+                Spacer()
+                if app.isLoadingArchived {
+                    ProgressView().controlSize(.mini).scaleEffect(0.7)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(app.connectionState != .connected)
     }
 }
 
