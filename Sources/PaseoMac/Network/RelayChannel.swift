@@ -132,7 +132,16 @@ actor RelayChannel {
     func sendKeepalivePing() async -> Bool {
         guard state == .open, let task else { return false }
         return await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
-            task.sendPing { error in cont.resume(returning: error == nil) }
+            // URLSession may call this handler more than once when the connection drops
+            // mid-ping (e.g., one call for the network error, one for task cancellation).
+            // The `resumed` flag ensures we only forward the first call and ignore the rest,
+            // preventing the "double resume" crash (EXC_BREAKPOINT / SIGTRAP).
+            var resumed = false
+            task.sendPing { error in
+                guard !resumed else { return }
+                resumed = true
+                cont.resume(returning: error == nil)
+            }
         }
     }
 
