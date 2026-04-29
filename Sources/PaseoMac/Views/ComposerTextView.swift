@@ -9,6 +9,7 @@ struct ComposerTextView: NSViewRepresentable {
     @Binding var height: Double
     var font: NSFont = .systemFont(ofSize: NSFont.systemFontSize)
     var sentHistory: [String] = []
+    var forceUpdate: UInt = 0
     var onFileDrop: ([URL]) -> Void = { _ in }
     var onImageDrop: ([NSImage]) -> Void = { _ in }
 
@@ -69,8 +70,11 @@ struct ComposerTextView: NSViewRepresentable {
             } else {
                 // External non-empty change (draft restore, history nav, editQueued).
                 // Block if the user typed recently — they're ahead of binding propagation.
+                // forceUpdate bypasses this protection for intentional overwrites.
+                let forced = forceUpdate != context.coordinator.lastForceUpdate
+                if forced { context.coordinator.lastForceUpdate = forceUpdate }
                 let typedRecently = Date().timeIntervalSince(context.coordinator.lastUserTypedAt) < 1.0
-                let protected = context.coordinator.isUserEditing || typedRecently
+                let protected = !forced && (context.coordinator.isUserEditing || typedRecently)
                 if !protected {
                     let sel = textView.selectedRange()
                     textView.string = text
@@ -100,6 +104,7 @@ struct ComposerTextView: NSViewRepresentable {
         var savedDraft: String = ""
         var isUserEditing: Bool = false
         var lastUserTypedAt: Date = .distantPast
+        var lastForceUpdate: UInt = 0
 
         init(_ parent: ComposerTextView) { self.parent = parent }
 

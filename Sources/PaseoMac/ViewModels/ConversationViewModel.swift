@@ -222,6 +222,7 @@ final class ConversationViewModel {
     var composerText: String = ""
     var pendingImages: [PendingImageAttachment] = []
     var pendingTextFiles: [PendingTextFile] = []
+    var composerForceUpdate: UInt = 0
 
     var hasOlderMessages: Bool = false
     private var oldestCursor: AgentTimelineCursor? = nil
@@ -382,6 +383,7 @@ final class ConversationViewModel {
         let msg = queued.remove(at: idx)
         composerText = msg.text
         pendingImages = msg.images
+        composerForceUpdate &+= 1
         saveQueued()
     }
 

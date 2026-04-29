@@ -75,6 +75,7 @@ struct ComposerView: View {
                 height: $textFitHeight,
                 font: .systemFont(ofSize: NSFont.systemFontSize),
                 sentHistory: sentHistory,
+                forceUpdate: vm.composerForceUpdate,
                 onFileDrop: { urls in handleFileURLDrop(urls) },
                 onImageDrop: { images in handleImageDrop(images) }
             )
