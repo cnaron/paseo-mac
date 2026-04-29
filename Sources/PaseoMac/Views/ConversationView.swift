@@ -335,6 +335,7 @@ private struct MessageList: View {
     @Environment(SettingsStore.self) private var settings
     @State private var isNearBottom: Bool = true
     @State private var hasNewContent: Bool = false
+    @State private var suppressAutoScroll: Bool = false
     var availableHeight: CGFloat = 500
     var searchText: String = ""
 
@@ -448,6 +449,7 @@ private struct MessageList: View {
                 }
                 .defaultScrollAnchor(.bottom)
                 .onChange(of: vm.rows.count) { old, new in
+                    guard !suppressAutoScroll else { return }
                     let lastIsUser = vm.rows.last?.kind == "user"
                     if isNearBottom || lastIsUser {
                         proxy.scrollTo("bottom", anchor: .bottom)
@@ -456,6 +458,7 @@ private struct MessageList: View {
                     }
                 }
                 .onChange(of: vm.rows.last?.text ?? "") { _, _ in
+                    guard !suppressAutoScroll else { return }
                     if isNearBottom {
                         proxy.scrollTo("bottom", anchor: .bottom)
                     } else {
@@ -476,7 +479,15 @@ private struct MessageList: View {
                         items: ug, proxy: proxy,
                         hasOlderMessages: vm.hasOlderMessages,
                         isLoadingMore: vm.isLoading,
-                        onLoadMore: { Task { await vm.loadOlderMessages() } }
+                        onLoadMore: { Task { await vm.loadOlderMessages() } },
+                        onNavigate: {
+                            suppressAutoScroll = true
+                            isNearBottom = false
+                            Task {
+                                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                                suppressAutoScroll = false
+                            }
+                        }
                     )
                     .padding(.trailing, 20)
                     .padding(.vertical, 60)
@@ -1360,6 +1371,7 @@ private struct UserMessageTimeline: View {
     var hasOlderMessages: Bool = false
     var isLoadingMore: Bool = false
     var onLoadMore: (() -> Void)? = nil
+    var onNavigate: (() -> Void)? = nil
     @State private var hoveredId: String? = nil
 
     private let nodeH: CGFloat = 28
@@ -1401,8 +1413,13 @@ private struct UserMessageTimeline: View {
                     }
                 }
                 .onTapGesture {
-                    withAnimation(.easeOut(duration: 0.25)) {
-                        proxy.scrollTo(item.id, anchor: .top)
+                    onNavigate?()
+                    proxy.scrollTo(item.id, anchor: .top)
+                    Task {
+                        try? await Task.sleep(nanoseconds: 100_000_000)
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            proxy.scrollTo(item.id, anchor: .top)
+                        }
                     }
                 }
             }
