@@ -37,7 +37,7 @@ struct ConversationView: View {
                 }
                 .overlay(alignment: .bottom) {
                     if searchText.isEmpty {
-                        if app.isArchivedAgent(agentId) && !isResumingArchived {
+                        if app.isArchivedAgent(agentId) && !isResumingArchived && !vm.isAgentWorking {
                             ArchivedConversationBanner(
                                 cwd: agent()?.cwd ?? "",
                                 onResume: { isResumingArchived = true }
@@ -101,10 +101,10 @@ struct ConversationView: View {
         .onChange(of: agentId) { isResumingArchived = false }
         .onChange(of: vm.rows.count) { old, new in
             guard isResumingArchived, new > old else { return }
-            // Message sent to archived agent → daemon creates a new resumed agent.
-            // Poll for it and navigate, mirroring submitPendingAgent logic.
-            isResumingArchived = false
+            // Keep isResumingArchived = true so the banner stays hidden during polling.
+            // It resets via onChange(of: agentId) when navigation succeeds.
             let before = Set(app.agents.map(\.id))
+            let resumingAgentId = agentId
             Task {
                 for _ in 0..<20 {
                     try? await Task.sleep(nanoseconds: 500_000_000)
@@ -113,7 +113,12 @@ struct ConversationView: View {
                         app.selectedAgentId = newAgent.id
                         return
                     }
+                    if !app.isArchivedAgent(resumingAgentId) {
+                        // Same agent became active (daemon unarchived it in place)
+                        return
+                    }
                 }
+                isResumingArchived = false
             }
         }
         .onKeyPress(.escape) {
