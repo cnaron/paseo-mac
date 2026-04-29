@@ -39,6 +39,8 @@ final class AppViewModel {
     var pendingNewAgentModel: String? = nil
     var pendingNewAgentModeId: String? = nil
     static let pendingAgentId = "__pending__"
+    private var knownAgentIds: Set<String> = []
+    private var pendingCreationContinuation: CheckedContinuation<String?, Never>? = nil
     var savedOfferRaw: String? {
         get { UserDefaults.standard.string(forKey: storedOfferKey) }
         set {
@@ -242,23 +244,38 @@ final class AppViewModel {
         pendingNewAgentCwd = nil
         pendingNewAgentModel = nil
         pendingNewAgentModeId = nil
-        let before = Set(agents.map(\.id))
+        knownAgentIds = Set(agents.map(\.id))
         do {
             try await client.createAgent(cwd: cwd, provider: provider, model: model, modeId: modeId, initialPrompt: images.isEmpty ? text : nil)
         } catch {
             selectedAgentId = agents.first?.id
             return
         }
-        var newAgentId: String? = nil
-        for _ in 0..<20 {
-            try? await Task.sleep(nanoseconds: 500_000_000)
-            try? await refreshAgents()
-            if let newAgent = agents.first(where: { !before.contains($0.id) }) {
-                newAgentId = newAgent.id
-                break
+        // Wait for the new agent via stream event (fast) or poll fallback
+        let detected = await withCheckedContinuation { cont in
+            pendingCreationContinuation = cont
+            Task {
+                // Timeout: if stream doesn't deliver within 5s, poll
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                if let cont = pendingCreationContinuation {
+                    pendingCreationContinuation = nil
+                    cont.resume(returning: nil as String?)
+                }
             }
         }
-        guard let agentId = newAgentId else {
+        var agentId = detected
+        if agentId == nil {
+            // Fallback: poll a few times
+            for _ in 0..<6 {
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                try? await refreshAgents()
+                if let newAgent = agents.first(where: { !knownAgentIds.contains($0.id) }) {
+                    agentId = newAgent.id
+                    break
+                }
+            }
+        }
+        guard let agentId else {
             selectedAgentId = agents.first?.id
             return
         }
@@ -622,9 +639,17 @@ final class AppViewModel {
                 }
             }
         case .agentStatus(let msg):
-            if let snap = msg.payload.info,
-               let idx = agents.firstIndex(where: { $0.id == snap.id }) {
-                agents[idx] = snap
+            if let snap = msg.payload.info {
+                if let idx = agents.firstIndex(where: { $0.id == snap.id }) {
+                    agents[idx] = snap
+                } else {
+                    agents.insert(snap, at: 0)
+                    if !knownAgentIds.contains(snap.id),
+                       let cont = pendingCreationContinuation {
+                        pendingCreationContinuation = nil
+                        cont.resume(returning: snap.id)
+                    }
+                }
             }
             liveStatus[msg.payload.agentId] = LiveStatus(
                 status: msg.payload.status,
