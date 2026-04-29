@@ -99,11 +99,21 @@ struct ConversationView: View {
             }
         }
         .onChange(of: agentId) { isResumingArchived = false }
-        .onChange(of: vm.rows.count) { _, _ in
-            // If a message was sent to an archived agent and it responded,
-            // refresh so it appears in active agents list.
-            if isResumingArchived {
-                Task { try? await app.refreshAgents() }
+        .onChange(of: vm.rows.count) { old, new in
+            guard isResumingArchived, new > old else { return }
+            // Message sent to archived agent → daemon creates a new resumed agent.
+            // Poll for it and navigate, mirroring submitPendingAgent logic.
+            isResumingArchived = false
+            let before = Set(app.agents.map(\.id))
+            Task {
+                for _ in 0..<20 {
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    try? await app.refreshAgents()
+                    if let newAgent = app.agents.first(where: { !before.contains($0.id) }) {
+                        app.selectedAgentId = newAgent.id
+                        return
+                    }
+                }
             }
         }
         .onKeyPress(.escape) {
