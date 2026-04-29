@@ -293,10 +293,11 @@ struct ComposerView: View {
     private func submit() {
         if app.pendingNewAgentCwd != nil {
             let text = vm.composerText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let images = vm.pendingImages
             vm.composerText = ""
             vm.pendingImages = []
             vm.pendingTextFiles = []
-            Task { await app.submitPendingAgent(text: text) }
+            Task { await app.submitPendingAgent(text: text, images: images) }
         } else {
             Task { await vm.sendComposer() }
         }

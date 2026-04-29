@@ -234,7 +234,7 @@ final class AppViewModel {
         }
     }
 
-    func submitPendingAgent(text: String) async {
+    func submitPendingAgent(text: String, images: [PendingImageAttachment] = []) async {
         guard let cwd = pendingNewAgentCwd, let client else { return }
         let provider = pendingNewAgentProvider
         let model = pendingNewAgentModel
@@ -242,18 +242,39 @@ final class AppViewModel {
         pendingNewAgentCwd = nil
         pendingNewAgentModel = nil
         pendingNewAgentModeId = nil
-        selectedAgentId = nil
         let before = Set(agents.map(\.id))
         do {
-            try await client.createAgent(cwd: cwd, provider: provider, model: model, modeId: modeId, initialPrompt: text)
-        } catch { return }
+            try await client.createAgent(cwd: cwd, provider: provider, model: model, modeId: modeId, initialPrompt: images.isEmpty ? text : nil)
+        } catch {
+            selectedAgentId = agents.first?.id
+            return
+        }
+        var newAgentId: String? = nil
         for _ in 0..<20 {
             try? await Task.sleep(nanoseconds: 500_000_000)
             try? await refreshAgents()
             if let newAgent = agents.first(where: { !before.contains($0.id) }) {
-                selectedAgentId = newAgent.id
-                return
+                newAgentId = newAgent.id
+                break
             }
+        }
+        guard let agentId = newAgentId else {
+            selectedAgentId = agents.first?.id
+            return
+        }
+        selectedAgentId = agentId
+        if !images.isEmpty {
+            let wireImages = images.map {
+                SendAgentMessageRequest.ImageAttachment(
+                    data: $0.pngData.base64EncodedString(),
+                    mimeType: $0.mimeType
+                )
+            }
+            _ = try? await client.sendMessage(
+                agentId: agentId,
+                text: text,
+                images: wireImages
+            )
         }
     }
 
