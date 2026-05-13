@@ -22,6 +22,20 @@ final class AppViewModel {
     // MARK: Persisted offer
 
     private let storedOfferKey = "paseomac.connectionOfferRaw"
+    private let storedClientIdKey = "paseomac.clientId"
+
+    /// Stable per-install client id. Generated once and persisted so the
+    /// daemon can resume our session across reconnects rather than spinning
+    /// up a fresh externalSessionsByKey entry every time.
+    private var stableClientId: String {
+        let ud = UserDefaults.standard
+        if let existing = ud.string(forKey: storedClientIdKey), !existing.isEmpty {
+            return existing
+        }
+        let new = "cid_paseomac_\(UUID().uuidString)"
+        ud.set(new, forKey: storedClientIdKey)
+        return new
+    }
 
     var connectionState: ConnectionState = .disconnected
     var agents: [AgentSnapshot] = []
@@ -38,6 +52,13 @@ final class AppViewModel {
     var pendingNewAgentProvider: String = "anthropic"
     var pendingNewAgentModel: String? = nil
     var pendingNewAgentModeId: String? = nil
+    var pendingNewAgentThinkingOptionId: String? = nil
+    /// Set while createAgent is in flight after the user submitted their first
+    /// message. Drives the optimistic user bubble + "Starting agent…" spinner
+    /// so the new-conversation view never goes blank between submit and the new
+    /// agent ID landing.
+    var creatingAgentText: String? = nil
+    var creatingAgentImages: [PendingImageAttachment] = []
     static let pendingAgentId = "__pending__"
     private var knownAgentIds: Set<String> = []
     private var pendingCreationContinuation: CheckedContinuation<String?, Never>? = nil
@@ -108,18 +129,35 @@ final class AppViewModel {
 
 
     func connect(withOfferRaw raw: String) async {
+        EventLogger.shared.log("conn", "connect_start")
         connectionState = .connecting
+        // Cancel the old event-listener task before tearing down the old
+        // client. Otherwise `await old.disconnect()` finishes the old events
+        // stream, the old `for await` exits, and the old task runs
+        // `handleUnexpectedDisconnect()` — scheduling a phantom reconnect
+        // that races our new connection.
+        eventTask?.cancel()
+        eventTask = nil
+        // Tear down any previous transport before we spin up a fresh one.
+        // Without this the old WS task lingers until ARC frees it, and the
+        // daemon may still see two sockets keyed to our clientId for a
+        // window — the resume logic handles it but it's noisy.
+        if let old = self.client {
+            await old.disconnect()
+            self.client = nil
+        }
         do {
             let offer = try ConnectionOffer.parse(raw)
             let endpoint = DaemonEndpoint.relay(
                 offer: offer,
-                clientId: "cid_paseomac_\(Int(Date().timeIntervalSince1970))"
+                clientId: stableClientId
             )
             let client = DaemonClient(endpoint: endpoint)
             try await client.connect()
             self.client = client
             self.savedOfferRaw = raw
             self.connectionState = .connected
+            EventLogger.shared.log("conn", "connected", ["agents": agents.count])
 
             let events = client.events
             self.eventTask = Task { [weak self] in
@@ -132,13 +170,31 @@ final class AppViewModel {
 
             try await refreshAgents()
 
+            // Connection is healthy again — clear stale connection-related
+            // errors that might have stuck on conversation VMs from the
+            // disconnect window (e.g. "Daemon is not connected." surfacing
+            // from a sendMessage that raced the drop).
+            for vm in conversations.values {
+                vm.clearConnectionError()
+            }
+
             // After reconnect, reload conversations that may have missed streaming
             // content while the client was offline. Skip agents that are still
             // running — their streaming events will arrive via the new event stream,
             // and reloading mid-turn would race with and overwrite those updates.
             let runningIds = Set(agents.filter { $0.status == "running" }.map(\.id))
             for (agentId, vm) in conversations where !runningIds.contains(agentId) {
+                // Skip the pending-agent placeholder VM — it has no real agentId
+                // and asking the daemon to fetch its timeline returns "Agent not
+                // found" which closes the WS connection and triggers a reconnect
+                // loop.
+                if agentId == AppViewModel.pendingAgentId { continue }
                 Task { await vm.loadInitial() }
+                // Reconcile in case the agent finished while we were offline
+                // and the turn_completed event was missed.
+                if let snap = agents.first(where: { $0.id == agentId }) {
+                    vm.reconcileAgentStatus(snap.status)
+                }
             }
 
             Task { [weak self] in
@@ -153,6 +209,7 @@ final class AppViewModel {
             Task { [weak self] in await self?.checkClaudeCodeVersion() }
 
         } catch {
+            EventLogger.shared.log("conn", "connect_failed", ["err": error.localizedDescription])
             self.connectionState = .failed(error.localizedDescription)
         }
     }
@@ -173,6 +230,9 @@ final class AppViewModel {
         statsData = nil
         claudeCodeCurrentVersion = nil
         pendingNewAgentCwd = nil
+        pendingNewAgentThinkingOptionId = nil
+        creatingAgentText = nil
+        creatingAgentImages = []
         claudeCodeLatestVersion = nil
         daemonVersion = nil
         daemonHostname = nil
@@ -181,6 +241,10 @@ final class AppViewModel {
     }
 
     private func handleUnexpectedDisconnect() async {
+        let aliveSec = await client?.aliveDuration() ?? 0
+        EventLogger.shared.log("conn", "disconnected_unexpected", [
+            "secondsAlive": Int(aliveSec)
+        ])
         client = nil
         connectionState = .disconnected
         scheduleReconnect()
@@ -190,18 +254,31 @@ final class AppViewModel {
         guard let raw = savedOfferRaw, !raw.isEmpty else { return }
         reconnectTask?.cancel()
         reconnectTask = Task { [weak self] in
-            // First retry after 1s, then 3s, 6s, 12s — gives fast recovery after
-            // transient drops while still backing off for sustained failures.
+            // First retry after 1s, then 3s, 9s, 27s — capped at 30s. Each
+            // delay also gets ±25% jitter so multiple clients on the same
+            // VPS don't reconnect in lock-step (Discord-style thundering-herd
+            // mitigation; less critical for a single user but cheap).
             var delay: UInt64 = 1_000_000_000
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: delay)
+                let jittered = AppViewModel.applyJitter(delay)
+                EventLogger.shared.log("conn", "reconnect_scheduled", [
+                    "delaySec": Double(jittered) / 1e9
+                ])
+                try? await Task.sleep(nanoseconds: jittered)
                 guard !Task.isCancelled, let self else { return }
                 guard case .disconnected = connectionState else { return }
                 await self.connect(withOfferRaw: raw)
                 if case .connected = connectionState { return }
-                delay = min(delay * 3, 30_000_000_000)  // 1s → 3s → 9s → 27s → 30s cap
+                delay = min(delay * 3, 30_000_000_000)
             }
         }
+    }
+
+    /// Apply ±25% random jitter to a backoff delay (in nanoseconds).
+    private static func applyJitter(_ delayNs: UInt64) -> UInt64 {
+        let f = Double(delayNs)
+        let factor = Double.random(in: 0.75...1.25)
+        return UInt64(f * factor)
     }
 
     func startWakeObserver() {
@@ -225,12 +302,14 @@ final class AppViewModel {
         pendingNewAgentProvider = agent?.provider ?? "anthropic"
         pendingNewAgentModel = agent?.model
         pendingNewAgentModeId = agent?.currentModeId
+        pendingNewAgentThinkingOptionId = agent?.effectiveThinkingOptionId
         pendingNewAgentCwd = cwd
         selectedAgentId = AppViewModel.pendingAgentId
     }
 
     func cancelPendingAgent() {
         pendingNewAgentCwd = nil
+        pendingNewAgentThinkingOptionId = nil
         if selectedAgentId == AppViewModel.pendingAgentId {
             selectedAgentId = agents.first?.id
         }
@@ -241,22 +320,45 @@ final class AppViewModel {
         let provider = pendingNewAgentProvider
         let model = pendingNewAgentModel
         let modeId = pendingNewAgentModeId
+        let thinkingOptionId = pendingNewAgentThinkingOptionId
         pendingNewAgentCwd = nil
         pendingNewAgentModel = nil
         pendingNewAgentModeId = nil
+        pendingNewAgentThinkingOptionId = nil
+        creatingAgentText = text
+        creatingAgentImages = images
         knownAgentIds = Set(agents.map(\.id))
+        EventLogger.shared.log("create_agent", "request", [
+            "provider": provider, "model": model ?? "<default>",
+            "hasInitialPrompt": images.isEmpty,
+            "images": images.count,
+            "thinking": thinkingOptionId ?? "<default>"
+        ])
+        // Pass thinking in createAgent's config so the daemon initializes
+        // the agent at the chosen level. Calling set_agent_thinking_request
+        // afterward races with turn 1's startup in daemons up to 0.1.70 and
+        // fails the turn with "Cannot read properties of null (reading
+        // 'push')" — observed for both "max" and "xhigh", so it's the race
+        // itself, not any one option. AgentSessionConfigSchema accepts
+        // thinkingOptionId directly, which sidesteps the race entirely.
         do {
-            try await client.createAgent(cwd: cwd, provider: provider, model: model, modeId: modeId, initialPrompt: images.isEmpty ? text : nil)
+            try await client.createAgent(
+                cwd: cwd, provider: provider, model: model, modeId: modeId,
+                thinkingOptionId: thinkingOptionId,
+                initialPrompt: images.isEmpty ? text : nil
+            )
         } catch {
+            EventLogger.shared.log("create_agent", "error", ["err": error.localizedDescription])
+            creatingAgentText = nil
+            creatingAgentImages = []
             selectedAgentId = agents.first?.id
             return
         }
-        // Wait for the new agent via stream event (fast) or poll fallback
+        // Wait for the new agent via stream event (fast) or poll fallback.
         let detected = await withCheckedContinuation { cont in
             pendingCreationContinuation = cont
             Task {
-                // Timeout: if stream doesn't deliver within 5s, poll
-                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
                 if let cont = pendingCreationContinuation {
                     pendingCreationContinuation = nil
                     cont.resume(returning: nil as String?)
@@ -265,9 +367,8 @@ final class AppViewModel {
         }
         var agentId = detected
         if agentId == nil {
-            // Fallback: poll a few times
-            for _ in 0..<6 {
-                try? await Task.sleep(nanoseconds: 300_000_000)
+            for _ in 0..<10 {
+                try? await Task.sleep(nanoseconds: 200_000_000)
                 try? await refreshAgents()
                 if let newAgent = agents.first(where: { !knownAgentIds.contains($0.id) }) {
                     agentId = newAgent.id
@@ -276,11 +377,21 @@ final class AppViewModel {
             }
         }
         guard let agentId else {
+            EventLogger.shared.log("create_agent", "timeout")
+            creatingAgentText = nil
+            creatingAgentImages = []
             selectedAgentId = agents.first?.id
             return
         }
-        selectedAgentId = agentId
+        EventLogger.shared.log("create_agent", "detected", ["agent": agentId])
+        // Image-only path: pre-populate optimistic user row and sendMessage.
         if !images.isEmpty {
+            let vm = conversation(for: agentId)
+            let messageId = UUID().uuidString
+            vm.injectOptimisticFirstMessage(text: text, messageId: messageId, images: images)
+            selectedAgentId = agentId
+            creatingAgentText = nil
+            creatingAgentImages = []
             let wireImages = images.map {
                 SendAgentMessageRequest.ImageAttachment(
                     data: $0.pngData.base64EncodedString(),
@@ -288,10 +399,19 @@ final class AppViewModel {
                 )
             }
             _ = try? await client.sendMessage(
-                agentId: agentId,
-                text: text,
-                images: wireImages
+                agentId: agentId, text: text, messageId: messageId,
+                images: wireImages.isEmpty ? nil : wireImages
             )
+        } else {
+            selectedAgentId = agentId
+            creatingAgentText = nil
+            creatingAgentImages = []
+        }
+        // Thinking is now part of createAgent's config above, so we no
+        // longer call setAgentThinking here (it would trip the turn-1
+        // race documented above). Patch the local snapshot to match.
+        if let thinkingOptionId {
+            patchAgent(id: agentId) { $0.withThinking(thinkingOptionId) }
         }
     }
 
@@ -624,6 +744,30 @@ final class AppViewModel {
         case .agentStream(let msg):
             let agentId = msg.payload.agentId
             applyLiveStatus(agentId: agentId, event: msg.payload.event)
+            switch msg.payload.event {
+            case .turnStarted:
+                EventLogger.shared.log("turn", "started", ["agent": agentId])
+                // Fast-path for create-agent flow: turn_started for an
+                // unknown agent id arrives ~3-4s before the agent_status
+                // event we'd otherwise wait for. Resume the pending
+                // continuation here so the new conversation pops in faster.
+                if !knownAgentIds.contains(agentId),
+                   let cont = pendingCreationContinuation {
+                    pendingCreationContinuation = nil
+                    cont.resume(returning: agentId)
+                }
+            case .turnCompleted:
+                EventLogger.shared.log("turn", "completed", ["agent": agentId])
+            case .turnFailed:
+                EventLogger.shared.log("turn", "failed", ["agent": agentId])
+            case .turnCanceled:
+                EventLogger.shared.log("turn", "canceled", ["agent": agentId])
+            case .attentionRequired(let reason):
+                EventLogger.shared.log("turn", "attention", ["agent": agentId, "reason": reason])
+            case .permissionRequested:
+                EventLogger.shared.log("turn", "permission_requested", ["agent": agentId])
+            default: break
+            }
             let currentModel = agents.first(where: { $0.id == agentId })?.model
             let vm = conversation(for: agentId)
             vm.apply(
@@ -632,16 +776,19 @@ final class AppViewModel {
                 timestamp: msg.payload.timestamp,
                 currentModel: currentModel
             )
-            if case .turnCompleted = msg.payload.event {
-                Task { [weak self] in
-                    try? await Task.sleep(nanoseconds: 1_500_000_000)
-                    try? await self?.refreshAgents()
-                }
-            }
+            // turn_completed used to trigger a 1.5s-delayed full refreshAgents.
+            // The agent_status stream that follows already updates the snapshot
+            // in place (see case .agentStatus below), so the full refresh is
+            // redundant — drop it to save an RPC roundtrip per turn.
         case .agentStatus(let msg):
             if let snap = msg.payload.info {
                 if let idx = agents.firstIndex(where: { $0.id == snap.id }) {
-                    agents[idx] = snap
+                    // Status pings often carry only the live status fields and
+                    // leave model/provider/title/usage as null. A naive
+                    // overwrite drops those, which kills the live "Opus · 2m"
+                    // status bar (currentModel resolves via agents[idx].model).
+                    // Merge non-nil snap fields into the existing snapshot.
+                    agents[idx] = agents[idx].merging(snap)
                 } else {
                     agents.insert(snap, at: 0)
                     if !knownAgentIds.contains(snap.id),
@@ -656,6 +803,11 @@ final class AppViewModel {
                 requiresAttention: msg.payload.info?.requiresAttention ?? false,
                 attentionReason: msg.payload.info?.attentionReason
             )
+            EventLogger.shared.log("status", msg.payload.status, ["agent": msg.payload.agentId])
+            // Recover from missed turn_completed events: if the daemon now
+            // reports idle but the conversation VM thinks it's still working,
+            // reconcile so the spinner clears without restarting the app.
+            conversations[msg.payload.agentId]?.reconcileAgentStatus(msg.payload.status)
         case .serverInfo(let info):
             daemonVersion = info.version
             daemonHostname = info.hostname
@@ -733,6 +885,34 @@ private extension AgentSnapshot {
             lastUsage: lastUsage,
             archivedAt: archivedAt, requiresAttention: requiresAttention,
             attentionReason: attentionReason
+        )
+    }
+
+    /// Merge another snapshot into this one. Non-nil scalar fields and
+    /// always-present strings (status / updatedAt) come from `other`; any
+    /// nil-in-other field falls back to the receiver. Used for `agent_status`
+    /// stream pings that often only carry `status`/`updatedAt` and leave
+    /// model/title/usage as null — a naive overwrite there blanks out the
+    /// live "model · duration" status bar.
+    func merging(_ other: AgentSnapshot) -> AgentSnapshot {
+        AgentSnapshot(
+            id: other.id,
+            provider: other.provider ?? provider,
+            cwd: other.cwd.isEmpty ? cwd : other.cwd,
+            status: other.status,
+            title: other.title ?? title,
+            createdAt: other.createdAt.isEmpty ? createdAt : other.createdAt,
+            updatedAt: other.updatedAt.isEmpty ? updatedAt : other.updatedAt,
+            lastUserMessageAt: other.lastUserMessageAt ?? lastUserMessageAt,
+            model: other.model ?? model,
+            thinkingOptionId: other.thinkingOptionId ?? thinkingOptionId,
+            effectiveThinkingOptionId: other.effectiveThinkingOptionId ?? effectiveThinkingOptionId,
+            currentModeId: other.currentModeId ?? currentModeId,
+            availableModes: other.availableModes ?? availableModes,
+            lastUsage: other.lastUsage ?? lastUsage,
+            archivedAt: other.archivedAt ?? archivedAt,
+            requiresAttention: other.requiresAttention ?? requiresAttention,
+            attentionReason: other.attentionReason ?? attentionReason
         )
     }
 }

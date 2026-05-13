@@ -77,7 +77,8 @@ struct ComposerView: View {
                 sentHistory: sentHistory,
                 forceUpdate: vm.composerForceUpdate,
                 onFileDrop: { urls in handleFileURLDrop(urls) },
-                onImageDrop: { images in handleImageDrop(images) }
+                onImageDrop: { images in handleImageDrop(images) },
+                onLargeTextPaste: { text in handleLargeTextPaste(text) }
             )
             .frame(height: CGFloat(settings.composerHeight))
             .padding(.horizontal, 12)
@@ -122,6 +123,7 @@ struct ComposerView: View {
                 if app.pendingNewAgentCwd != nil {
                     PendingModePicker()
                     PendingModelPicker()
+                    PendingThinkingPicker()
                     PendingProviderPicker()
                 } else if let agent = app.agents.first(where: { $0.id == vm.agentId }) {
                     ModePicker(agent: agent)
@@ -327,6 +329,19 @@ struct ComposerView: View {
         if !attachments.isEmpty { vm.addImages(attachments) }
     }
 
+    private func handleLargeTextPaste(_ text: String) {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HHmmss"
+        let name = "Pasted-\(formatter.string(from: Date())).txt"
+        let file = PendingTextFile(
+            id: UUID(),
+            name: name,
+            content: text,
+            languageHint: nil
+        )
+        vm.addTextFile(file)
+    }
+
     // MARK: - Drop
 
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
@@ -497,7 +512,7 @@ private struct ThinkingPicker: View {
               let models = snapshot.models,
               let model = models.first(where: { $0.id == agent.model })
         else { return nil }
-        return model.thinkingOptions
+        return model.thinkingOptions?.filter { !brokenThinkingOptionIds.contains($0.id) }
     }
     private func currentLabel(options: [SelectOption]) -> String {
         options.first(where: { $0.id == agent.effectiveThinkingOptionId })?.label ?? "Thinking"
@@ -519,6 +534,7 @@ private struct PendingProviderPicker: View {
                             app.pendingNewAgentProvider = prov.provider
                             app.pendingNewAgentModel = nil
                             app.pendingNewAgentModeId = nil
+                            app.pendingNewAgentThinkingOptionId = nil
                         }
                     } label: {
                         Text((prov.label ?? prov.provider) + (prov.provider == app.pendingNewAgentProvider ? "  ✓" : ""))
@@ -548,6 +564,7 @@ private struct PendingModelPicker: View {
                 ForEach(models) { m in
                     Button {
                         app.pendingNewAgentModel = m.id
+                        app.pendingNewAgentThinkingOptionId = nil
                     } label: {
                         Text(m.label + (m.id == effectiveModelId ? "  ✓" : ""))
                     }
@@ -757,3 +774,64 @@ private func resolveFileURLNonIsolated(from item: NSSecureCoding?) -> URL? {
     }
     return nil
 }
+
+
+
+// MARK: - Known-broken thinking options
+//
+// Hook left here in case a future daemon regresses on a specific option
+// (e.g. "max"). The actual turn-1 race that fails new conversations with
+// "Cannot read properties of null (reading 'push')" was fixed in build 37
+// by passing thinkingOptionId inside createAgent's config instead of
+// firing set_agent_thinking_request after the agent exists. Both "max"
+// and "xhigh" had reproduced under the post-create path on daemon 0.1.70.
+let brokenThinkingOptionIds: Set<String> = []
+
+// MARK: - Pending thinking picker (for new conversation)
+
+private struct PendingThinkingPicker: View {
+    @Environment(AppViewModel.self) private var app
+
+    var body: some View {
+        if let options = thinkingOptions, !options.isEmpty {
+            Menu {
+                ForEach(options) { opt in
+                    Button {
+                        app.pendingNewAgentThinkingOptionId = opt.id
+                    } label: {
+                        Text(opt.label + (opt.id == effectiveId ? "  ✓" : ""))
+                    }
+                }
+            } label: {
+                HStack(spacing: 3) {
+                    Text(currentLabel)
+                        .foregroundStyle(.secondary)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Thinking level")
+        }
+    }
+
+    private var currentModel: ModelDefinition? {
+        let prov = app.providers.first(where: { $0.provider == app.pendingNewAgentProvider })
+        let modelId = app.pendingNewAgentModel
+            ?? prov?.models?.first(where: { $0.isDefault == true })?.id
+            ?? prov?.models?.first?.id
+        return prov?.models?.first(where: { $0.id == modelId })
+    }
+    private var thinkingOptions: [SelectOption]? {
+        currentModel?.thinkingOptions?.filter { !brokenThinkingOptionIds.contains($0.id) }
+    }
+    private var effectiveId: String? {
+        app.pendingNewAgentThinkingOptionId ?? currentModel?.defaultThinkingOptionId
+    }
+    private var currentLabel: String {
+        thinkingOptions?.first(where: { $0.id == effectiveId })?.label ?? "Thinking"
+    }
+}
+

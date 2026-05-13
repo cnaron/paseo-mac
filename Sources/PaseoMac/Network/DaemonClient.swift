@@ -67,8 +67,16 @@ actor DaemonClient {
     private var pending: [String: CheckedContinuation<SessionInbound, Error>] = [:]
     private var receiveTask: Task<Void, Never>?
     private var keepaliveTask: Task<Void, Never>?
-    private static let keepaliveInterval: TimeInterval = 20
-    private var consecutivePingFailures = 0
+    /// Send an app-level `{"type":"ping"}` every 15s. Mirrors the official
+    /// Paseo CLI's keepalive interval. WebSocket control PINGs aren't always
+    /// preserved by relays/CDNs, so app-level traffic is what keeps the
+    /// connection from being declared idle.
+    private static let pingInterval: TimeInterval = 15
+    /// If we've gone this long without seeing any inbound frame (pong or
+    /// otherwise), treat the connection as dead and force-close.
+    private static let pongDeadline: TimeInterval = 35
+    private var lastInboundAt: Date = Date()
+    private var connectedAt: Date?
 
     /// Fires for every inbound session message we didn't match to a pending request.
     let events: AsyncStream<SessionInbound>
@@ -102,55 +110,84 @@ actor DaemonClient {
             capabilities: nil
         )
         try await rawSend(.hello(hello))
+        connectedAt = Date()
+        lastInboundAt = Date()
         startKeepalive()
+    }
+
+    /// How long this connection has been alive. Used by AppViewModel to
+    /// stamp `secondsAlive` onto the disconnect log line.
+    func aliveDuration() -> TimeInterval {
+        guard let connectedAt else { return 0 }
+        return Date().timeIntervalSince(connectedAt)
     }
 
     private func startKeepalive() {
         keepaliveTask?.cancel()
-        consecutivePingFailures = 0
         keepaliveTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: UInt64(DaemonClient.keepaliveInterval * 1_000_000_000))
+                try? await Task.sleep(nanoseconds: UInt64(DaemonClient.pingInterval * 1_000_000_000))
                 guard !Task.isCancelled, let self else { return }
-                let alive = await self.pingTransport()
-                if alive {
-                    await self.resetPingFailures()
-                } else {
-                    let shouldDisconnect = await self.recordPingFailure()
-                    if shouldDisconnect {
-                        await self.handleKeepaliveFailure()
-                    }
-                }
+                await self.tickKeepalive()
             }
         }
     }
 
-    private func resetPingFailures() {
-        consecutivePingFailures = 0
+    /// One keepalive tick: send an app-level ping, then check whether we've
+    /// heard from the other side recently. Both halves run on the actor so
+    /// `lastInboundAt` is consistent.
+    private func tickKeepalive() async {
+        guard transport != nil else { return }
+        let pingId = UUID().uuidString
+        let now = Date()
+        let ping = PingMessage(
+            requestId: pingId,
+            clientSentAt: Int64(now.timeIntervalSince1970 * 1000)
+        )
+        do {
+            try await rawSend(.ping(ping))
+        } catch {
+            debugLog("[keepalive] ping send failed: \(error) — closing transport")
+            await forceCloseDueToKeepalive(reason: "ping send failed: \(error)")
+            return
+        }
+        // Also send a WebSocket-level PING frame on relay transports so the
+        // client→relay socket itself stays warm. The encrypted app-level ping
+        // above keeps the daemon side happy, but the data socket between
+        // paseo-mac and the Cloudflare relay needs control-frame traffic to
+        // avoid being torn down by edge/NAT idle policies.
+        if case .relay(let channel) = transport {
+            let ok = await channel.sendKeepalivePing()
+            if !ok {
+                debugLog("[keepalive] WS ping failed — closing transport")
+                await forceCloseDueToKeepalive(reason: "WS ping failed")
+                return
+            }
+        }
+        let silence = now.timeIntervalSince(lastInboundAt)
+        if silence > DaemonClient.pongDeadline {
+            debugLog("[keepalive] no inbound frame for \(Int(silence))s — closing transport")
+            await forceCloseDueToKeepalive(reason: "no inbound frame for \(Int(silence))s")
+        }
     }
 
-    private func recordPingFailure() -> Bool {
-        consecutivePingFailures += 1
-        debugLog("[keepalive] ping failed (\(consecutivePingFailures)/2)")
-        return consecutivePingFailures >= 2
-    }
-
-    private func pingTransport() async -> Bool {
+    /// Actively close the WS so the receive loop errors out and the upper
+    /// layer (AppViewModel) sees the disconnect promptly. Without this, a
+    /// half-open connection would only be detected when the OS finally
+    /// surfaces a TCP error, which can take minutes.
+    private func forceCloseDueToKeepalive(reason: String) async {
+        keepaliveTask?.cancel()
+        keepaliveTask = nil
         switch transport {
-        case .direct(let ws):
-            return await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
-                ws.sendPing { error in cont.resume(returning: error == nil) }
-            }
+        case .direct(let task):
+            task.cancel(with: .goingAway, reason: Data(reason.utf8))
         case .relay(let channel):
-            return await channel.sendKeepalivePing()
+            await channel.close(code: .goingAway, reason: reason)
         case .none:
-            return false
+            break
         }
-    }
-
-    private func handleKeepaliveFailure() {
-        debugLog("[keepalive] 2 consecutive ping failures — treating as disconnect")
-        failAllPending(with: DaemonError.notConnected)
+        // The receive loop will catch the close via task.receive() error
+        // and call failAllPending, which finishes eventContinuation.
     }
 
     func disconnect() {
@@ -158,6 +195,7 @@ actor DaemonClient {
         keepaliveTask = nil
         receiveTask?.cancel()
         receiveTask = nil
+        connectedAt = nil
         switch transport {
         case .direct(let t)?:
             t.cancel(with: .normalClosure, reason: nil)
@@ -351,12 +389,42 @@ actor DaemonClient {
         return resp.payload
     }
 
-    func createAgent(cwd: String, provider: String, model: String? = nil, modeId: String? = nil, initialPrompt: String? = nil) async throws {
+    func createAgent(
+        cwd: String,
+        provider: String,
+        model: String? = nil,
+        modeId: String? = nil,
+        thinkingOptionId: String? = nil,
+        initialPrompt: String? = nil
+    ) async throws {
         let requestId = UUID().uuidString
-        let config = CreateAgentRequest.Config(provider: provider, cwd: cwd, model: model, modeId: modeId)
+        let config = CreateAgentRequest.Config(
+            provider: provider,
+            cwd: cwd,
+            model: model,
+            modeId: modeId,
+            thinkingOptionId: thinkingOptionId
+        )
         var req = CreateAgentRequest(requestId: requestId, config: config)
         req.initialPrompt = initialPrompt
         try await rawSend(.session(.createAgent(req)))
+    }
+
+    /// Reply to a `permission_requested` event. For an AskUserQuestion, pass
+    /// `.allow(updatedInput:)` carrying the questions + answers. For a tool
+    /// permission, pass `.allow(updatedInput: nil)` to approve, or
+    /// `.deny(message:)` to reject.
+    func respondPermission(
+        agentId: String,
+        requestId: String,
+        response: AgentPermissionResponseRequest.Response
+    ) async throws {
+        let req = AgentPermissionResponseRequest(
+            agentId: agentId,
+            requestId: requestId,
+            response: response
+        )
+        try await rawSend(.session(.agentPermissionResponse(req)))
     }
 
     func archiveAgent(agentId: String) async throws {
@@ -453,10 +521,16 @@ actor DaemonClient {
 
     private func handle(rawFrame data: Data) throws {
         debugLog("[ws-recv] \(String(decoding: data, as: UTF8.self))")
+        // Any inbound frame counts as proof of life — refresh the keepalive
+        // deadline regardless of frame type.
+        lastInboundAt = Date()
         let inbound = try JSONDecoder.paseo.decode(WSInbound.self, from: data)
         switch inbound {
         case .ping:
             Task { [weak self] in try? await self?.rawSend(.pong(PongMessage())) }
+        case .pong:
+            // Already handled by lastInboundAt update above.
+            break
         case .session(let session):
             dispatch(session)
         case .unknown(let type, _):

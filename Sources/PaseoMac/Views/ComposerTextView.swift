@@ -12,6 +12,7 @@ struct ComposerTextView: NSViewRepresentable {
     var forceUpdate: UInt = 0
     var onFileDrop: ([URL]) -> Void = { _ in }
     var onImageDrop: ([NSImage]) -> Void = { _ in }
+    var onLargeTextPaste: (String) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -21,6 +22,7 @@ struct ComposerTextView: NSViewRepresentable {
         textView.delegate = context.coordinator
         textView.fileDrop = onFileDrop
         textView.imageDrop = onImageDrop
+        textView.largeTextPaste = onLargeTextPaste
         textView.isRichText = false
         textView.allowsUndo = true
         textView.font = font
@@ -91,6 +93,7 @@ struct ComposerTextView: NSViewRepresentable {
         if !hasIME { textView.font = font }
         textView.fileDrop = onFileDrop
         textView.imageDrop = onImageDrop
+        textView.largeTextPaste = onLargeTextPaste
         context.coordinator.sentHistory = sentHistory
     }
 
@@ -154,7 +157,14 @@ struct ComposerTextView: NSViewRepresentable {
 final class DropInterceptingTextView: NSTextView {
     var fileDrop: ([URL]) -> Void = { _ in }
     var imageDrop: ([NSImage]) -> Void = { _ in }
+    var largeTextPaste: (String) -> Void = { _ in }
     var placeholder: String = "Reply…"
+
+    /// Above this length, a paste of plain text becomes a file attachment chip
+    /// instead of being inserted into the text view. Inserting megabytes of
+    /// text triggers full-document glyph layout via NSLayoutManager and hangs
+    /// the main thread for seconds. Match Claude.ai's web behavior.
+    static let largePasteThreshold = 2000
 
     // Draw placeholder when text + marked-text are both empty (IME-safe)
     override func draw(_ dirtyRect: NSRect) {
@@ -261,7 +271,14 @@ final class DropInterceptingTextView: NSTextView {
             return
         }
 
-        // 3) Regular text — default NSTextView behavior
+        // 3) Large text — route to attachment chip so the text view stays responsive.
+        if let text = pb.string(forType: .string),
+           text.count > Self.largePasteThreshold {
+            largeTextPaste(text)
+            return
+        }
+
+        // 4) Regular text — default NSTextView behavior
         super.paste(sender)
     }
 

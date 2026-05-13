@@ -28,6 +28,16 @@ struct HelloMessage: Encodable {
 
 struct PongMessage: Encodable { let type = "pong" }
 
+/// Application-level keepalive. Sent every ~15s while connected so the
+/// relay (and daemon) sees fresh app traffic on the wire — WebSocket
+/// control-frame PINGs aren't always preserved across relays/CDNs.
+/// Daemon replies with a bare `{"type":"pong"}`.
+struct PingMessage: Encodable {
+    let type = "ping"
+    let requestId: String
+    let clientSentAt: Int64    // ms since epoch
+}
+
 /// Session-level request wrapped in `{type:"session", message:<inner>}`.
 enum SessionRequest: Encodable {
     case fetchAgents(FetchAgentsRequest)
@@ -40,6 +50,7 @@ enum SessionRequest: Encodable {
     case cancelAgent(CancelAgentRequest)
     case createAgent(CreateAgentRequest)
     case archiveAgent(ArchiveAgentRequest)
+    case agentPermissionResponse(AgentPermissionResponseRequest)
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.singleValueContainer()
@@ -54,8 +65,102 @@ enum SessionRequest: Encodable {
         case .cancelAgent(let r): try c.encode(r)
         case .createAgent(let r): try c.encode(r)
         case .archiveAgent(let r): try c.encode(r)
+        case .agentPermissionResponse(let r): try c.encode(r)
         }
     }
+}
+
+// MARK: - Permission request / response
+
+/// Decoded payload of a `permission_requested` event's `request` field.
+/// `kind == "question"` (or `name == "AskUserQuestion"`) means the agent is
+/// asking the user to pick from structured options, not just allow/deny a
+/// tool call. `askUserQuestion` is non-nil exactly in that case.
+struct PermissionRequestPayload: Decodable, Hashable, Sendable {
+    let id: String
+    let name: String          // tool name, e.g. "AskUserQuestion", "Bash"
+    let kind: String          // "tool" | "plan" | "question" | "mode" | "other"
+    let title: String?
+    let description: String?
+    let askUserQuestion: AskUserQuestion?
+
+    var isQuestion: Bool { kind == "question" || askUserQuestion != nil }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, kind, title, description, input
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decode(String.self, forKey: .id)
+        self.name = try c.decode(String.self, forKey: .name)
+        self.kind = try c.decode(String.self, forKey: .kind)
+        self.title = try? c.decode(String.self, forKey: .title)
+        self.description = try? c.decode(String.self, forKey: .description)
+        if name == "AskUserQuestion" {
+            self.askUserQuestion = try? c.decode(AskUserQuestion.self, forKey: .input)
+        } else {
+            self.askUserQuestion = nil
+        }
+    }
+}
+
+/// Typed view into `AskUserQuestion`'s tool input.
+struct AskUserQuestion: Codable, Hashable, Sendable {
+    let questions: [Question]
+
+    struct Question: Codable, Hashable, Sendable, Identifiable {
+        let header: String
+        let question: String
+        let multiSelect: Bool?
+        let options: [Option]
+
+        var id: String { header }
+
+        struct Option: Codable, Hashable, Sendable, Identifiable {
+            let label: String
+            let description: String?
+
+            var id: String { label }
+        }
+    }
+}
+
+/// Builds `agent_permission_response` payload. For an AskUserQuestion this
+/// echoes the original questions back alongside the user's answers (keyed
+/// by question header — daemon normalizes to whatever the tool expects).
+struct AgentPermissionResponseRequest: Encodable {
+    let type = "agent_permission_response"
+    let agentId: String
+    let requestId: String
+    let response: Response
+
+    enum Response: Encodable {
+        case allow(updatedInput: AskUserQuestionAnswers?)
+        case deny(message: String?)
+
+        private enum Keys: String, CodingKey { case behavior, updatedInput, message }
+
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: Keys.self)
+            switch self {
+            case .allow(let input):
+                try c.encode("allow", forKey: .behavior)
+                if let input { try c.encode(input, forKey: .updatedInput) }
+            case .deny(let msg):
+                try c.encode("deny", forKey: .behavior)
+                try c.encodeIfPresent(msg, forKey: .message)
+            }
+        }
+    }
+}
+
+/// Shape of `updatedInput` when answering AskUserQuestion. Carries the
+/// original questions back verbatim so the daemon-side normalizer can
+/// re-key answers to whatever the underlying tool wants.
+struct AskUserQuestionAnswers: Encodable {
+    let questions: [AskUserQuestion.Question]
+    let answers: [String: String]
 }
 
 struct CreateAgentRequest: Encodable {
@@ -80,9 +185,15 @@ struct CreateAgentRequest: Encodable {
         let cwd: String
         let model: String?
         let modeId: String?
+        /// Set in the createAgent payload itself so the daemon initializes
+        /// the agent at the chosen thinking level. Sending it later via
+        /// set_agent_thinking_request while turn 1 is starting up trips a
+        /// daemon-side race that fails the turn with
+        /// "Cannot read properties of null (reading 'push')".
+        let thinkingOptionId: String?
 
         private enum CodingKeys: String, CodingKey {
-            case provider, cwd, model, modeId
+            case provider, cwd, model, modeId, thinkingOptionId
         }
         func encode(to encoder: Encoder) throws {
             var c = encoder.container(keyedBy: CodingKeys.self)
@@ -90,6 +201,7 @@ struct CreateAgentRequest: Encodable {
             try c.encode(cwd, forKey: .cwd)
             try c.encodeIfPresent(model, forKey: .model)
             try c.encodeIfPresent(modeId, forKey: .modeId)
+            try c.encodeIfPresent(thinkingOptionId, forKey: .thinkingOptionId)
         }
     }
 }
@@ -197,6 +309,7 @@ struct SendAgentMessageRequest: Encodable {
 enum WSOutbound: Encodable {
     case hello(HelloMessage)
     case pong(PongMessage)
+    case ping(PingMessage)
     case session(SessionRequest)
 
     private enum Keys: String, CodingKey { case type, message }
@@ -205,6 +318,7 @@ enum WSOutbound: Encodable {
         switch self {
         case .hello(let m): try m.encode(to: encoder)
         case .pong(let m): try m.encode(to: encoder)
+        case .ping(let m): try m.encode(to: encoder)
         case .session(let inner):
             var c = encoder.container(keyedBy: Keys.self)
             try c.encode("session", forKey: .type)
@@ -278,6 +392,7 @@ enum SessionInbound: Decodable, @unchecked Sendable {
 
 enum WSInbound: Decodable {
     case ping
+    case pong
     case session(SessionInbound)
     case unknown(type: String, raw: Data)
 
@@ -289,6 +404,8 @@ enum WSInbound: Decodable {
         switch type {
         case "ping":
             self = .ping
+        case "pong":
+            self = .pong
         case "session":
             self = .session(try c.decode(SessionInbound.self, forKey: .message))
         default:
@@ -670,7 +787,7 @@ enum AgentStreamEvent: Decodable, Sendable {
     case turnFailed(error: String)
     case turnCanceled(reason: String)
     case timelineUpdated(item: TimelineItem)
-    case permissionRequested(requestId: String?)
+    case permissionRequested(request: PermissionRequestPayload?)
     case permissionResolved(requestId: String)
     case attentionRequired(reason: String)
     case other(type: String)
@@ -678,7 +795,6 @@ enum AgentStreamEvent: Decodable, Sendable {
     private enum Keys: String, CodingKey {
         case type, sessionId, error, reason, item, request, requestId
     }
-    private enum RequestKeys: String, CodingKey { case requestId }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
@@ -698,8 +814,8 @@ enum AgentStreamEvent: Decodable, Sendable {
             let item = try c.decode(TimelineItem.self, forKey: .item)
             self = .timelineUpdated(item: item)
         case "permission_requested":
-            let inner = try? c.nestedContainer(keyedBy: RequestKeys.self, forKey: .request)
-            self = .permissionRequested(requestId: try? inner?.decode(String.self, forKey: .requestId))
+            let payload = try? c.decode(PermissionRequestPayload.self, forKey: .request)
+            self = .permissionRequested(request: payload)
         case "permission_resolved":
             self = .permissionResolved(requestId: (try? c.decode(String.self, forKey: .requestId)) ?? "")
         case "attention_required":

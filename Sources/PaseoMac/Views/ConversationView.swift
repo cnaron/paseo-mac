@@ -6,6 +6,10 @@ struct ConversationView: View {
     @State private var searchText: String = ""
     @State private var isSearchVisible: Bool = false
     @State private var isResumingArchived: Bool = false
+    /// Live-measured composer height. Drives the bottom breathing room in
+    /// MessageList so the last message stays above the composer even when
+    /// it grows (e.g. providers populate after reconnect and chips appear).
+    @State private var measuredComposerHeight: CGFloat = 210
     @FocusState private var searchFocused: Bool
 
     var body: some View {
@@ -19,20 +23,32 @@ struct ConversationView: View {
             GeometryReader { geo in
                 Group {
                     if isPending {
-                        VStack(spacing: 12) {
-                            Spacer()
-                            Image(systemName: "ellipsis.bubble")
-                                .font(.system(size: 36, weight: .light))
-                                .foregroundStyle(.tertiary)
-                            Text("Type a message to start the conversation")
-                                .font(.callout)
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Color.clear.frame(height: 120)
+                        if let creatingText = app.creatingAgentText {
+                            PendingCreatingView(
+                                text: creatingText,
+                                images: app.creatingAgentImages
+                            )
+                        } else {
+                            VStack(spacing: 12) {
+                                Spacer()
+                                Image(systemName: "ellipsis.bubble")
+                                    .font(.system(size: 36, weight: .light))
+                                    .foregroundStyle(.tertiary)
+                                Text("Type a message to start the conversation")
+                                    .font(.callout)
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                Color.clear.frame(height: 120)
+                            }
+                            .frame(maxWidth: .infinity)
                         }
-                        .frame(maxWidth: .infinity)
                     } else {
-                        MessageList(vm: vm, availableHeight: geo.size.height, searchText: searchText)
+                        MessageList(
+                            vm: vm,
+                            availableHeight: geo.size.height,
+                            searchText: searchText,
+                            bottomPadding: max(measuredComposerHeight, 210)
+                        )
                     }
                 }
                 .overlay(alignment: .bottom) {
@@ -60,10 +76,22 @@ struct ConversationView: View {
                                 ComposerView(vm: vm)
                             }
                             .padding(.bottom, 20)
+                            .background(
+                                GeometryReader { gp in
+                                    Color.clear.preference(
+                                        key: ComposerHeightKey.self,
+                                        value: gp.size.height + 16  // small margin so last msg has breathing room
+                                    )
+                                }
+                            )
                         }
                     }
                 }
             }
+        }
+        .onPreferenceChange(ComposerHeightKey.self) { newValue in
+            // Only trust positive measurements; ignore zero-init.
+            if newValue > 0 { measuredComposerHeight = newValue }
         }
         .navigationTitle(isPending ? "New Conversation" : (agent()?.displayName ?? ""))
         .toolbar {
@@ -232,6 +260,10 @@ private struct BubbleGroup: Identifiable {
     let images: [PendingImageAttachment]
     let modelUsed: String?
     let durationSec: TimeInterval?
+    /// Threads the row's permission-request ID through grouping so the
+    /// renderer can collapse permission/attention bubbles once the user
+    /// has answered. Nil for non-permission rows.
+    let permissionRequestId: String?
 }
 
 private func groupRows(_ rows: [ConversationViewModel.Row]) -> [BubbleGroup] {
@@ -255,7 +287,8 @@ private func groupRows(_ rows: [ConversationViewModel.Row]) -> [BubbleGroup] {
                 toolCluster: cluster,
                 images: [],
                 modelUsed: nil,
-                durationSec: nil
+                durationSec: nil,
+                permissionRequestId: nil
             ))
             continue
         }
@@ -269,7 +302,8 @@ private func groupRows(_ rows: [ConversationViewModel.Row]) -> [BubbleGroup] {
                 toolCluster: [info],
                 images: [],
                 modelUsed: nil,
-                durationSec: nil
+                durationSec: nil,
+                permissionRequestId: nil
             ))
             continue
         }
@@ -289,7 +323,8 @@ private func groupRows(_ rows: [ConversationViewModel.Row]) -> [BubbleGroup] {
                 toolCluster: [],
                 images: last.images + row.images,
                 modelUsed: last.modelUsed ?? row.modelUsed,
-                durationSec: row.durationSec ?? last.durationSec
+                durationSec: row.durationSec ?? last.durationSec,
+                permissionRequestId: last.permissionRequestId
             ))
         } else {
             out.append(BubbleGroup(
@@ -301,7 +336,8 @@ private func groupRows(_ rows: [ConversationViewModel.Row]) -> [BubbleGroup] {
                 toolCluster: [],
                 images: row.images,
                 modelUsed: row.modelUsed,
-                durationSec: row.durationSec
+                durationSec: row.durationSec,
+                permissionRequestId: row.permissionRequestId
             ))
         }
     }
@@ -338,6 +374,9 @@ private struct MessageList: View {
     @State private var suppressAutoScroll: Bool = false
     var availableHeight: CGFloat = 500
     var searchText: String = ""
+    /// Driven by the parent view from a measured composer height so the
+    /// last message never gets hidden behind the composer.
+    var bottomPadding: CGFloat = 210
 
     private var displayedRows: [ConversationViewModel.Row] {
         guard !searchText.isEmpty else { return vm.rows }
@@ -396,8 +435,14 @@ private struct MessageList: View {
                                     group: gm.group,
                                     showConnector: gm.showConnector,
                                     isStreaming: vm.isAgentWorking && gm.id == lastAssistantId,
+                                    pendingPermission: vm.pendingPermission,
+                                    isPermissionResolved: gm.group.permissionRequestId
+                                        .map { vm.resolvedPermissionIds.contains($0) } ?? false,
                                     onApprovePermission: { Task { await vm.approvePermission() } },
-                                    onDenyPermission: { Task { await vm.denyPermission() } }
+                                    onDenyPermission: { Task { await vm.denyPermission() } },
+                                    onSubmitQuestionAnswers: { answers in
+                                        Task { await vm.submitQuestionAnswers(answers) }
+                                    }
                                 )
                                 .id(gm.id)
                                 .transition(.opacity)
@@ -438,7 +483,7 @@ private struct MessageList: View {
                                     )
                                 }
                             }
-                            Color.clear.frame(height: searchText.isEmpty ? 210 : 24) // breathing room
+                            Color.clear.frame(height: searchText.isEmpty ? bottomPadding : 24) // breathing room driven by measured composer height
                             Color.clear.frame(height: 1).id("bottom")
                                 .onAppear { isNearBottom = true; hasNewContent = false }
                                 .onDisappear { isNearBottom = false }
@@ -531,8 +576,11 @@ private struct MessageBubble: View {
     let group: BubbleGroup
     let showConnector: Bool
     var isStreaming: Bool = false
+    var pendingPermission: PermissionRequestPayload? = nil
+    var isPermissionResolved: Bool = false
     var onApprovePermission: (() -> Void)? = nil
     var onDenyPermission: (() -> Void)? = nil
+    var onSubmitQuestionAnswers: (([String: String]) -> Void)? = nil
     @State private var reasoningExpanded: Bool = false
     @State private var isHoveredForCopy: Bool = false
     @State private var isExpanded: Bool = false
@@ -701,22 +749,37 @@ private struct MessageBubble: View {
         }
     }
 
-    // MARK: Permission request — approve / deny buttons
+    // MARK: Permission request — approve/deny buttons or AskUserQuestion picker
 
+    @ViewBuilder
     private var permissionTimelineItem: some View {
-        FlowStep(iconName: "exclamationmark.shield.fill", showLine: showConnector) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Permission Required")
-                    .font(.callout.bold())
-                    .foregroundStyle(.orange)
-                HStack(spacing: 8) {
-                    Button("Allow") { onApprovePermission?() }
-                        .buttonStyle(.borderedProminent)
-                        .tint(.green)
-                        .controlSize(.small)
-                    Button("Deny") { onDenyPermission?() }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
+        if isPermissionResolved {
+            // Daemon confirmed the resolution — collapse so we don't leave a
+            // stale banner asking the user again.
+            EmptyView()
+        } else if let aq = pendingPermission?.askUserQuestion {
+            FlowStep(iconName: "questionmark.bubble.fill", showLine: showConnector) {
+                AskUserQuestionView(
+                    questions: aq.questions,
+                    onSubmit: { onSubmitQuestionAnswers?($0) },
+                    onCancel: { onDenyPermission?() }
+                )
+            }
+        } else {
+            FlowStep(iconName: "exclamationmark.shield.fill", showLine: showConnector) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Permission Required")
+                        .font(.callout.bold())
+                        .foregroundStyle(.orange)
+                    HStack(spacing: 8) {
+                        Button("Allow") { onApprovePermission?() }
+                            .buttonStyle(.borderedProminent)
+                            .tint(.green)
+                            .controlSize(.small)
+                        Button("Deny") { onDenyPermission?() }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                    }
                 }
             }
         }
@@ -724,17 +787,23 @@ private struct MessageBubble: View {
 
     // MARK: Attention required — informational banner
 
+    @ViewBuilder
     private var attentionTimelineItem: some View {
-        FlowStep(iconName: "exclamationmark.circle.fill", showLine: showConnector) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Attention Required")
-                    .font(.callout.bold())
-                    .foregroundStyle(.orange)
-                if !group.text.isEmpty {
-                    Text(group.text)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
+        if isPermissionResolved {
+            // Stale "Attention Required: permission" once the user answers.
+            EmptyView()
+        } else {
+            FlowStep(iconName: "exclamationmark.circle.fill", showLine: showConnector) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Attention Required")
+                        .font(.callout.bold())
+                        .foregroundStyle(.orange)
+                    if !group.text.isEmpty {
+                        Text(group.text)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
                 }
             }
         }
@@ -1525,3 +1594,200 @@ private struct ThinkingIndicator: View {
         }
     }
 }
+
+
+
+// MARK: - Composer height preference
+
+/// Bubbles the live-measured composer height up so MessageList can size its
+/// bottom breathing room dynamically. Without this the last message gets
+/// hidden behind a tall composer (provider chips, attachments, etc).
+private struct ComposerHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        let next = nextValue()
+        if next > 0 { value = next }
+    }
+}
+
+// MARK: - Pending creating view (optimistic bubble + "Starting agent…" spinner)
+
+private struct PendingCreatingView: View {
+    let text: String
+    let images: [PendingImageAttachment]
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .trailing, spacing: 14) {
+                userBubble
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Starting agent…")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.top, 4)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 16)
+            .padding(.bottom, 140)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+    }
+
+    @ViewBuilder
+    private var userBubble: some View {
+        HStack(alignment: .top) {
+            Spacer(minLength: 48)
+            VStack(alignment: .trailing, spacing: 4) {
+                if !images.isEmpty {
+                    UserBubbleImages(images: images)
+                }
+                if !text.isEmpty {
+                    MarkdownBodyView(text: text)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+                        .frame(maxWidth: 520, alignment: .trailing)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - AskUserQuestion picker
+
+/// Inline UI for an `AskUserQuestion` permission request. For each question
+/// the user sees the provided option labels as clickable chips plus a text
+/// field for a free-form answer (the implicit "Other" path). Submit is
+/// disabled until every question has a non-empty answer.
+private struct AskUserQuestionView: View {
+    let questions: [AskUserQuestion.Question]
+    let onSubmit: ([String: String]) -> Void
+    let onCancel: () -> Void
+
+    @State private var draft: [String: String] = [:]
+
+    private var canSubmit: Bool {
+        questions.allSatisfy { !(draft[$0.header] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Question from agent")
+                .font(.callout.bold())
+                .foregroundStyle(.orange)
+            ForEach(questions) { q in
+                questionRow(q)
+            }
+            HStack(spacing: 8) {
+                Button("Submit") { onSubmit(draft) }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(!canSubmit)
+                Button("Skip") { onCancel() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func questionRow(_ q: AskUserQuestion.Question) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if !q.header.isEmpty {
+                Text(q.header)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Text(q.question)
+                .font(.callout)
+                .textSelection(.enabled)
+            // Options as wrap-flow chips
+            FlowLayout(spacing: 6) {
+                ForEach(q.options) { opt in
+                    let selected = (draft[q.header] ?? "") == opt.label
+                    Button {
+                        draft[q.header] = opt.label
+                    } label: {
+                        Text(opt.label)
+                            .font(.callout)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(
+                                selected
+                                ? Color.accentColor.opacity(0.22)
+                                : Color.secondary.opacity(0.12),
+                                in: RoundedRectangle(cornerRadius: 14)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 14)
+                                    .stroke(selected ? Color.accentColor : Color.clear, lineWidth: 1)
+                            )
+                            .help(opt.description ?? "")
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            TextField(
+                "Other (type a custom answer)…",
+                text: Binding(
+                    get: { draft[q.header] ?? "" },
+                    set: { draft[q.header] = $0 }
+                )
+            )
+            .textFieldStyle(.roundedBorder)
+            .controlSize(.small)
+            .onSubmit {
+                if canSubmit { onSubmit(draft) }
+            }
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+/// Minimal wrap-flow layout for chip rows. Wraps to a new line when the
+/// next subview wouldn't fit on the current row.
+private struct FlowLayout: Layout {
+    var spacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var lineHeight: CGFloat = 0
+        var totalWidth: CGFloat = 0
+        for sv in subviews {
+            let size = sv.sizeThatFits(.unspecified)
+            if x + size.width > maxWidth, x > 0 {
+                y += lineHeight + spacing
+                x = 0
+                lineHeight = 0
+            }
+            x += size.width + spacing
+            totalWidth = max(totalWidth, x - spacing)
+            lineHeight = max(lineHeight, size.height)
+        }
+        return CGSize(width: min(totalWidth, maxWidth), height: y + lineHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let maxWidth = bounds.width
+        var x: CGFloat = bounds.minX
+        var y: CGFloat = bounds.minY
+        var lineHeight: CGFloat = 0
+        for sv in subviews {
+            let size = sv.sizeThatFits(.unspecified)
+            if x + size.width > bounds.minX + maxWidth, x > bounds.minX {
+                y += lineHeight + spacing
+                x = bounds.minX
+                lineHeight = 0
+            }
+            sv.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
+            x += size.width + spacing
+            lineHeight = max(lineHeight, size.height)
+        }
+    }
+}
+

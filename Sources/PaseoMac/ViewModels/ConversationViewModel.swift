@@ -34,6 +34,11 @@ final class ConversationViewModel {
         /// Wall-clock seconds the turn took. Only set on the last assistant
         /// row of a turn, after turn_completed/failed/canceled arrives.
         var durationSec: TimeInterval?
+        /// Set on permission/attention rows so the View can collapse them
+        /// after `permission_resolved` arrives — otherwise the row falls
+        /// back to a stale Allow/Deny banner that still appears to ask the
+        /// user for input even though the answer already went through.
+        let permissionRequestId: String?
 
         init(
             id: String,
@@ -43,7 +48,8 @@ final class ConversationViewModel {
             tool: ToolInfo? = nil,
             images: [PendingImageAttachment] = [],
             modelUsed: String? = nil,
-            durationSec: TimeInterval? = nil
+            durationSec: TimeInterval? = nil,
+            permissionRequestId: String? = nil
         ) {
             self.id = id
             self.kind = kind
@@ -53,6 +59,7 @@ final class ConversationViewModel {
             self.images = images
             self.modelUsed = modelUsed
             self.durationSec = durationSec
+            self.permissionRequestId = permissionRequestId
         }
     }
 
@@ -227,6 +234,16 @@ final class ConversationViewModel {
     var hasOlderMessages: Bool = false
     private var oldestCursor: AgentTimelineCursor? = nil
     private var currentPermissionRequestId: String? = nil
+    /// Latest pending permission request. `nil` when no permission is
+    /// pending; set when a `permission_requested` event arrives and cleared
+    /// on `permission_resolved`. Drives the UI's question vs. allow/deny
+    /// rendering inside the permission timeline row.
+    var pendingPermission: PermissionRequestPayload? = nil
+    /// Permission request IDs we've seen a `permission_resolved` for. The
+    /// View checks this to collapse the corresponding permission/attention
+    /// rows so the user doesn't see a stale Allow/Deny banner after they
+    /// already answered the question.
+    var resolvedPermissionIds: Set<String> = []
 
     /// Messages the user submitted while the agent was busy. We display them
     /// above the composer and flush them one at a time as turns complete.
@@ -304,6 +321,10 @@ final class ConversationViewModel {
 
     func loadInitial() async {
         guard !isLoading else { return }
+        // The placeholder VM created during the new-conversation flow has
+        // agentId = AppViewModel.pendingAgentId; calling fetchTimeline on it
+        // returns "Agent not found" and tears down the connection.
+        guard agentId != AppViewModel.pendingAgentId else { return }
         isLoading = true
         // Reset per-session display state so switching agents
         // doesn't bleed the previous agent's timer/model.
@@ -415,6 +436,11 @@ final class ConversationViewModel {
             return
         }
         appendLocalUserRow(text: msg.text, messageId: msg.messageId, images: msg.images)
+        EventLogger.shared.log("send", "request", [
+            "agent": agentId, "messageId": msg.messageId,
+            "len": msg.text.count, "images": msg.images.count
+        ])
+        let started = Date()
         do {
             let wireImages = msg.images.map {
                 SendAgentMessageRequest.ImageAttachment(
@@ -428,8 +454,16 @@ final class ConversationViewModel {
                 messageId: msg.messageId,
                 images: wireImages.isEmpty ? nil : wireImages
             )
+            EventLogger.shared.log("send", "ack", [
+                "agent": agentId, "messageId": msg.messageId,
+                "elapsedMs": Int(Date().timeIntervalSince(started) * 1000)
+            ])
             self.lastError = nil
         } catch {
+            EventLogger.shared.log("send", "error", [
+                "agent": agentId, "messageId": msg.messageId,
+                "err": error.localizedDescription
+            ])
             self.lastError = "Send failed: \(error.localizedDescription)"
         }
     }
@@ -478,12 +512,20 @@ final class ConversationViewModel {
         switch streamEvent {
         case .turnStarted:
             isAgentWorking = true
-            currentTurnModel = currentModel
+            // If the snapshot lookup didn't have a model handy (status pings
+            // sometimes drop it), keep whatever we resolved on the previous
+            // turn rather than blanking out the live "Opus · 2m" chip.
+            if let m = currentModel { currentTurnModel = m }
             turnStartedAt = Date()
         case .turnCompleted, .turnFailed, .turnCanceled:
             isAgentWorking = false
             let dur = turnStartedAt.map { Date().timeIntervalSince($0) }
-            if let dur { lastTurnDuration = dur }
+            if let dur {
+                lastTurnDuration = dur
+                EventLogger.shared.log("turn", "finalized", [
+                    "agent": agentId, "durSec": Int(dur)
+                ])
+            }
             lastTurnModel = currentTurnModel
                 ?? rows.last(where: { $0.modelUsed != nil })?.modelUsed
             turnStartedAt = nil
@@ -504,13 +546,20 @@ final class ConversationViewModel {
             break
         case .timelineUpdated(let item):
             appendStreamedRow(item: item, seq: seq, timestamp: timestamp)
-        case .permissionRequested(let requestId):
-            currentPermissionRequestId = requestId
-            appendPermissionRow(timestamp: timestamp)
-        case .permissionResolved:
+        case .permissionRequested(let payload):
+            currentPermissionRequestId = payload?.id
+            pendingPermission = payload
+            appendPermissionRow(timestamp: timestamp, requestId: payload?.id)
+        case .permissionResolved(let requestId):
+            if !requestId.isEmpty { resolvedPermissionIds.insert(requestId) }
             currentPermissionRequestId = nil
+            pendingPermission = nil
         case .attentionRequired(let reason):
-            appendAttentionRow(reason: reason, timestamp: timestamp)
+            // Tie attention rows to the currently pending permission so we
+            // can collapse the "Attention Required: permission" banner once
+            // the user answers and the daemon confirms resolution.
+            let linkedId = (reason == "permission") ? currentPermissionRequestId : nil
+            appendAttentionRow(reason: reason, timestamp: timestamp, requestId: linkedId)
         case .other:
             break
         }
@@ -596,6 +645,68 @@ final class ConversationViewModel {
         return nil
     }
 
+    /// Public entry point for AppViewModel.submitPendingAgent (images path) to
+    /// pre-populate the new conversation with an optimistic user bubble before
+    /// the daemon's user_message echo arrives. Without this, switching to the
+    /// just-created agent would briefly render an empty conversation.
+    func injectOptimisticFirstMessage(
+        text: String,
+        messageId: String,
+        images: [PendingImageAttachment]
+    ) {
+        appendLocalUserRow(text: text, messageId: messageId, images: images)
+    }
+
+    /// Clear `lastError` if it was a stale connection-related message left
+    /// over from a disconnect window. Called by AppViewModel after a
+    /// successful reconnect so the red error banner doesn't linger
+    /// indefinitely while the sidebar already shows "Connected".
+    func clearConnectionError() {
+        guard let err = lastError else { return }
+        let lower = err.lowercased()
+        if lower.contains("not connected")
+            || lower.contains("daemon is not connected")
+            || lower.contains("relay channel is not connected")
+            || lower.contains("relay connection")
+            || lower.contains("send failed: daemon") {
+            lastError = nil
+        }
+    }
+
+    /// Reconcile working state with daemon's authoritative status.
+    /// Call when an `agent_status` event arrives or on reconnect: if the
+    /// daemon says idle but we think we're still working, the
+    /// `turn_completed` event was lost (briefly disconnected). Without this
+    /// the spinner hangs forever and the only fix is restarting the app.
+    func reconcileAgentStatus(_ status: String) {
+        if status == "idle" && isAgentWorking {
+            EventLogger.shared.log("turn", "reconciled_idle", [
+                "agent": agentId,
+                "durSec": turnStartedAt.map { Int(Date().timeIntervalSince($0)) } ?? -1
+            ])
+            isAgentWorking = false
+            if let started = turnStartedAt {
+                lastTurnDuration = Date().timeIntervalSince(started)
+            }
+            turnStartedAt = nil
+            // Pin model on the last assistant row, mirroring turn_completed flow.
+            if let dur = lastTurnDuration,
+               let model = currentTurnModel ?? rows.last(where: { $0.modelUsed != nil })?.modelUsed,
+               let idx = rows.lastIndex(where: { $0.kind == "assistant" }) {
+                lastTurnModel = model
+                rows[idx].durationSec = dur
+                if rows[idx].modelUsed == nil {
+                    rows[idx] = Row(
+                        id: rows[idx].id, kind: rows[idx].kind, text: rows[idx].text,
+                        timestamp: rows[idx].timestamp, tool: rows[idx].tool,
+                        images: rows[idx].images, modelUsed: model, durationSec: dur
+                    )
+                }
+            }
+            currentTurnModel = nil
+        }
+    }
+
     private func appendLocalUserRow(
         text: String,
         messageId: String,
@@ -625,35 +736,72 @@ final class ConversationViewModel {
         ))
     }
 
-    private func appendPermissionRow(timestamp: String) {
+    private func appendPermissionRow(timestamp: String, requestId: String?) {
         streamRowCounter += 1
         rows.append(Row(
             id: "perm-\(streamRowCounter)",
             kind: "permission",
             text: "",
             timestamp: timestamp,
-            tool: nil
+            tool: nil,
+            permissionRequestId: requestId
         ))
     }
 
-    private func appendAttentionRow(reason: String, timestamp: String) {
+    private func appendAttentionRow(reason: String, timestamp: String, requestId: String?) {
         streamRowCounter += 1
         rows.append(Row(
             id: "attn-\(streamRowCounter)",
             kind: "attention",
             text: reason,
             timestamp: timestamp,
-            tool: nil
+            tool: nil,
+            permissionRequestId: requestId
         ))
     }
 
     func approvePermission() async {
         guard let client = getClient() else { return }
-        _ = try? await client.sendMessage(agentId: agentId, text: "y")
+        if let req = pendingPermission {
+            // Real permission_response RPC. Works for tool/plan/mode kinds.
+            _ = try? await client.respondPermission(
+                agentId: agentId, requestId: req.id,
+                response: .allow(updatedInput: nil)
+            )
+        } else {
+            // Pre-payload fallback (legacy path; daemon never delivered the
+            // request structure). Keep the y/n shortcut so older agents
+            // resumed from disk still answer.
+            _ = try? await client.sendMessage(agentId: agentId, text: "y")
+        }
     }
 
     func denyPermission() async {
         guard let client = getClient() else { return }
-        _ = try? await client.sendMessage(agentId: agentId, text: "n")
+        if let req = pendingPermission {
+            _ = try? await client.respondPermission(
+                agentId: agentId, requestId: req.id,
+                response: .deny(message: nil)
+            )
+        } else {
+            _ = try? await client.sendMessage(agentId: agentId, text: "n")
+        }
+    }
+
+    /// Submit answers for the pending AskUserQuestion. `answers` is keyed by
+    /// the question's `header` field (daemon-side normalizer re-keys for the
+    /// underlying tool's expected schema).
+    func submitQuestionAnswers(_ answers: [String: String]) async {
+        guard let client = getClient(),
+              let req = pendingPermission,
+              let aq = req.askUserQuestion else { return }
+        let payload = AskUserQuestionAnswers(
+            questions: aq.questions,
+            answers: answers
+        )
+        _ = try? await client.respondPermission(
+            agentId: agentId, requestId: req.id,
+            response: .allow(updatedInput: payload)
+        )
     }
 }
