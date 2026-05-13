@@ -26,7 +26,9 @@ struct ConversationView: View {
                         if let creatingText = app.creatingAgentText {
                             PendingCreatingView(
                                 text: creatingText,
-                                images: app.creatingAgentImages
+                                images: app.creatingAgentImages,
+                                availableHeight: geo.size.height,
+                                bottomPadding: max(measuredComposerHeight, 210)
                             )
                         } else {
                             VStack(spacing: 12) {
@@ -379,9 +381,15 @@ private struct MessageList: View {
     var bottomPadding: CGFloat = 210
 
     private var displayedRows: [ConversationViewModel.Row] {
-        guard !searchText.isEmpty else { return vm.rows }
+        // AskUserQuestion is fully owned by the permission_request flow's
+        // inline picker. The bare tool_call row never gets a "completed"
+        // event (daemon closes it via agent_permission_response, not
+        // tool_result) so it lingers as "AskUserQuestion running" forever
+        // after the user answers. Hide it.
+        let base = vm.rows.filter { $0.tool?.name != "AskUserQuestion" }
+        guard !searchText.isEmpty else { return base }
         let q = searchText.lowercased()
-        return vm.rows.filter { $0.text.lowercased().contains(q) }
+        return base.filter { $0.text.lowercased().contains(q) }
     }
 
     var body: some View {
@@ -1142,7 +1150,7 @@ private struct UserBubbleImages: View {
     var body: some View {
         LazyVGrid(columns: gridColumns(count: images.count), spacing: 4) {
             ForEach(images) { img in
-                if let ns = NSImage(data: img.pngData) {
+                if let ns = NSImage(contentsOf: img.fileURL) {
                     Image(nsImage: ns)
                         .resizable()
                         .interpolation(.high)
@@ -1157,7 +1165,7 @@ private struct UserBubbleImages: View {
             }
         }
         .sheet(item: $zoomed) { img in
-            if let ns = NSImage(data: img.pngData) {
+            if let ns = NSImage(contentsOf: img.fileURL) {
                 ZStack(alignment: .topTrailing) {
                     Image(nsImage: ns)
                         .resizable()
@@ -1615,24 +1623,35 @@ private struct ComposerHeightKey: PreferenceKey {
 private struct PendingCreatingView: View {
     let text: String
     let images: [PendingImageAttachment]
+    /// Drives the bottom-anchor trick so the user bubble lands in the same
+    /// y-position it will occupy once MessageList takes over. Without this,
+    /// the bubble starts near the top of the view here, jumps to the top
+    /// again briefly when MessageList mounts (before its deferred scroll
+    /// fires), then settles at the bottom — visible as a top-then-down
+    /// bounce on every new conversation.
+    var availableHeight: CGFloat = 500
+    var bottomPadding: CGFloat = 210
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .trailing, spacing: 14) {
-                userBubble
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("Starting agent…")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+            ZStack(alignment: .bottom) {
+                Color.clear
+                    .frame(maxWidth: .infinity, minHeight: availableHeight)
+                VStack(alignment: .trailing, spacing: 14) {
+                    userBubble
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("Starting agent…")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.top, 4)
                 }
-                .frame(maxWidth: .infinity, alignment: .center)
-                .padding(.top, 4)
+                .padding(.horizontal, 16)
+                .padding(.bottom, bottomPadding)
+                .frame(maxWidth: .infinity, alignment: .trailing)
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 16)
-            .padding(.bottom, 140)
-            .frame(maxWidth: .infinity, alignment: .trailing)
         }
     }
 

@@ -8,10 +8,14 @@ import UniformTypeIdentifiers
 /// them to PNG bytes with a small thumbnail for the composer UI.
 struct PendingImageAttachment: Identifiable, Hashable, Sendable {
     let id: UUID
-    let pngData: Data
+    let fileURL: URL      // ~/Library/Caches/PaseoMac/images/<uuid>.png
     let width: Int
     let height: Int
-    let mimeType: String    // always "image/png" for now
+    let mimeType: String  // always "image/png" for now
+
+    var pngData: Data {
+        (try? Data(contentsOf: fileURL)) ?? Data()
+    }
 
     static func from(image: NSImage) -> PendingImageAttachment? {
         // Use the best available bitmap rep to get actual pixel dimensions,
@@ -31,9 +35,12 @@ struct PendingImageAttachment: Identifiable, Hashable, Sendable {
         // pixelsWide/High = actual device pixels (2x on Retina)
         let w = bitmapRep.pixelsWide
         let h = bitmapRep.pixelsHigh
+        let id = UUID()
+        let fileURL = PendingImageAttachment.cacheDirectory().appendingPathComponent("\(id.uuidString).png")
+        guard (try? png.write(to: fileURL, options: .atomic)) != nil else { return nil }
         return PendingImageAttachment(
-            id: UUID(),
-            pngData: png,
+            id: id,
+            fileURL: fileURL,
             width: max(w, 1),
             height: max(h, 1),
             mimeType: "image/png"
@@ -47,7 +54,7 @@ struct PendingImageAttachment: Identifiable, Hashable, Sendable {
 
     /// Best-effort thumbnail suitable for an inline chip in the composer.
     func thumbnail(maxDim: CGFloat = 64) -> NSImage? {
-        guard let src = NSImage(data: pngData) else { return nil }
+        guard let src = NSImage(contentsOf: fileURL) else { return nil }
         let ratio = CGFloat(width) / max(CGFloat(height), 1)
         let size: CGSize
         if ratio >= 1 {
@@ -60,6 +67,27 @@ struct PendingImageAttachment: Identifiable, Hashable, Sendable {
         src.draw(in: CGRect(origin: .zero, size: size))
         thumb.unlockFocus()
         return thumb
+    }
+
+    static func cacheDirectory() -> URL {
+        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        let dir = caches.appendingPathComponent("PaseoMac/images", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    static func cleanOldCache(olderThan age: TimeInterval = 7 * 24 * 3600) {
+        let dir = cacheDirectory()
+        let fm = FileManager.default
+        guard let items = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.creationDateKey]) else { return }
+        let cutoff = Date().addingTimeInterval(-age)
+        for item in items {
+            if let created = (try? item.resourceValues(forKeys: [.creationDateKey]))?.creationDate,
+               created < cutoff {
+                try? fm.removeItem(at: item)
+            }
+        }
     }
 }
 

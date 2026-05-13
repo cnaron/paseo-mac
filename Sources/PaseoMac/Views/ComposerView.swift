@@ -466,7 +466,13 @@ private struct ModelPicker: View {
     private var availableModels: [ModelDefinition]? {
         guard let prov = agent.provider,
               let snapshot = app.providers.first(where: { $0.provider == prov }) else { return nil }
-        return snapshot.models
+        // Filter out models the user has been gated out of (e.g. [1m]
+        // variants that need extra usage enabled at claude.ai/settings/usage).
+        // If the current agent.model is blocked, keep it visible so the
+        // picker can still show "checked" and let them switch away.
+        return snapshot.models?.filter { m in
+            m.id == agent.model || !app.isModelBlocked(provider: prov, modelId: m.id)
+        }
     }
     private var currentLabel: String {
         if let models = availableModels,
@@ -580,7 +586,8 @@ private struct PendingModelPicker: View {
     }
 
     private var availableModels: [ModelDefinition]? {
-        app.providers.first(where: { $0.provider == app.pendingNewAgentProvider })?.models
+        guard let snap = app.providers.first(where: { $0.provider == app.pendingNewAgentProvider }) else { return nil }
+        return snap.models?.filter { !app.isModelBlocked(provider: snap.provider, modelId: $0.id) }
     }
     private var effectiveModelId: String? {
         app.pendingNewAgentModel ?? availableModels?.first(where: { $0.isDefault == true })?.id ?? availableModels?.first?.id
@@ -660,7 +667,7 @@ private struct ImageChip: View {
     var body: some View {
         ZStack(alignment: .topTrailing) {
             Group {
-                if let ns = NSImage(data: attachment.pngData) {
+                if let ns = NSImage(contentsOf: attachment.fileURL) {
                     Image(nsImage: ns)
                         .resizable()
                         .interpolation(.high)

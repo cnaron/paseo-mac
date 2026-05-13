@@ -10,6 +10,7 @@ struct PaseoMacApp: App {
         if CommandLine.arguments.contains("--list-agents") {
             runSmokeTestAndExit()
         }
+        PendingImageAttachment.cleanOldCache()
         self._appModel = State(initialValue: AppViewModel())
         self._settings = State(initialValue: SettingsStore())
     }

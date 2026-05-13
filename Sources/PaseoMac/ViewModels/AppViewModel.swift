@@ -59,6 +59,18 @@ final class AppViewModel {
     /// agent ID landing.
     var creatingAgentText: String? = nil
     var creatingAgentImages: [PendingImageAttachment] = []
+    /// Models the user's account can't actually use (right now the only
+    /// observed cause is the "Extra usage is required for 1M context" gate
+    /// on selectively-enabled [1m] variants). Keyed as "provider/modelId".
+    /// Detected at runtime when a turn ends with that specific error and
+    /// persisted so the picker keeps hiding them across restarts. Reset via
+    /// Preferences > "Reset blocked models".
+    var blockedModels: Set<String> = {
+        if let arr = UserDefaults.standard.array(forKey: "paseomac.blockedModels") as? [String] {
+            return Set(arr)
+        }
+        return []
+    }()
     static let pendingAgentId = "__pending__"
     private var knownAgentIds: Set<String> = []
     private var pendingCreationContinuation: CheckedContinuation<String?, Never>? = nil
@@ -113,6 +125,8 @@ final class AppViewModel {
     private var eventTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
     private var conversations: [String: ConversationViewModel] = [:]
+    private let maxCachedConversations = 8
+    private var conversationAccessOrder: [String] = []
 
     // MARK: - Lifecycle
 
@@ -222,6 +236,7 @@ final class AppViewModel {
         if let c = client { await c.disconnect() }
         client = nil
         conversations.removeAll()
+        conversationAccessOrder.removeAll()
         agents = []
         selectedAgentId = nil
         liveStatus.removeAll()
@@ -266,7 +281,10 @@ final class AppViewModel {
                 ])
                 try? await Task.sleep(nanoseconds: jittered)
                 guard !Task.isCancelled, let self else { return }
-                guard case .disconnected = connectionState else { return }
+                switch connectionState {
+                case .disconnected, .failed: break
+                default: return
+                }
                 await self.connect(withOfferRaw: raw)
                 if case .connected = connectionState { return }
                 delay = min(delay * 3, 30_000_000_000)
@@ -419,6 +437,7 @@ final class AppViewModel {
         agents.removeAll { $0.id == agentId }
         liveStatus.removeValue(forKey: agentId)
         conversations.removeValue(forKey: agentId)
+        conversationAccessOrder.removeAll { $0 == agentId }
         if selectedAgentId == agentId {
             selectedAgentId = agents.first?.id
         }
@@ -466,12 +485,58 @@ final class AppViewModel {
         }
     }
 
+    // MARK: - Blocked models
+
+    func isModelBlocked(provider: String, modelId: String) -> Bool {
+        blockedModels.contains("\(provider)/\(modelId)")
+    }
+
+    func markModelBlocked(provider: String, modelId: String) {
+        let key = "\(provider)/\(modelId)"
+        guard !blockedModels.contains(key) else { return }
+        blockedModels.insert(key)
+        UserDefaults.standard.set(Array(blockedModels), forKey: "paseomac.blockedModels")
+        EventLogger.shared.log("model", "blocked", ["key": key])
+    }
+
+    func clearBlockedModels() {
+        blockedModels.removeAll()
+        UserDefaults.standard.removeObject(forKey: "paseomac.blockedModels")
+    }
+
+    /// Heuristic: detect daemon-emitted "Extra usage is required for 1M
+    /// context" errors and block the agent's current model so it stops
+    /// appearing in the picker. Falls through silently for anything else.
+    private func maybeBlockFromError(agentId: String, message: String) {
+        guard message.contains("Extra usage is required for 1M context") else { return }
+        guard let agent = agents.first(where: { $0.id == agentId }),
+              let provider = agent.provider,
+              let model = agent.model else { return }
+        markModelBlocked(provider: provider, modelId: model)
+    }
+
     func conversation(for agentId: String) -> ConversationViewModel {
-        if let existing = conversations[agentId] { return existing }
+        if let existing = conversations[agentId] {
+            conversationAccessOrder.removeAll { $0 == agentId }
+            conversationAccessOrder.append(agentId)
+            return existing
+        }
         let vm = ConversationViewModel(agentId: agentId) { [weak self] in self?.client }
         conversations[agentId] = vm
+        conversationAccessOrder.append(agentId)
         Task { await vm.loadInitial() }
+        evictStaleConversations()
         return vm
+    }
+
+    private func evictStaleConversations() {
+        while conversations.count > maxCachedConversations {
+            guard let victim = conversationAccessOrder.first(where: {
+                $0 != selectedAgentId && $0 != AppViewModel.pendingAgentId
+            }) else { break }
+            conversations.removeValue(forKey: victim)
+            conversationAccessOrder.removeAll { $0 == victim }
+        }
     }
 
     func effectiveStatus(for agentId: String) -> (status: String, attention: Bool) {
@@ -766,6 +831,12 @@ final class AppViewModel {
                 EventLogger.shared.log("turn", "attention", ["agent": agentId, "reason": reason])
             case .permissionRequested:
                 EventLogger.shared.log("turn", "permission_requested", ["agent": agentId])
+            case .turnFailed(let err):
+                maybeBlockFromError(agentId: agentId, message: err)
+            case .timelineUpdated(let item):
+                if case .error(let msg) = item {
+                    maybeBlockFromError(agentId: agentId, message: msg)
+                }
             default: break
             }
             let currentModel = agents.first(where: { $0.id == agentId })?.model
