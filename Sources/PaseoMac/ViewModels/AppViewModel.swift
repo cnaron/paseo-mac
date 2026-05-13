@@ -281,10 +281,7 @@ final class AppViewModel {
                 ])
                 try? await Task.sleep(nanoseconds: jittered)
                 guard !Task.isCancelled, let self else { return }
-                switch connectionState {
-                case .disconnected, .failed: break
-                default: return
-                }
+                guard case .disconnected = connectionState else { return }
                 await self.connect(withOfferRaw: raw)
                 if case .connected = connectionState { return }
                 delay = min(delay * 3, 30_000_000_000)
