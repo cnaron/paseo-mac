@@ -279,3 +279,124 @@ View 加：
 
 单 commit `v0.2.38: ...`，tag v0.2.38，push origin main --tags。CLAUDE.md 同步更新到 0.2.38/39（gitignored，本地引用用）。
 
+
+---
+
+## 2026-05-13 第二轮：v0.2.39 修新会话首轮缺 model + duration chip
+
+### 现象
+
+用户问"为什么现在回应消息的时候没有出现模型和时长？"。确认是新建 agent 的 conversation 里所有回复都缺 TurnMetaChip（"Opus · 2m"），老 agent 正常。
+
+### 根因
+
+EventLogger 抓到关键时序证据：
+
+```
+01:26:06.219 create_agent request
+01:26:06.634 turn:started (agent 5eb5e8e5...)
+01:26:06.635 create_agent:detected (agent_status 到达，agents.insert 执行)
+```
+
+`turn_started` 比 `agent_status` 早 ~1ms。AppViewModel 处理 turn_started 时执行：
+
+```swift
+let currentModel = agents.first(where: { $0.id == agentId })?.model
+```
+
+此时新 agent 还没 insert 进 `agents[]`，`currentModel` = nil。`apply(streamEvent:.turnStarted, currentModel: nil)` 里 `if let m = currentModel { currentTurnModel = m }` guard 不进，整个 turn `currentTurnModel` 留 nil。
+
+后果链：
+- 所有 `assistantMessage` row 的 `modelUsed` 字段 = nil（line 619 `tagged: currentTurnModel`）
+- `turn_completed` 里 `lastTurnModel = currentTurnModel ?? rows.last(where: { $0.modelUsed != nil })?.modelUsed` → 两边都 nil → lastTurnModel = nil
+- stamp 块 `if rows[idx].modelUsed == nil, let m = lastTurnModel` → m 为 nil → 不 stamp
+- 渲染 `if let model = group.modelUsed { TurnMetaChip(...) }` → group.modelUsed = nil → chip 不出
+
+老 agent 没事是因为 `agents[].model` 在历史 agent_status 里早就 populate 过，merging() 路径 `model: other.model ?? model` 不会 blank，所以 currentModel 一直拿得到。
+
+### 修复（v0.2.39）
+
+ConversationViewModel 加 `seedTurnModel(_:)` —— 幂等 setter，仅当 `currentTurnModel == nil` 时填入。
+
+AppViewModel 的 `agentStatus` handler 在 `agents.insert(snap, at: 0)` 后立刻调：
+
+```swift
+if let m = snap.model {
+    conversations[snap.id]?.seedTurnModel(m)
+}
+```
+
+VM 在哪一刻已经存在？turn_started 处理时通过 `conversation(for: agentId)` 创建过了（lazy 创建在 stream 事件分发里），所以 agent_status 处理时 `conversations[snap.id]` 可取到。
+
+时序：seed 在 turn_started 之后 ~1ms，turn_completed 之前数十秒到几分钟。中间陆续到的 assistantMessage chunk 经 `appendStreamedRow` 的 coalescing（`rows[idx] = row` 整体替换）会带上 modelUsed=model；turn_completed 也能正常 stamp duration。
+
+### 边角
+
+- 用户没选模型（`pendingNewAgentModel` 为 nil，daemon 用 provider 默认）的情况下，daemon 第一次 agent_status 仍然会带 model（daemon 知道实际选了哪个），这条路径同样覆盖
+- 极端 race：第一条 assistantMessage chunk 在 agent_status 之前就到（理论上可能但日志里没观察到），那条 chunk 的 row 仍然是 nil；但只要后续还有 chunk 到，coalescing 会把整个 row 覆盖成有 model 的版本
+- 完全没有后续 chunk + turn_completed 也在 agent_status 之前到的情况下还是会缺；但实际 turn 一般持续秒级以上，agent_status 1ms 内就到，几乎不可能命中
+
+### 版本
+
+0.2.38 → 0.2.39，build 39 → 40。已部署 `/Applications/PaseoMac.app`。
+
+
+---
+
+## 2026-05-13 第二轮：v0.2.39 修新会话首轮缺 model + duration chip
+
+### 现象
+
+用户问"为什么现在回应消息的时候没有出现模型和时长？"。确认是新建 agent 的 conversation 里所有回复都缺 TurnMetaChip（"Opus · 2m"），老 agent 正常。
+
+### 根因
+
+EventLogger 抓到关键时序证据：
+
+```
+01:26:06.219 create_agent request
+01:26:06.634 turn:started (agent 5eb5e8e5...)
+01:26:06.635 create_agent:detected (agent_status 到达，agents.insert 执行)
+```
+
+`turn_started` 比 `agent_status` 早 ~1ms。AppViewModel 处理 turn_started 时执行：
+
+```swift
+let currentModel = agents.first(where: { $0.id == agentId })?.model
+```
+
+此时新 agent 还没 insert 进 `agents[]`，`currentModel` = nil。`apply(streamEvent:.turnStarted, currentModel: nil)` 里 `if let m = currentModel { currentTurnModel = m }` guard 不进，整个 turn `currentTurnModel` 留 nil。
+
+后果链：
+- 所有 `assistantMessage` row 的 `modelUsed` 字段 = nil（line 619 `tagged: currentTurnModel`）
+- `turn_completed` 里 `lastTurnModel = currentTurnModel ?? rows.last(where: { $0.modelUsed != nil })?.modelUsed` → 两边都 nil → lastTurnModel = nil
+- stamp 块 `if rows[idx].modelUsed == nil, let m = lastTurnModel` → m 为 nil → 不 stamp
+- 渲染 `if let model = group.modelUsed { TurnMetaChip(...) }` → group.modelUsed = nil → chip 不出
+
+老 agent 没事是因为 `agents[].model` 在历史 agent_status 里早就 populate 过，merging() 路径 `model: other.model ?? model` 不会 blank，所以 currentModel 一直拿得到。
+
+### 修复（v0.2.39）
+
+ConversationViewModel 加 `seedTurnModel(_:)` —— 幂等 setter，仅当 `currentTurnModel == nil` 时填入。
+
+AppViewModel 的 `agentStatus` handler 在 `agents.insert(snap, at: 0)` 后立刻调：
+
+```swift
+if let m = snap.model {
+    conversations[snap.id]?.seedTurnModel(m)
+}
+```
+
+VM 在哪一刻已经存在？turn_started 处理时通过 `conversation(for: agentId)` 创建过了（lazy 创建在 stream 事件分发里），所以 agent_status 处理时 `conversations[snap.id]` 可取到。
+
+时序：seed 在 turn_started 之后 ~1ms，turn_completed 之前数十秒到几分钟。中间陆续到的 assistantMessage chunk 经 `appendStreamedRow` 的 coalescing（`rows[idx] = row` 整体替换）会带上 modelUsed=model；turn_completed 也能正常 stamp duration。
+
+### 边角
+
+- 用户没选模型（`pendingNewAgentModel` 为 nil，daemon 用 provider 默认）的情况下，daemon 第一次 agent_status 仍然会带 model，这条路径同样覆盖
+- 极端 race：第一条 assistantMessage chunk 在 agent_status 之前就到（理论上可能但日志里没观察到），那条 chunk 的 row 仍然是 nil；但只要后续还有 chunk 到，coalescing 会把整个 row 覆盖成有 model 的版本
+- 完全没有后续 chunk + turn_completed 也在 agent_status 之前到的情况下还是会缺；但实际 turn 一般持续秒级以上，agent_status 1ms 内就到，几乎不可能命中
+
+### 版本
+
+0.2.38 → 0.2.39，build 39 → 40。已部署 `/Applications/PaseoMac.app`。

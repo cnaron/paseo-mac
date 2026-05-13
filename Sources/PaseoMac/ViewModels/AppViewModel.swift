@@ -791,6 +791,14 @@ final class AppViewModel {
                     agents[idx] = agents[idx].merging(snap)
                 } else {
                     agents.insert(snap, at: 0)
+                    // Seed the per-bubble model chip for the freshly-created
+                    // agent. turn_started for new agents arrives ~1ms before
+                    // this agent_status, so the apply(streamEvent:) call
+                    // already saw currentModel: nil — without seeding here
+                    // the first reply has no model and no duration chip.
+                    if let m = snap.model {
+                        conversations[snap.id]?.seedTurnModel(m)
+                    }
                     if !knownAgentIds.contains(snap.id),
                        let cont = pendingCreationContinuation {
                         pendingCreationContinuation = nil

@@ -673,6 +673,18 @@ final class ConversationViewModel {
         }
     }
 
+    /// Seed the live turn model for a brand-new agent whose first
+    /// turn_started event arrived before the agent_status that would have
+    /// populated agents[].model. Without this, AppViewModel passes
+    /// currentModel: nil at turn_started and the per-bubble
+    /// model + duration chip never appears on the first reply.
+    /// Idempotent — only seeds when no model is currently in flight.
+    func seedTurnModel(_ model: String) {
+        if currentTurnModel == nil {
+            currentTurnModel = model
+        }
+    }
+
     /// Reconcile working state with daemon's authoritative status.
     /// Call when an `agent_status` event arrives or on reconnect: if the
     /// daemon says idle but we think we're still working, the
