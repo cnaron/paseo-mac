@@ -518,6 +518,16 @@ private struct MessageList: View {
                         hasNewContent = true
                     }
                 }
+                .onChange(of: vm.isAgentWorking) { _, isWorking in
+                    guard !isWorking, !suppressAutoScroll else { return }
+                    // turn_completed stamps TurnMetaChip + TurnStatusBar changes;
+                    // neither triggers the count/text observers above.
+                    // Wait for layout to settle then scroll to reveal the chip.
+                    Task {
+                        try? await Task.sleep(nanoseconds: 150_000_000)
+                        proxy.scrollTo("bottom", anchor: .bottom)
+                    }
+                }
 
 
                 if !isNearBottom {
