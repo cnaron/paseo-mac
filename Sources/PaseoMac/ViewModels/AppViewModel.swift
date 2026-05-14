@@ -513,11 +513,7 @@ final class AppViewModel {
     }
 
     func conversation(for agentId: String) -> ConversationViewModel {
-        if let existing = conversations[agentId] {
-            conversationAccessOrder.removeAll { $0 == agentId }
-            conversationAccessOrder.append(agentId)
-            return existing
-        }
+        if let existing = conversations[agentId] { return existing }
         let vm = ConversationViewModel(agentId: agentId) { [weak self] in self?.client }
         conversations[agentId] = vm
         conversationAccessOrder.append(agentId)
