@@ -106,7 +106,7 @@ actor DaemonClient {
             clientId: endpoint.clientId,
             clientType: .cli,
             protocolVersion: WSProtocol.version,
-            appVersion: "PaseoMac/0.0.1",
+            appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.48",
             capabilities: nil
         )
         try await rawSend(.hello(hello))
