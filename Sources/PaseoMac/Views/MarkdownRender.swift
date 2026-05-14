@@ -256,7 +256,7 @@ enum Markdown {
             guard let intent = run.inlinePresentationIntent,
                   intent.contains(.code) else { continue }
             var container = AttributeContainer()
-            container.foregroundColor = Color(.sRGB, red: 0.78, green: 0.31, blue: 0.15, opacity: 1)
+            container.foregroundColor = Color.indigo
             container.backgroundColor = Color.secondary.opacity(0.15)
             parsed[run.range].mergeAttributes(container)
         }
