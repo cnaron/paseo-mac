@@ -1,6 +1,6 @@
 # 跨 Provider 切换（精简版）
 
-> 替代 [`cross-provider-thread-plan.md`](cross-provider-thread-plan.md)。原方案因引入 thread 抽象 + 多 agent 时间线归并导致 client 重负，且只换来 sidebar 「一行」的视觉一致性，性价比不合算。本版回到协议自带的入口，最小改动。
+> 这是跨 provider 切换的最终方案，最小改动，对日常使用零额外开销——仅在用户点击 branch 按钮的那一刻产生一次性的 createAgent RPC。早期讨论过的 thread 抽象方案（让多个 agent 在 UI 上合并成一个会话）因为对 client 持续渲染造成不合理负担已废弃。
 
 ## 核心思路
 
@@ -315,6 +315,95 @@ private struct BranchTarget {
 ```
 
 `branchInFlight: String?` 是 AppViewModel 上的新 state，记录"哪个 agent 正在 branch 中"，让 toolbar 知道何时显示 ProgressView。
+
+
+---
+
+## Branch 目标的默认配置
+
+每次 branch 创建新 agent 时，自动选这些默认值——用户**不需要**branch 后再去 composer 调整一遍。
+
+| 目标 provider | model | mode | thinking |
+|---|---|---|---|
+| **Claude** | `claude-opus-4-7[1m]`（最高 + 1M 上下文） | `bypassPermissions` | `max` |
+| **Gemini** | provider 默认（ACP 只暴露一个 model，daemon 自决） | 匹配「bypass-like」的 mode（id 含 `bypass` / `yolo` / `auto-edit` / `unattended` 任一关键词），命中不了就用 `defaultModeId` | provider 不暴露 → `nil` |
+| **Codex** | provider 默认 | `defaultModeId` | provider 不暴露 → `nil` |
+| **其它 ACP** | provider 默认 | `defaultModeId` | `nil` |
+
+### 为什么 Claude 这样选
+
+用户日常用法就是 Opus 4.7 1M + max thinking + bypass——branch 是"兜底续聊"场景，没必要再走一遍 picker 体验，直接用最强配置接着上。
+
+如果将来 daemon 出了更高版本的 Claude model（比如 4.8），preferred id 跟着上调。
+
+### 为什么 Gemini 用 ACP 默认
+
+Gemini CLI 经 ACP 只暴露一个 model（Google 的 `--acp` 内部决定），没有"选最高"概念。mode 那边 ACP 的协议允许 provider 自报，我们做关键词匹配兜底：实测 Gemini CLI 的 ACP modes 里有 `auto-edit`（接近 bypass 语义）和 `default`（需要确认）；命中关键词匹配的就用，否则回退 `defaultModeId`。
+
+### 实现位置
+
+`AppViewModel.swift` 加一个 helper：
+
+```swift
+private struct BranchDefaults {
+    let model: String?
+    let modeId: String?
+    let thinkingOptionId: String?
+}
+
+private func branchDefaults(forProvider provider: String) -> BranchDefaults {
+    let snap = providers.first(where: { $0.provider == provider })
+    
+    switch provider {
+    case "claude":
+        // 用户偏好：Opus 4.7 1M + max thinking + bypass
+        let preferredModelId = "claude-opus-4-7[1m]"
+        let model = snap?.models?.first(where: { $0.id == preferredModelId })?.id
+            ?? snap?.models?.first(where: { $0.isDefault == true })?.id
+            ?? snap?.models?.first?.id
+        let thinking = snap?.models?
+            .first(where: { $0.id == model })?
+            .thinkingOptions?
+            .first(where: { $0.id == "max" })?.id
+            ?? snap?.models?.first(where: { $0.id == model })?.defaultThinkingOptionId
+        let mode = snap?.modes?.first(where: { $0.id == "bypassPermissions" })?.id
+            ?? snap?.defaultModeId
+        return BranchDefaults(model: model, modeId: mode, thinkingOptionId: thinking)
+        
+    case "gemini", "codex", "opencode", "copilot":
+        let model = snap?.models?.first(where: { $0.isDefault == true })?.id
+            ?? snap?.models?.first?.id
+        // bypass-like mode 关键词匹配
+        let bypassLike = snap?.modes?.first { m in
+            let id = m.id.lowercased()
+            return id.contains("bypass") || id.contains("yolo")
+                || id.contains("auto-edit") || id.contains("unattended")
+        }?.id
+        let mode = bypassLike ?? snap?.defaultModeId
+        return BranchDefaults(model: model, modeId: mode, thinkingOptionId: nil)
+        
+    default:
+        return BranchDefaults(model: nil, modeId: nil, thinkingOptionId: nil)
+    }
+}
+```
+
+`branchAgent` 调用：
+
+```swift
+let defaults = branchDefaults(forProvider: newProvider)
+try await client.createAgent(
+    cwd: cwd, provider: newProvider,
+    model: defaults.model,
+    modeId: defaults.modeId,
+    thinkingOptionId: defaults.thinkingOptionId,
+    initialPrompt: bootstrap
+)
+```
+
+### 用户后续调整
+
+新 agent 创建出来后还是普通 agent，composer 的 model picker / mode picker 都在，用户可以二次调整。默认值只是"省点击"，不是锁定。
 
 ## 用户体验流程
 

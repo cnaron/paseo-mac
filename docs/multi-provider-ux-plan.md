@@ -194,7 +194,7 @@ private func displayProviderModel(provider: String?, model: String?) -> String? 
 
 ## 任务 D：跨 provider 切换
 
-> **更新**：原结论不做过于保守。重新设计后**可以做到无感 + 带上下文延续**，方案见 [cross-provider-thread-plan.md](cross-provider-thread-plan.md)。下文保留原推理过程作为思路演进记录。
+> **更新**：原结论"不做"过于保守。可以通过 [cross-provider-branch-plan.md](cross-provider-branch-plan.md) 的方案做到无感 + 带上下文延续，且对日常使用零额外开销。下文保留原推理过程作为思路演进记录。
 
 ### 原思路（已被取代）
 
