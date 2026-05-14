@@ -908,6 +908,7 @@ final class AppViewModel {
             live.status = "idle"
             live.requiresAttention = true
         case .attentionRequired(let reason):
+            guard reason != "finished" else { break }
             live.requiresAttention = true
             live.attentionReason = reason
         case .permissionRequested:

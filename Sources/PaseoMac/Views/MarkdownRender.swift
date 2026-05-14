@@ -280,10 +280,15 @@ struct MarkdownBodyView: View {
             ForEach(Array(blocks.enumerated()), id: \.offset) { i, block in
                 Group { switch block {
                 case .heading(let level, let text):
-                    Text(Markdown.renderInline(text))
-                        .font(.system(size: settings.scaled(headingPoints(level: level)), weight: .semibold))
-                        .textSelection(.enabled)
-                        .padding(.top, 4)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(Markdown.renderInline(text))
+                            .font(.system(size: settings.scaled(headingPoints(level: level)), weight: .semibold))
+                            .textSelection(.enabled)
+                        if level == 1 {
+                            Divider()
+                        }
+                    }
+                    .padding(.top, level == 1 ? 8 : 4)
 
                 case .code(let lang, let content):
                     CodeBlockView(language: lang, content: content)

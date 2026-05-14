@@ -280,6 +280,51 @@ final class ConversationViewModel {
     /// Model to show while a turn is in progress (before lastTurnModel is set).
     var currentDisplayModel: String? { currentTurnModel }
 
+    /// Cached per-bubble (model, duration) keyed by stream seq. Stream events
+    /// stamp this on turn_completed; loadInitial restores it so historical
+    /// bubbles keep their TurnMetaChip across app restarts and reconnects.
+    /// Daemon's TimelineEntry doesn't carry this metadata, so without a
+    /// client-side cache only live-streamed bubbles would have a chip.
+    private struct TurnMeta: Codable {
+        let model: String?
+        let duration: TimeInterval?
+    }
+    private var metaCache: [Int: TurnMeta] = [:]
+    private var metaCacheURL: URL {
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        let dir = support.appendingPathComponent("PaseoMac/meta", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("\(agentId).json")
+    }
+
+    private func loadMetaCache() {
+        guard let data = try? Data(contentsOf: metaCacheURL),
+              let raw = try? JSONDecoder().decode([String: TurnMeta].self, from: data) else { return }
+        metaCache = Dictionary(uniqueKeysWithValues: raw.compactMap { (k, v) -> (Int, TurnMeta)? in
+            guard let i = Int(k) else { return nil }
+            return (i, v)
+        })
+    }
+
+    private func saveMetaCache() {
+        let snapshot = metaCache
+        let url = metaCacheURL
+        Task.detached(priority: .utility) {
+            let stringKeyed = Dictionary(uniqueKeysWithValues: snapshot.map { (String($0.key), $0.value) })
+            if let data = try? JSONEncoder().encode(stringKeyed) {
+                try? data.write(to: url, options: .atomic)
+            }
+        }
+    }
+
+    /// Pull seq out of a stream-generated row id like "seq-42". Returns nil
+    /// for tool-* / msg-* / entry-* / stream-* ids.
+    private func seqFromId(_ id: String) -> Int? {
+        guard id.hasPrefix("seq-") else { return nil }
+        return Int(id.dropFirst(4))
+    }
+
     init(agentId: String, getClient: @escaping () -> DaemonClient?) {
         self.agentId = agentId
         self.getClient = getClient
@@ -289,6 +334,7 @@ final class ConversationViewModel {
            let items = try? JSONDecoder().decode([PersistedQueued].self, from: data) {
             self.queued = items.map { QueuedMessage(text: $0.text, messageId: $0.messageId, images: []) }
         }
+        loadMetaCache()
     }
 
     // MARK: - Draft persistence
@@ -334,7 +380,16 @@ final class ConversationViewModel {
         do {
             guard let client = getClient() else { return }
             let payload = try await client.fetchTimeline(agentId: agentId, projection: "canonical")
-            self.rows = payload.entries.map(rowFromEntry)
+            let fetched = payload.entries.map(rowFromEntry)
+            // For brand-new agents the daemon may not have persisted the
+            // first message yet — fetched is empty while the streaming
+            // path has already populated optimistic/echoed rows. Naively
+            // overwriting blanks them out and the only escape is jumping
+            // around the timeline to force a re-render. Trust local rows
+            // when fetch returns nothing.
+            if !fetched.isEmpty || self.rows.isEmpty {
+                self.rows = fetched
+            }
             self.hasOlderMessages = payload.hasOlder
             self.oldestCursor = payload.startCursor
             self.lastError = nil
@@ -540,6 +595,11 @@ final class ConversationViewModel {
                         images: rows[idx].images, modelUsed: m, durationSec: dur
                     )
                 }
+                // Persist so the chip survives app restart / reconnect reload.
+                if let seq = seqFromId(rows[idx].id) {
+                    metaCache[seq] = TurnMeta(model: rows[idx].modelUsed, duration: dur)
+                    saveMetaCache()
+                }
             }
             flushQueueIfNeeded()
         case .threadStarted:
@@ -555,9 +615,10 @@ final class ConversationViewModel {
             currentPermissionRequestId = nil
             pendingPermission = nil
         case .attentionRequired(let reason):
-            // Tie attention rows to the currently pending permission so we
-            // can collapse the "Attention Required: permission" banner once
-            // the user answers and the daemon confirms resolution.
+            // "finished" fires after every turn completes; TurnStatusBar already
+            // shows the duration so an extra banner is pure noise. Keep
+            // "permission" / "failed" / errors since they need user action.
+            guard reason != "finished" else { break }
             let linkedId = (reason == "permission") ? currentPermissionRequestId : nil
             appendAttentionRow(reason: reason, timestamp: timestamp, requestId: linkedId)
         case .other:
@@ -568,12 +629,24 @@ final class ConversationViewModel {
     // MARK: - Row helpers
 
     private func rowFromEntry(_ entry: TimelineEntry) -> Row {
-        Row(
+        // Daemon collapses multiple stream chunks into one entry spanning
+        // [seqStart...seqEnd]. The stamp at turn_completed targeted the
+        // last assistant chunk, so prefer seqEnd; fall back to scanning
+        // the range for safety since coalescing rules may shift over time.
+        var meta: TurnMeta? = metaCache[entry.seqEnd] ?? metaCache[entry.seqStart]
+        if meta == nil && entry.seqStart < entry.seqEnd {
+            for s in entry.seqStart...entry.seqEnd {
+                if let hit = metaCache[s] { meta = hit; break }
+            }
+        }
+        return Row(
             id: rowIdForItem(entry.item, defaultId: "entry-\(entry.id)"),
             kind: entry.item.displayKind,
             text: entry.item.displayText,
             timestamp: entry.timestamp,
-            tool: toolInfo(from: entry.item)
+            tool: toolInfo(from: entry.item),
+            modelUsed: meta?.model,
+            durationSec: meta?.duration
         )
     }
 
@@ -713,6 +786,10 @@ final class ConversationViewModel {
                         timestamp: rows[idx].timestamp, tool: rows[idx].tool,
                         images: rows[idx].images, modelUsed: model, durationSec: dur
                     )
+                }
+                if let seq = seqFromId(rows[idx].id) {
+                    metaCache[seq] = TurnMeta(model: rows[idx].modelUsed, duration: dur)
+                    saveMetaCache()
                 }
             }
             currentTurnModel = nil
