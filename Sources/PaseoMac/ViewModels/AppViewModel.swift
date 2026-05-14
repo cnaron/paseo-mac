@@ -59,6 +59,9 @@ final class AppViewModel {
     /// agent ID landing.
     var creatingAgentText: String? = nil
     var creatingAgentImages: [PendingImageAttachment] = []
+    /// Tracks which agent ID has a branch createAgent in flight so the
+    /// toolbar ProgressView can show. Nil when no branch is pending.
+    var branchInFlight: String? = nil
     /// Models the user's account can't actually use (right now the only
     /// observed cause is the "Extra usage is required for 1M context" gate
     /// on selectively-enabled [1m] variants). Keyed as "provider/modelId".
@@ -427,6 +430,123 @@ final class AppViewModel {
         // race documented above). Patch the local snapshot to match.
         if let thinkingOptionId {
             patchAgent(id: agentId) { $0.withThinking(thinkingOptionId) }
+        }
+    }
+
+    // MARK: - Branch (continue conversation in another provider)
+
+    func branchAgent(fromAgentId: String, newProvider: String) async {
+        guard let source = agents.first(where: { $0.id == fromAgentId }) ?? archivedAgents.first(where: { $0.id == fromAgentId }),
+              let client else { return }
+        let vm = conversations[fromAgentId]
+        let bootstrap = buildBranchBootstrap(sourceVM: vm, sourceTitle: source.title)
+        let cwd = source.cwd
+        let defaults = branchDefaults(forProvider: newProvider)
+
+        branchInFlight = fromAgentId
+        knownAgentIds = Set(agents.map(\.id))
+        EventLogger.shared.log("branch", "request", ["from": fromAgentId, "toProvider": newProvider])
+
+        do {
+            try await client.createAgent(
+                cwd: cwd, provider: newProvider,
+                model: defaults.model,
+                modeId: defaults.modeId,
+                thinkingOptionId: defaults.thinkingOptionId,
+                initialPrompt: bootstrap
+            )
+        } catch {
+            EventLogger.shared.log("branch", "error", ["err": error.localizedDescription])
+            branchInFlight = nil
+            return
+        }
+
+        // Reuse submitPendingAgent's wait pattern: stream event fast-path + poll fallback.
+        let detected = await withCheckedContinuation { cont in
+            pendingCreationContinuation = cont
+            Task {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                if let cont = pendingCreationContinuation {
+                    pendingCreationContinuation = nil
+                    cont.resume(returning: nil as String?)
+                }
+            }
+        }
+        var agentId = detected
+        if agentId == nil {
+            for _ in 0..<10 {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                try? await refreshAgents()
+                if let newAgent = agents.first(where: { !knownAgentIds.contains($0.id) }) {
+                    agentId = newAgent.id
+                    break
+                }
+            }
+        }
+        branchInFlight = nil
+        guard let agentId else {
+            EventLogger.shared.log("branch", "timeout")
+            return
+        }
+        EventLogger.shared.log("branch", "detected", ["agent": agentId])
+        // Only auto-select the new agent if user is still viewing the source.
+        if selectedAgentId == fromAgentId {
+            selectedAgentId = agentId
+        }
+    }
+
+    private func buildBranchBootstrap(sourceVM: ConversationViewModel?, sourceTitle: String?) -> String {
+        let rows = sourceVM?.rows ?? []
+        let recent = rows
+            .filter { ["user", "assistant"].contains($0.kind) }
+            .suffix(8)
+        let transcript = recent.map { row -> String in
+            let role = row.kind == "user" ? "User" : "Assistant"
+            let text = row.text.count > 2000 ? String(row.text.prefix(2000)) + "…" : row.text
+            return "**\(role)**: \(text)"
+        }.joined(separator: "\n\n")
+        let titleNote = sourceTitle.map { " titled \"\($0)\"" } ?? ""
+        return """
+        [Continuing a prior conversation\(titleNote). The user and I have already discussed the below; please pick up from there.]
+
+        \(transcript)
+
+        [End of prior context. The user will send their next message after your acknowledgment.]
+        """
+    }
+
+    private struct BranchDefaults {
+        let model: String?
+        let modeId: String?
+        let thinkingOptionId: String?
+    }
+
+    private func branchDefaults(forProvider provider: String) -> BranchDefaults {
+        let snap = providers.first(where: { $0.provider == provider })
+        switch provider {
+        case "claude":
+            let preferredModelId = "claude-opus-4-7[1m]"
+            let model = snap?.models?.first(where: { $0.id == preferredModelId })?.id
+                ?? snap?.models?.first(where: { $0.isDefault == true })?.id
+                ?? snap?.models?.first?.id
+            let thinking = snap?.models?
+                .first(where: { $0.id == model })?
+                .thinkingOptions?
+                .first(where: { $0.id == "max" })?.id
+                ?? snap?.models?.first(where: { $0.id == model })?.defaultThinkingOptionId
+            let mode = snap?.modes?.first(where: { $0.id == "bypassPermissions" })?.id
+                ?? snap?.defaultModeId
+            return BranchDefaults(model: model, modeId: mode, thinkingOptionId: thinking)
+        default:
+            let model = snap?.models?.first(where: { $0.isDefault == true })?.id
+                ?? snap?.models?.first?.id
+            let bypassLike = snap?.modes?.first { m in
+                let id = m.id.lowercased()
+                return id.contains("bypass") || id.contains("yolo")
+                    || id.contains("auto-edit") || id.contains("unattended")
+            }?.id
+            let mode = bypassLike ?? snap?.defaultModeId
+            return BranchDefaults(model: model, modeId: mode, thinkingOptionId: nil)
         }
     }
 

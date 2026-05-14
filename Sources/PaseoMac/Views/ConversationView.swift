@@ -49,7 +49,8 @@ struct ConversationView: View {
                             vm: vm,
                             availableHeight: geo.size.height,
                             searchText: searchText,
-                            bottomPadding: max(measuredComposerHeight, 210)
+                            bottomPadding: max(measuredComposerHeight, 210),
+                            agentProvider: agent()?.provider
                         )
                     }
                 }
@@ -120,6 +121,33 @@ struct ConversationView: View {
                 }
                 .help("New agent in same directory")
                 .disabled(agent() == nil)
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    ForEach(branchTargets, id: \.provider) { entry in
+                        Button {
+                            Task { await app.branchAgent(fromAgentId: agentId, newProvider: entry.provider) }
+                        } label: {
+                            Label(
+                                entry.label + (entry.isCurrent ? " (current)" : ""),
+                                systemImage: ProviderIcon.symbolName(for: entry.provider)
+                            )
+                        }
+                        .disabled(entry.isCurrent || entry.status != "ready")
+                    }
+                    if branchTargets.allSatisfy({ $0.isCurrent || $0.status != "ready" }) {
+                        Divider()
+                        Text("No other providers ready").font(.caption).foregroundStyle(.secondary)
+                    }
+                } label: {
+                    if app.branchInFlight == agentId {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: "arrow.triangle.branch")
+                    }
+                }
+                .help("Continue this conversation with another provider")
+                .disabled(shouldDisableBranch)
             }
             ToolbarItem(placement: .primaryAction) {
                 Button { toggleSearch() } label: {
@@ -205,6 +233,37 @@ struct ConversationView: View {
 
     private func agent() -> AgentSnapshot? {
         app.agents.first { $0.id == agentId } ?? app.archivedAgents.first { $0.id == agentId }
+    }
+
+    // MARK: - Branch helpers
+
+    private struct BranchTarget {
+        let provider: String
+        let label: String
+        let status: String
+        let isCurrent: Bool
+    }
+
+    private static let providerOrder = ["claude", "gemini", "codex", "opencode", "copilot", "pi"]
+
+    private var branchTargets: [BranchTarget] {
+        let current = agent()?.provider
+        return Self.providerOrder.compactMap { id in
+            guard let snap = app.providers.first(where: { $0.provider == id }) else { return nil }
+            return BranchTarget(
+                provider: id,
+                label: snap.label ?? id.capitalized,
+                status: snap.status,
+                isCurrent: id == current
+            )
+        }
+    }
+
+    private var shouldDisableBranch: Bool {
+        let vm = app.conversation(for: agentId)
+        let hasContent = !vm.rows.isEmpty
+        let hasOtherReady = branchTargets.contains { !$0.isCurrent && $0.status == "ready" }
+        return !hasContent || !hasOtherReady
     }
 }
 
@@ -379,6 +438,7 @@ private struct MessageList: View {
     /// Driven by the parent view from a measured composer height so the
     /// last message never gets hidden behind the composer.
     var bottomPadding: CGFloat = 210
+    var agentProvider: String? = nil
 
     private var displayedRows: [ConversationViewModel.Row] {
         // AskUserQuestion is fully owned by the permission_request flow's
@@ -443,6 +503,7 @@ private struct MessageList: View {
                                     group: gm.group,
                                     showConnector: gm.showConnector,
                                     isStreaming: vm.isAgentWorking && gm.id == lastAssistantId,
+                                    agentProvider: agentProvider,
                                     pendingPermission: vm.pendingPermission,
                                     isPermissionResolved: gm.group.permissionRequestId
                                         .map { vm.resolvedPermissionIds.contains($0) } ?? false,
@@ -594,6 +655,7 @@ private struct MessageBubble: View {
     let group: BubbleGroup
     let showConnector: Bool
     var isStreaming: Bool = false
+    var agentProvider: String? = nil
     var pendingPermission: PermissionRequestPayload? = nil
     var isPermissionResolved: Bool = false
     var onApprovePermission: (() -> Void)? = nil
@@ -689,8 +751,8 @@ private struct MessageBubble: View {
         FlowStep(iconName: "clock", showLine: showConnector) {
             VStack(alignment: .leading, spacing: 4) {
                 MarkdownBodyView(text: group.text, isStreaming: isStreaming)
-                if let model = group.modelUsed {
-                    TurnMetaChip(model: model, durationSec: group.durationSec)
+                if let chipLabel = displayProviderModel(provider: agentProvider, model: group.modelUsed) {
+                    TurnMetaChip(model: chipLabel, durationSec: group.durationSec)
                 }
             }
         }
@@ -832,6 +894,18 @@ private struct MessageBubble: View {
         case "error": "exclamationmark.circle"
         case "todo": "checklist"
         default: "info.circle"
+        }
+    }
+
+    private func displayProviderModel(provider: String?, model: String?) -> String? {
+        if let m = model, !m.isEmpty { return m }
+        switch provider {
+        case "gemini": return "Gemini"
+        case "claude": return "Claude"
+        case "codex": return "Codex"
+        case "opencode": return "OpenCode"
+        case "copilot": return "Copilot"
+        default: return provider?.capitalized
         }
     }
 

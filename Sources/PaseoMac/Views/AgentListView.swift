@@ -71,7 +71,8 @@ struct AgentListView: View {
                 isCheckingVersion: app.isCheckingClaudeCodeVersion,
                 isUpdating: app.isUpdatingClaudeCode,
                 onCheckVersion: { Task { await app.checkClaudeCodeVersion() } },
-                onUpdate: { Task { await app.updateClaudeCode() } }
+                onUpdate: { Task { await app.updateClaudeCode() } },
+                hasGemini: app.providers.contains(where: { $0.provider == "gemini" && $0.status == "ready" })
             )
             Divider()
             ConnectionFooter(showConnect: $showConnect)
@@ -137,6 +138,7 @@ private struct AgentRow: View {
                 requiresAttention: effectiveAttention,
                 isActivelyWorking: isActivelyWorking
             )
+            ProviderIcon(provider: agent.provider)
             VStack(alignment: .leading, spacing: 2) {
                 Text(agent.displayName)
                     .font(.body)
@@ -184,6 +186,7 @@ private struct ArchivedAgentRow: View {
                 .foregroundStyle(.tertiary)
                 .font(.caption)
                 .frame(width: 16)
+            ProviderIcon(provider: agent.provider)
             VStack(alignment: .leading, spacing: 2) {
                 Text(agent.displayName)
                     .font(.body)
@@ -212,6 +215,28 @@ private struct ArchivedAgentRow: View {
         let parts = agent.cwd.split(separator: "/").map(String.init)
         guard parts.count > 2 else { return agent.cwd }
         return "…/" + parts.suffix(2).joined(separator: "/")
+    }
+}
+
+// MARK: - Provider icon (SF Symbol, used in sidebar and branch menu)
+
+struct ProviderIcon: View {
+    let provider: String?
+    var body: some View {
+        Image(systemName: Self.symbolName(for: provider))
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .frame(width: 14)
+    }
+    static func symbolName(for provider: String?) -> String {
+        switch provider {
+        case "claude": return "sparkles"
+        case "gemini": return "g.circle.fill"
+        case "codex": return "terminal.fill"
+        case "opencode": return "chevron.left.forwardslash.chevron.right"
+        case "copilot": return "airplane.circle"
+        default: return "hammer.fill"
+        }
     }
 }
 
