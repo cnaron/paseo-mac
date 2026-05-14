@@ -400,3 +400,102 @@ VM 在哪一刻已经存在？turn_started 处理时通过 `conversation(for: ag
 ### 版本
 
 0.2.38 → 0.2.39，build 39 → 40。已部署 `/Applications/PaseoMac.app`。
+
+
+---
+
+## 2026-05-14 v0.2.40 → v0.2.43：稳定性三件套 + 翻车回滚
+
+这次目标是上次代码 review 拍下的三个问题：reconnect 不重试、conversations 无淘汰、图片 PNG 内存。看似都不大，结果有一处把 app 干卡死了。完整复盘见 [`docs/swiftui-stability-notes.md`](swiftui-stability-notes.md)，这里只记时序。
+
+### v0.2.40：一次性改三件事
+
+1. **reconnect bug**：`scheduleReconnect` 的 guard 从 `.disconnected` 放宽到 `.disconnected || .failed`。原意是网络抖动后能继续退避重试。
+2. **LRU conversations**：`conversations: [String: ConversationViewModel]` 加 8 个上限，超出时按访问顺序淘汰非选中项。`conversation(for:)` 命中已有 VM 时刷新访问顺序到末尾（MRU），新建时 append 并触发 `evictStaleConversations()`。
+3. **图片 PNG 落盘**：`PendingImageAttachment` 从 `pngData: Data` 改为 `fileURL: URL`，写到 `~/Library/Caches/PaseoMac/images/<uuid>.png`，`pngData` 改成 computed property 只在 RPC 发送时读盘。`PaseoMacApp.init()` 调 `cleanOldCache(olderThan: 7天)`。
+
+提交：`a7e8d62`。tag `v0.2.40`，build 41。
+
+### v0.2.41：scroll-on-turn-complete
+
+用户反馈"回应结束了但字显示不全，要切换会话才能看全"。
+
+定位：`turn_completed` 改的是 `rows[idx].durationSec`（TurnMetaChip 浮现）和 `vm.isAgentWorking`（TurnStatusBar 切样式）；现有自动滚动只看 `rows.count` 和 `rows.last?.text`，**两个都没变**，layout 增高的内容被 composer 挡住。
+
+修：`MessageList` 加 `.onChange(of: vm.isAgentWorking)`，从 true→false 后延迟 150ms 调 `proxy.scrollTo("bottom")`。
+
+提交：`dd31759`。tag `v0.2.41`，build 42。
+
+### v0.2.42：紧急回滚 reconnect retry
+
+用户：「打开就卡死，连上后看不到任何之前的对话」。
+
+诊断手段：
+- `~/Library/Logs/PaseoMac/paseomac.log` 显示 `connect_start → connect_failed (relay handshake timeout) → connect_start 3s 后` —— 是我新加的 retry 在跑
+- daemon 日志 `~/.paseo/daemon.log`：`ws_runtime_metrics` 显示 PaseoMac client 5 秒内打出 14 个 fetch_agents，最多 11 个并发，每个堵 4-5s
+
+根因：v0.2.40 的 reconnect retry 让 `.failed` 也进重试循环。`connect()` 失败时 WS 实际已经握过手，relay 留了 grace session。客户端重试 → 新 WS 握手 → relay 把上一轮 grace 里的 fetch_agents 顺手 resume 重放 → daemon 短时间被请求洪水淹没 → 响应丢失/延迟 → 客户端 agent 列表永远空白。
+
+修：guard 改回原版 `case .disconnected`。失去自动从 `.failed` 重试，但换来稳定性——用户需要手动点 reconnect 按钮。
+
+提交：`fc32de5`。tag `v0.2.42`，build 43。
+
+### v0.2.43：99% CPU 死循环——LRU 触发了 SwiftUI 自我重渲染
+
+用户：「还是不行，还是打开就卡死」。
+
+`ps -o pcpu` 显示主线程 99% CPU 持续。`sample` 抓栈，全部停在：
+
+```
+GraphHost.flushTransactions
+ → AG::Subgraph::update
+   → ResolvedTextFilter.updateValue
+     → PropertyList.Tracker.hasDifferentUsedValues
+       → compare → find1 (递归)
+```
+
+不是死锁，是 SwiftUI 在以 30+ Hz 频率重新评估整棵 view 树。
+
+根因：`ConversationView.body` 里有：
+
+```swift
+let vm = app.conversation(for: agentId)
+```
+
+每次 body 触发都会调一次。v0.2.40 的 LRU 在命中已有 VM 时 mutate `conversationAccessOrder`（`@Observable` 属性）：
+
+```swift
+if let existing = conversations[agentId] {
+    conversationAccessOrder.removeAll { $0 == agentId }
+    conversationAccessOrder.append(agentId)
+    return existing
+}
+```
+
+虽然没有 View 显式订阅这个属性，但写入仍走 `ObservationRegistrar`，把当前 transaction 标脏。SwiftUI 在 flushTransactions 阶段扫整个 PropertyList 比对——大会话场景下这一轮就要数十 ms。每次 `body` 又写一次，再标脏一次，**自循环就这样成立**。
+
+修：访问已有 VM 时直接返回，不刷顺序：
+
+```swift
+if let existing = conversations[agentId] { return existing }
+```
+
+LRU 退化为 FIFO（按创建顺序淘汰）。对 15 个 agent 上下的规模完全够。
+
+提交：`32d3b8c`。tag `v0.2.43`，build 44。
+
+### 当前部署状态
+
+- `/Applications/PaseoMac.app` = v0.2.43 build 44，CPU 稳定在 15% 左右处理 stream（之前 99%）
+- 三个稳定性改动里只有 reconnect retry 整个回滚了；LRU 保留了上限但去掉触发热路径的 mutate；图片磁盘缓存 + scroll-on-turn-complete 都还在
+
+### 经验入册
+
+新建 [`docs/swiftui-stability-notes.md`](swiftui-stability-notes.md)，把这次踩到的四个坑做成可检索的案例：
+
+1. `body` 里 mutate `@Observable` → SwiftUI 自我重渲染死循环
+2. reconnect 无条件从 `.failed` 重试 → relay 消息风暴
+3. 图片字节直接挂 Row → 内存线性上涨（这次的修复是正确的）
+4. `turn_completed` 后需要补 scroll-to-bottom（这次的修复是正确的）
+
+下次再动稳定性相关的代码先翻这份 notes。
