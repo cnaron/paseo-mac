@@ -246,10 +246,21 @@ enum Markdown {
             allowsExtendedAttributes: false,
             interpretedSyntax: .inlineOnlyPreservingWhitespace
         )
-        if let parsed = try? AttributedString(markdown: processed, options: options) {
-            return parsed
+        guard var parsed = try? AttributedString(markdown: processed, options: options) else {
+            return AttributedString(s)
         }
-        return AttributedString(s)
+        // Style inline `code` spans the way claude.ai does: warm orange foreground
+        // on a subtle gray tint. AttributedString's backgroundColor renders as a
+        // flat rectangle (no rounded corners) — the closest native approximation.
+        for run in parsed.runs {
+            guard let intent = run.inlinePresentationIntent,
+                  intent.contains(.code) else { continue }
+            var container = AttributeContainer()
+            container.foregroundColor = Color(.sRGB, red: 0.78, green: 0.31, blue: 0.15, opacity: 1)
+            container.backgroundColor = Color.secondary.opacity(0.15)
+            parsed[run.range].mergeAttributes(container)
+        }
+        return parsed
     }
 }
 
