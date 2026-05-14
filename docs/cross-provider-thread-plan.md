@@ -1,5 +1,10 @@
 # 跨 Provider 无感切换 + 上下文延续
 
+> **已废弃（superseded）**：原方案引入 thread 抽象 + 多 agent 时间线归并，对 SwiftUI 重渲染负担过重。改用 [cross-provider-branch-plan.md](cross-provider-branch-plan.md) 的简化版——不抽象 thread，每次切换就是新建一个 agent，sidebar 多出一行，用 createAgent.initialPrompt 把 prior 内容传过去。本文保留作思路演进记录。
+
+---
+
+
 更新自 `multi-provider-ux-plan.md` 里的"任务 D"。重新审视后，发现做到「无感 + 带核心上下文」是可行的——daemon 协议不改，所有粘合都在 client 端做。
 
 ---
