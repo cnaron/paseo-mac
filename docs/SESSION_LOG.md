@@ -499,3 +499,43 @@ LRU 退化为 FIFO（按创建顺序淘汰）。对 15 个 agent 上下的规模
 4. `turn_completed` 后需要补 scroll-to-bottom（这次的修复是正确的）
 
 下次再动稳定性相关的代码先翻这份 notes。
+
+
+---
+
+## 2026-05-14 v0.2.48 + v0.2.49：上 Gemini CLI
+
+按 `docs/gemini-cli-plan.md` 做的，复盘见那篇文末。一句话总结：v0.2.48 是按 plan 改的（picker + push event + 默认 provider 名），看起来什么都没变；真正让 Gemini 出现是 v0.2.49 的一行——把 hello 消息里的 `appVersion` 从 `"PaseoMac/0.0.1"` 改成 `Bundle.main.infoDictionary?["CFBundleShortVersionString"]`，daemon 才停止把我们当成 legacy 客户端并解禁 ACP provider。
+
+### 涉及改动
+
+- `Sources/PaseoMac/ViewModels/AppViewModel.swift`
+  - 默认 `pendingNewAgentProvider`：`"anthropic"` → `"claude"`（2 处）
+  - `ingest()` 加 `case .providersSnapshotUpdate` 处理 daemon push
+- `Sources/PaseoMac/Network/Protocol.swift`
+  - `SessionInbound` 加 `case providersSnapshotUpdate`
+  - decoder 加 `"providers_snapshot_update"` 分支
+  - 新 struct `ProvidersSnapshotUpdatePayload`
+- `Sources/PaseoMac/Network/DaemonClient.swift`
+  - hello.appVersion 改为读 Info.plist
+
+### 后续待办（用户提的）
+
+- 侧边栏给会话加 provider 图标（区分 claude / gemini 会话）
+- 同会话里是否能跨 provider 切换（**结论：不能**，见下文「跨 provider 切换」一节）
+- 左下角加 Gemini 额度面板（仿现有 Claude 那个 UsagePanel）
+- Gemini 回复的 bubble 也要有时间戳和 model chip
+
+下一份 plan 文档处理这几件事。
+
+### 跨 provider 切换的结论
+
+不能。具体原因：
+
+- daemon 每个 agent 创建时绑定一个 provider（`createAgent_request.config.provider`），后续没有 `set_agent_provider_request`
+- 只有 `set_agent_model_request`——这是「同 provider 内换 model」（claude-opus → claude-sonnet 这种）
+- ACP 协议的 session id 也是绑定 provider 子进程的，强行换会丢上下文
+
+「Claude 额度用完了用 Gemini 顶上」的正确做法是：**为同一个 cwd 新开一个 Gemini 会话**。上下文不会自动迁移；需要复制就用户手动复制最后几条消息粘到新会话开头。
+
+如果想做得更顺：可以在 sidebar 上加「Resume in another provider」之类的快捷动作——一键用同 cwd 新建 Gemini 会话，把最后 1-2 条用户消息预填到 composer。这是产品决策，不是技术限制。
