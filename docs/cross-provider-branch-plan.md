@@ -116,6 +116,206 @@ private var branchableProviders: [ProviderSnapshot] {
 
 第一版不做。
 
+
+---
+
+## Button UX 细节
+
+### 放在哪
+
+ConversationView 的 **toolbar 右侧**，跟现有的 `+`（新建会话）、`⌕`（搜索）并排：
+
+```
+                                       [+]  [↗▾]  [⌕]
+─────────────────────────────────────────────────────
+  Conversation content
+  ...
+  ┌──────────────────────────────────────┐
+  │  Composer                            │
+  └──────────────────────────────────────┘
+```
+
+为什么放 toolbar 不放别处：
+
+- **不放 composer 区**：composer 只在 active conversation 时出现，archive 状态、search 状态会消失。toolbar 全状态可见
+- **不放 status bar 区**：status bar 是关于上一轮的元数据（model · duration），跟 branch 是动作，混在一起会让人误以为 chip 可点
+- **不放 sidebar 右键**：太隐藏，新用户不会发现
+
+### Icon 选哪个
+
+`arrow.triangle.branch` —— SF Symbol 里专门表达分叉的那个，看一眼就懂。带个小 `▾` chevron 暗示是个下拉菜单。
+
+不用 emoji。不用文字 "Branch"——保持跟现有 `+` `⌕` 同 visual weight。鼠标 hover 上去 tooltip 显示完整意思：
+
+> Continue this conversation with another model
+
+### 可见性 & 启用条件
+
+| 状态 | Button 表现 |
+|---|---|
+| Pending (新建尚未发消息) | 隐藏 | 没东西能 branch |
+| 当前会话 0 行 | 隐藏 | 同上 |
+| 当前会话有内容 + 只有 1 个 provider ready | 显示但 disable，tooltip "No other providers ready" | 让用户知道功能存在但当前用不上 |
+| 当前会话有内容 + ≥ 2 个 provider ready | 启用 | 正常状态 |
+| Archived 会话 | 启用 | branch 后是个新的 active agent，这是 archive 恢复的一种姿势 |
+| Branch 进行中 | 显示 ProgressView 替代 icon ~1s | 给用户视觉反馈，daemon spawn 会有几百 ms 到几秒 |
+
+### 菜单结构（关键决策：只到 provider 层）
+
+```
+┌─────────────────────────────────────┐
+│ Continue with...                    │
+├─────────────────────────────────────┤
+│ ✨  Claude                          │  ← 当前 provider，灰掉
+│ 🔷  Gemini CLI                      │
+│ ⌨   Codex                           │  ← 如果 daemon 配了 codex
+│ ⌨   OpenCode                        │  ← 同上
+└─────────────────────────────────────┘
+```
+
+- **每条 = 一个 provider**，使用各自默认 model
+- **当前 provider 也列在菜单里但 disabled**（灰），label 后面跟着 "(current)"——这样用户能确认菜单确实是反映"所有可选项"，不会误以为某个 provider 没装
+- **图标**：用任务 A 里定义的 `ProviderIcon`，跟 sidebar 一致
+- **label**：优先用 `ProviderSnapshot.label`（daemon 配的人类可读名，如 "Gemini CLI"），缺失时 fallback 用 `provider` id
+
+#### 为什么只到 provider 层，不展开 model
+
+考虑过更细的 2 层菜单：
+
+```
+Continue with...
+├─ Claude →  Opus 4.7
+│            Sonnet 4.6
+│            Haiku 4.5
+├─ Gemini  (only one model)
+└─ Codex →  ...
+```
+
+**否决理由**：
+
+1. 同 provider 内换 model **已经有现成 UI**——composer 区的 model picker。branch 不应该跟它抢职责
+2. 用户在 branch 这个动作里关心的是 **"换 provider"**，跨 provider 才是核心场景。3 层 nesting 让常见操作变重
+3. 新 agent 创建出来后，composer 的 model picker 还在，用户可以二次调整 model。多一步但更清晰
+
+**未来如果有人提需求**：菜单底部加一条 "More options..."，弹个 sheet 让用户精确选 provider + model + mode + thinking option。在 PaseoMac 第一版用户里这需求频率应该很低，先不做。
+
+#### Provider 排序
+
+按一个稳定顺序，不随 daemon 上报顺序变（避免每次连接菜单顺序漂移）：
+
+```swift
+private static let providerOrder = ["claude", "gemini", "codex", "opencode", "copilot", "pi"]
+```
+
+不在 known list 里的（用户自定义 ACP）排在最后，按字母序。
+
+### Branch 后的视觉延续
+
+点了 "Gemini CLI" 之后：
+
+1. **toolbar 上 button 变 ProgressView** ~500ms~3s（取决于 daemon spawn 速度）
+2. **sidebar 几乎同时多出一行**（新 agent 加入 agents 列表）
+3. **selection 自动切到新 agent**——ContentView `.id(agentId)` 会重建 ConversationView，scroll 自动落底
+4. 新 conversation 第一条 user bubble 是 bootstrap 文本（看起来就像一条正常的 user message，但内容是 prior 上下文 transcript）
+5. Gemini 流式响应 "Got it, continuing from your last question about X..."
+
+#### 是否要"折叠" bootstrap message？
+
+bootstrap 那条本质是机器构造的 prompt，用户不一定想看完。考虑两种渲染：
+
+**A. 完整显示** — 跟普通 user message 一样
+- 透明：用户能看到 client 实际发了什么
+- 长度可能很大（4 对 user/assistant），占屏
+
+**B. 折叠** — 一行 placeholder "↳ Continued from prior conversation (4 turns)"，点击展开
+- 简洁
+- 需要在 Row 上加 `kind: "bootstrap"` 区分
+
+**建议 A**：第一版透明优先，让用户能调试。如果实际使用觉得占屏，再升级 B。
+
+### 跟 sidebar 的关系
+
+branch 后 sidebar 多一行，**不做合并**（跟之前 thread 方案的对比）。但可以加一点视觉提示：
+
+- 新 agent 的 title（daemon 生成的，基于第一条 user message 内容）会反映 "continuing from..."——免费拿到的语义提示，不用额外标记
+- sidebar row 上不强加 `↳` 之类符号——避免引入"agent 之间的关系图"概念，保持平铺简单
+
+如果用户后来抱怨 "找不到我从哪个会话 branch 出来的"，再考虑加显式追溯（client 存 `branchFrom: String?`）。
+
+### Edge cases
+
+| 情况 | 处理 |
+|---|---|
+| daemon spawn 超时 | createAgent 抛错；toolbar button 恢复 icon；EventLogger 记 `branch:error`；用户看不到新会话出现（无副作用），可重试 |
+| 新 agent 创建成功但 bootstrap 发送失败 | 新 agent 已经在 sidebar 了但没有内容；用户可以手动发消息或删掉 |
+| 用户在 branch 进行中点了别的会话 | 不阻断；branch 完成后新 agent 静静出现在 sidebar，**不再自动切 selectedAgentId**（用户已经表达了不同意图） |
+| 当前 conversation 太长（几百行）| bootstrap 只取最近 4 对 user/assistant，限制 8 行（已在 buildBranchBootstrap 里实现） |
+| 用户连续 branch 两次 | 都生效；sidebar 会有 3 个 agent（原 + 第一次 branch + 第二次 branch）。第二次的 bootstrap 是从**第一次 branch 后的内容**取的，不是从原始 |
+
+### Branch 入口的代码骨架（更新版）
+
+替代 [`第 2 节`](#2-conversationview-toolbar-加-branch-入口20-行) 里的草稿：
+
+```swift
+ToolbarItem(placement: .primaryAction) {
+    Menu {
+        ForEach(branchTargets, id: \.provider) { entry in
+            Button {
+                Task { await app.branchAgent(fromAgentId: agentId, newProvider: entry.provider) }
+            } label: {
+                Label(
+                    entry.label + (entry.isCurrent ? " (current)" : ""),
+                    systemImage: ProviderIcon.symbolName(for: entry.provider)
+                )
+            }
+            .disabled(entry.isCurrent || entry.status != "ready")
+        }
+        if branchTargets.allSatisfy({ $0.isCurrent || $0.status != "ready" }) {
+            // 全 disable 时给个明示
+            Divider()
+            Text("No other providers ready").font(.caption).foregroundStyle(.secondary)
+        }
+    } label: {
+        if app.branchInFlight == agentId {
+            ProgressView().controlSize(.small)
+        } else {
+            Image(systemName: "arrow.triangle.branch")
+        }
+    }
+    .help("Continue this conversation with another model")
+    .disabled(shouldDisableEntirely)
+}
+
+private var branchTargets: [BranchTarget] {
+    let current = agent()?.provider
+    return Self.providerOrder.compactMap { id in
+        guard let snap = app.providers.first(where: { $0.provider == id }) else { return nil }
+        return BranchTarget(
+            provider: id,
+            label: snap.label ?? id.capitalized,
+            status: snap.status,
+            isCurrent: id == current
+        )
+    }
+}
+
+private var shouldDisableEntirely: Bool {
+    let vm = app.conversation(for: agentId)
+    return vm.rows.isEmpty || branchTargets.filter { !$0.isCurrent && $0.status == "ready" }.isEmpty
+}
+
+private static let providerOrder = ["claude", "gemini", "codex", "opencode", "copilot", "pi"]
+
+private struct BranchTarget {
+    let provider: String
+    let label: String
+    let status: String
+    let isCurrent: Bool
+}
+```
+
+`branchInFlight: String?` 是 AppViewModel 上的新 state，记录"哪个 agent 正在 branch 中"，让 toolbar 知道何时显示 ProgressView。
+
 ## 用户体验流程
 
 正常 case：
