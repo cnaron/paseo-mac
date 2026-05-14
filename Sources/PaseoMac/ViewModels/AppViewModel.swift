@@ -49,7 +49,7 @@ final class AppViewModel {
         }
     }
     var pendingNewAgentCwd: String? = nil
-    var pendingNewAgentProvider: String = "anthropic"
+    var pendingNewAgentProvider: String = "claude"
     var pendingNewAgentModel: String? = nil
     var pendingNewAgentModeId: String? = nil
     var pendingNewAgentThinkingOptionId: String? = nil
@@ -314,7 +314,7 @@ final class AppViewModel {
 
     func createAgent(cwd: String) async {
         let agent = currentAgent()
-        pendingNewAgentProvider = agent?.provider ?? "anthropic"
+        pendingNewAgentProvider = agent?.provider ?? "claude"
         pendingNewAgentModel = agent?.model
         pendingNewAgentModeId = agent?.currentModeId
         pendingNewAgentThinkingOptionId = agent?.effectiveThinkingOptionId
@@ -884,6 +884,8 @@ final class AppViewModel {
             daemonVersion = info.version
             daemonHostname = info.hostname
             versionMismatchDismissed = false
+        case .providersSnapshotUpdate(let msg):
+            providers = msg.payload.entries
         case .status, .fetchAgentsResponse, .fetchAgentTimelineResponse,
              .sendAgentMessageResponse, .setAgentModeResponse, .setAgentModelResponse,
              .setAgentThinkingResponse, .getProvidersSnapshotResponse, .cancelAgentResponse,

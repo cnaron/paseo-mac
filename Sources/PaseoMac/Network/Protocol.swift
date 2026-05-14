@@ -343,6 +343,7 @@ enum SessionInbound: Decodable, @unchecked Sendable {
     case setAgentModelResponse(SetAgentModelResponse)
     case setAgentThinkingResponse(SetAgentThinkingResponse)
     case getProvidersSnapshotResponse(GetProvidersSnapshotResponse)
+    case providersSnapshotUpdate(ProvidersSnapshotUpdatePayload)
     case cancelAgentResponse(CancelAgentResponse)
     case unknown(type: String, raw: Data)
 
@@ -376,6 +377,8 @@ enum SessionInbound: Decodable, @unchecked Sendable {
             self = .setAgentThinkingResponse(try JSONDecoder.paseo.decode(SetAgentThinkingResponse.self, from: raw))
         case "get_providers_snapshot_response":
             self = .getProvidersSnapshotResponse(try JSONDecoder.paseo.decode(GetProvidersSnapshotResponse.self, from: raw))
+        case "providers_snapshot_update":
+            self = .providersSnapshotUpdate(try JSONDecoder.paseo.decode(ProvidersSnapshotUpdatePayload.self, from: raw))
         case "cancel_agent_response":
             self = .cancelAgentResponse(try JSONDecoder.paseo.decode(CancelAgentResponse.self, from: raw))
         default:
@@ -521,6 +524,16 @@ struct GetProvidersSnapshotResponse: Decodable, Sendable {
         let entries: [ProviderSnapshot]
         let generatedAt: String
         let requestId: String
+    }
+}
+
+struct ProvidersSnapshotUpdatePayload: Decodable, Sendable {
+    let type: String
+    let payload: Payload
+    struct Payload: Decodable, Sendable {
+        let entries: [ProviderSnapshot]
+        let generatedAt: String?
+        let cwd: String?
     }
 }
 
