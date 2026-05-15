@@ -223,15 +223,31 @@ private struct ArchivedAgentRow: View {
 struct ProviderIcon: View {
     let provider: String?
     var body: some View {
-        Image(systemName: Self.symbolName(for: provider))
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-            .frame(width: 14)
+        if provider == "gemini", let nsImage = NSImage(named: "gemini.png") ?? NSImage(contentsOfFile: Bundle.main.path(forResource: "gemini", ofType: "png") ?? "") {
+            Image(nsImage: nsImage)
+                .renderingMode(.template)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .foregroundStyle(Color.blue)
+                .frame(width: 16, height: 16)
+        } else {
+            Image(systemName: Self.symbolName(for: provider))
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(providerColor)
+                .frame(width: 20)
+        }
     }
+
+    private var providerColor: Color {
+        switch provider {
+        case "claude": return .orange
+        default: return .secondary
+        }
+    }
+
     static func symbolName(for provider: String?) -> String {
         switch provider {
         case "claude": return "sparkles"
-        case "gemini": return "g.circle.fill"
         case "codex": return "terminal.fill"
         case "opencode": return "chevron.left.forwardslash.chevron.right"
         case "copilot": return "airplane.circle"
@@ -605,7 +621,7 @@ private struct ClaudeCodeUpdateBanner: View {
                 ProgressView()
                     .progressViewStyle(.circular)
                     .scaleEffect(0.6)
-                    .frame(width: 14, height: 14)
+                    .frame(width: 16, height: 16)
             } else {
                 Button("Update") {
                     Task { await app.updateClaudeCode() }

@@ -104,6 +104,25 @@ struct PreferencesView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                Section("Model Access") {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Blocked models: \(app.blockedModels.count)")
+                            if !app.blockedModels.isEmpty {
+                                Text(app.blockedModels.sorted().joined(separator: ", "))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(3)
+                            }
+                        }
+                        Spacer()
+                        Button("Reset") { app.clearBlockedModels() }
+                            .disabled(app.blockedModels.isEmpty)
+                    }
+                    Text("Models are auto-blocked when the daemon returns an 'Extra usage is required for 1M context' error. Enable extra usage at claude.ai/settings/usage and reset here to make them selectable again.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             .formStyle(.grouped)
             .padding(8)

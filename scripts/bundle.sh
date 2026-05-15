@@ -25,10 +25,11 @@ cp "$ROOT/Resources/Info.plist" "$CONTENTS/Info.plist"
 # Copy icon if present
 if [[ -f "$ROOT/Resources/AppIcon.icns" ]]; then
     cp "$ROOT/Resources/AppIcon.icns" "$RESOURCES/AppIcon.icns"
+fi
 if [[ -f "$ROOT/Resources/Credits.html" ]]; then
     cp "$ROOT/Resources/Credits.html" "$RESOURCES/Credits.html"
 fi
-fi
+cp "$ROOT/Resources/"*.png "$RESOURCES/" 2>/dev/null || true
 
 # Code sign ad-hoc so Gatekeeper / launchd will run it
 codesign --force --sign - "$APP" >/dev/null

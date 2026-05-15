@@ -143,7 +143,7 @@ struct ConversationView: View {
                     if app.branchInFlight == agentId {
                         ProgressView().controlSize(.small)
                     } else {
-                        Image(systemName: "arrow.triangle.branch")
+                        Image(systemName: "arrow.triangle.branch").font(.system(size: 14, weight: .semibold))
                     }
                 }
                 .help("Continue this conversation with another provider")

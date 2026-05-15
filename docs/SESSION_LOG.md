@@ -539,3 +539,31 @@ LRU 退化为 FIFO（按创建顺序淘汰）。对 15 个 agent 上下的规模
 「Claude 额度用完了用 Gemini 顶上」的正确做法是：**为同一个 cwd 新开一个 Gemini 会话**。上下文不会自动迁移；需要复制就用户手动复制最后几条消息粘到新会话开头。
 
 如果想做得更顺：可以在 sidebar 上加「Resume in another provider」之类的快捷动作——一键用同 cwd 新建 Gemini 会话，把最后 1-2 条用户消息预填到 composer。这是产品决策，不是技术限制。
+
+
+---
+
+## 2026-05-14 v0.2.50: multi-provider UX + cross-provider branch
+
+Tasks A+B+C from multi-provider-ux-plan.md and full cross-provider-branch-plan.md implemented.
+
+### Task A: sidebar provider icons
+AgentListView.swift new struct ProviderIcon (module-visible). AgentRow: icon between StatusIndicator
+and VStack. ArchivedAgentRow: after archivebox icon.
+claude=sparkles, gemini=g.circle.fill, codex=terminal.fill, other=hammer.fill
+
+### Task B: Gemini bubble model chip fallback
+MessageList+MessageBubble get agentProvider:String? threaded from agent().provider.
+displayProviderModel(provider:model:) - model wins if set, else provider label ("Gemini" etc).
+
+### Task C: Gemini quota external link
+UsagePanel gets hasGemini:Bool. GeminiUsageRow: free-tier limits + link to aistudio.google.com/app/usage.
+
+### Cross-provider branch
+AppViewModel: branchInFlight, branchAgent(), buildBranchBootstrap() (last 8 rows truncated at 2000 chars),
+branchDefaults() (Claude: opus-4-7[1m]+max+bypassPermissions; others: bypass-like mode keyword match).
+ConversationView toolbar: arrow.triangle.branch Menu, providerOrder fixed, current provider disabled+(current),
+ProgressView during spawn.
+
+### Version
+0.2.49 -> 0.2.50 build 51. Commit fb95e6d, tag v0.2.50, pushed.
