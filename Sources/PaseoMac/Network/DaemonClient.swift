@@ -36,12 +36,14 @@ enum DaemonError: Error, LocalizedError {
     case notConnected
     case protocolError(String)
     case rpcFailed(String)
+    case rpcTimeout
 
     var errorDescription: String? {
         switch self {
         case .notConnected: "Daemon is not connected."
         case .protocolError(let m): "Protocol error: \(m)"
         case .rpcFailed(let m): "RPC failed: \(m)"
+        case .rpcTimeout: "Request timed out."
         }
     }
 }
@@ -72,10 +74,18 @@ actor DaemonClient {
     /// preserved by relays/CDNs, so app-level traffic is what keeps the
     /// connection from being declared idle.
     private static let pingInterval: TimeInterval = 15
-    /// If we've gone this long without seeing any inbound frame (pong or
-    /// otherwise), treat the connection as dead and force-close.
-    private static let pongDeadline: TimeInterval = 35
-    private var lastInboundAt: Date = Date()
+    /// Per-RPC ceiling for `requestResponse`. Matches the upper bound used
+    /// by the official Paseo client (writes 15s, reads 10s — we pick the
+    /// write bound as a safe single value). A slow RPC fails individually
+    /// via `failPending(requestId:with: .rpcTimeout)`; the socket is left
+    /// open so other in-flight requests aren't dragged down with it.
+    ///
+    /// Note: there is no app-level "no inbound frame for N seconds → close"
+    /// deadline. The official client doesn't have one either — it relies on
+    /// transport-layer `onClose` / `onError` (i.e. URLSessionWebSocketTask's
+    /// own death detection) to surface dead sockets. An app-level deadline
+    /// is just a way to self-kill on a slow-but-alive RPC.
+    private static let requestTimeout: TimeInterval = 15
     private var connectedAt: Date?
 
     /// Fires for every inbound session message we didn't match to a pending request.
@@ -111,7 +121,6 @@ actor DaemonClient {
         )
         try await rawSend(.hello(hello))
         connectedAt = Date()
-        lastInboundAt = Date()
         startKeepalive()
     }
 
@@ -133,9 +142,11 @@ actor DaemonClient {
         }
     }
 
-    /// One keepalive tick: send an app-level ping, then check whether we've
-    /// heard from the other side recently. Both halves run on the actor so
-    /// `lastInboundAt` is consistent.
+    /// One keepalive tick: send an app-level ping plus a WebSocket-level
+    /// PING (on relay transports). If sending fails, the socket is dead —
+    /// close it so the upper layer reconnects. We do NOT force-close on
+    /// inbound silence: a slow but alive RPC would trip that and kill an
+    /// otherwise healthy socket.
     private func tickKeepalive() async {
         guard transport != nil else { return }
         let pingId = UUID().uuidString
@@ -163,11 +174,6 @@ actor DaemonClient {
                 await forceCloseDueToKeepalive(reason: "WS ping failed")
                 return
             }
-        }
-        let silence = now.timeIntervalSince(lastInboundAt)
-        if silence > DaemonClient.pongDeadline {
-            debugLog("[keepalive] no inbound frame for \(Int(silence))s — closing transport")
-            await forceCloseDueToKeepalive(reason: "no inbound frame for \(Int(silence))s")
         }
     }
 
@@ -462,7 +468,16 @@ actor DaemonClient {
         requestId: String,
         outbound: WSOutbound
     ) async throws -> SessionInbound {
-        try await withCheckedThrowingContinuation { cont in
+        // Schedule a timeout that fails *only* this pending request — it does
+        // NOT close the socket. Mirrors the official client's `sendRequest`
+        // (packages/server/src/client/daemon-client.ts), which fails the
+        // waiter and leaves the WS alone so other in-flight RPCs survive.
+        let timeoutTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(DaemonClient.requestTimeout * 1_000_000_000))
+            await self?.failPending(requestId: requestId, with: DaemonError.rpcTimeout)
+        }
+        defer { timeoutTask.cancel() }
+        return try await withCheckedThrowingContinuation { cont in
             self.pending[requestId] = cont
             Task { [weak self] in
                 do {
@@ -521,9 +536,6 @@ actor DaemonClient {
 
     private func handle(rawFrame data: Data) throws {
         debugLog("[ws-recv] \(String(decoding: data, as: UTF8.self))")
-        // Any inbound frame counts as proof of life — refresh the keepalive
-        // deadline regardless of frame type.
-        lastInboundAt = Date()
         let inbound = try JSONDecoder.paseo.decode(WSInbound.self, from: data)
         switch inbound {
         case .ping:

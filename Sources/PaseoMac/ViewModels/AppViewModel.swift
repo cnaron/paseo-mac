@@ -185,32 +185,41 @@ final class AppViewModel {
                 await self.handleUnexpectedDisconnect()
             }
 
-            try await refreshAgents()
-
             // Connection is healthy again — clear stale connection-related
             // errors that might have stuck on conversation VMs from the
             // disconnect window (e.g. "Daemon is not connected." surfacing
-            // from a sendMessage that raced the drop).
+            // from a sendMessage that raced the drop). This runs immediately
+            // (not behind refreshAgents) so the UI can drop error banners as
+            // soon as the handshake completes.
             for vm in conversations.values {
                 vm.clearConnectionError()
             }
 
-            // After reconnect, reload conversations that may have missed streaming
-            // content while the client was offline. Skip agents that are still
-            // running — their streaming events will arrive via the new event stream,
-            // and reloading mid-turn would race with and overwrite those updates.
-            let runningIds = Set(agents.filter { $0.status == "running" }.map(\.id))
-            for (agentId, vm) in conversations where !runningIds.contains(agentId) {
-                // Skip the pending-agent placeholder VM — it has no real agentId
-                // and asking the daemon to fetch its timeline returns "Agent not
-                // found" which closes the WS connection and triggers a reconnect
-                // loop.
-                if agentId == AppViewModel.pendingAgentId { continue }
-                Task { await vm.loadInitial() }
-                // Reconcile in case the agent finished while we were offline
-                // and the turn_completed event was missed.
-                if let snap = agents.first(where: { $0.id == agentId }) {
-                    vm.reconcileAgentStatus(snap.status)
+            // refreshAgents + conversation reload run off the critical path:
+            // a slow relay must not block the transition to `.connected`.
+            // The official client (host-runtime.ts) bootstraps agent
+            // directory via `Promise.resolve().then(refreshAgentDirectory)`
+            // after `connect()` resolves — we mirror that here.
+            Task { [weak self] in
+                guard let self else { return }
+                try? await self.refreshAgents()
+                // After reconnect, reload conversations that may have missed streaming
+                // content while the client was offline. Skip agents that are still
+                // running — their streaming events will arrive via the new event stream,
+                // and reloading mid-turn would race with and overwrite those updates.
+                let runningIds = Set(self.agents.filter { $0.status == "running" }.map(\.id))
+                for (agentId, vm) in self.conversations where !runningIds.contains(agentId) {
+                    // Skip the pending-agent placeholder VM — it has no real agentId
+                    // and asking the daemon to fetch its timeline returns "Agent not
+                    // found" which closes the WS connection and triggers a reconnect
+                    // loop.
+                    if agentId == AppViewModel.pendingAgentId { continue }
+                    Task { await vm.loadInitial() }
+                    // Reconcile in case the agent finished while we were offline
+                    // and the turn_completed event was missed.
+                    if let snap = self.agents.first(where: { $0.id == agentId }) {
+                        vm.reconcileAgentStatus(snap.status)
+                    }
                 }
             }
 
@@ -591,7 +600,19 @@ final class AppViewModel {
     func refreshAgents() async throws {
         guard let client else { return }
         let list = try await client.listAgents(limit: 100)
-        self.agents = list
+        // @Observable invalidates every dependent on *any* write to `agents`
+        // — there's no per-element observation for a value-type array, so a
+        // re-assign even with identical content cascades through every view
+        // that reads `vm.agents`. On a reconnect-driven refresh the daemon
+        // typically returns the same list, so the cheapest win is to skip
+        // the write when nothing actually changed. (AgentSnapshot is
+        // Hashable, so `==` is a deep compare.) The official client gets a
+        // finer-grained version of this via JS reactivity + merge-by-id;
+        // SwiftUI's @Observable doesn't expose that knob, so no-op detection
+        // is the best we can do without restructuring the model layer.
+        if list != self.agents {
+            self.agents = list
+        }
         if selectedAgentId == nil {
             let saved = UserDefaults.standard.string(forKey: "paseomac.lastSelectedAgentId")
             if let saved, list.contains(where: { $0.id == saved }) {
