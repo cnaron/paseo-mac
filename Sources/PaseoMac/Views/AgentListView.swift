@@ -218,36 +218,43 @@ private struct ArchivedAgentRow: View {
     }
 }
 
-// MARK: - Provider icon (SF Symbol, used in sidebar and branch menu)
+// MARK: - Provider icon (real PNG logo for Claude/Gemini; SF Symbol fallback for others)
 
 struct ProviderIcon: View {
     let provider: String?
     var body: some View {
-        if provider == "gemini", let nsImage = NSImage(named: "gemini.png") ?? NSImage(contentsOfFile: Bundle.main.path(forResource: "gemini", ofType: "png") ?? "") {
+        if let nsImage = Self.brandImage(for: provider) {
             Image(nsImage: nsImage)
-                .renderingMode(.template)
                 .resizable()
+                .interpolation(.high)
                 .aspectRatio(contentMode: .fit)
-                .foregroundStyle(Color.blue)
                 .frame(width: 16, height: 16)
         } else {
             Image(systemName: Self.symbolName(for: provider))
                 .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(providerColor)
+                .foregroundStyle(Color.secondary)
                 .frame(width: 20)
         }
     }
 
-    private var providerColor: Color {
+    private static func brandImage(for provider: String?) -> NSImage? {
+        guard let name = brandAssetName(for: provider) else { return nil }
+        return NSImage(named: name)
+            ?? (Bundle.main.path(forResource: name, ofType: "png").flatMap { NSImage(contentsOfFile: $0) })
+    }
+
+    private static func brandAssetName(for provider: String?) -> String? {
         switch provider {
-        case "claude": return .orange
-        default: return .secondary
+        case "claude": return "claude"
+        case "gemini": return "gemini"
+        default: return nil
         }
     }
 
     static func symbolName(for provider: String?) -> String {
         switch provider {
         case "claude": return "sparkles"
+        case "gemini": return "diamond.fill"
         case "codex": return "terminal.fill"
         case "opencode": return "chevron.left.forwardslash.chevron.right"
         case "copilot": return "airplane.circle"

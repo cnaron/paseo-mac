@@ -628,12 +628,25 @@ final class AppViewModel {
     private var workspaceGitUrlCache: [String: String?] = [:]
 
     func fetchGitHubUrl(for cwd: String) async -> String? {
-        if let cached = workspaceGitUrlCache[cwd] { return cached }
-        guard let client else { return nil }
+        if let cached = workspaceGitUrlCache[cwd] {
+            EventLogger.shared.log("github", "cache_hit", ["cwd": cwd, "url": cached ?? "nil"])
+            return cached
+        }
+        guard let client else {
+            EventLogger.shared.log("github", "no_client", ["cwd": cwd])
+            return nil
+        }
         let remoteUrl: String?
-        do { remoteUrl = try await client.fetchWorkspaceGitRemote(cwd: cwd) } catch { remoteUrl = nil }
+        do {
+            remoteUrl = try await client.fetchWorkspaceGitRemote(cwd: cwd)
+            EventLogger.shared.log("github", "rpc_ok", ["cwd": cwd, "remote": remoteUrl ?? "nil"])
+        } catch {
+            EventLogger.shared.log("github", "rpc_failed", ["cwd": cwd, "error": "\(error)"])
+            remoteUrl = nil
+        }
         let githubUrl = remoteUrl.flatMap { parseGitHubUrl($0) }
         workspaceGitUrlCache[cwd] = githubUrl
+        EventLogger.shared.log("github", "resolved", ["cwd": cwd, "url": githubUrl ?? "nil"])
         return githubUrl
     }
 

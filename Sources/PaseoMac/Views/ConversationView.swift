@@ -129,10 +129,11 @@ struct ConversationView: View {
                         Button {
                             Task { await app.branchAgent(fromAgentId: agentId, newProvider: entry.provider) }
                         } label: {
-                            Label(
-                                entry.label + (entry.isCurrent ? " (current)" : ""),
-                                systemImage: ProviderIcon.symbolName(for: entry.provider)
-                            )
+                            Label {
+                                Text(entry.label + (entry.isCurrent ? " (current)" : ""))
+                            } icon: {
+                                ProviderIcon(provider: entry.provider)
+                            }
                         }
                         .disabled(entry.isCurrent || entry.status != "ready")
                     }
@@ -167,7 +168,9 @@ struct ConversationView: View {
                 }
             }
         }
-        .task(id: agentId) {
+        // Use a composite id so the task re-runs once `agent()?.cwd` becomes
+        // known (initial render can happen before `app.agents` is populated).
+        .task(id: "\(agentId)|\(agent()?.cwd ?? "")") {
             guard let cwd = agent()?.cwd else { return }
             gitHubUrl = await app.fetchGitHubUrl(for: cwd)
         }
@@ -1374,9 +1377,6 @@ private func formatTimestamp(_ iso: String) -> String? {
     frac.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     let plain = ISO8601DateFormatter()
     guard let date = frac.date(from: iso) ?? plain.date(from: iso) else { return nil }
-    let diff = Date().timeIntervalSince(date)
-    if diff < 60 { return "just now" }
-    if diff < 3600 { return "\(Int(diff / 60))m ago" }
     if Calendar.current.isDateInToday(date) {
         return DateFormatter.localizedString(from: date, dateStyle: .none, timeStyle: .short)
     }
@@ -1392,17 +1392,17 @@ private struct TurnMetaChip: View {
 
     var body: some View {
         HStack(spacing: 4) {
+            if let ts = timestamp, let label = formatTimestamp(ts) {
+                Text(label)
+                Text("·")
+                    .foregroundStyle(.quaternary)
+            }
             Text(prettyModel(model))
             if let d = durationSec {
                 Text("·")
                     .foregroundStyle(.quaternary)
                 Text(formatDuration(d))
                     .monospacedDigit()
-            }
-            if let ts = timestamp, let label = formatTimestamp(ts) {
-                Text("·")
-                    .foregroundStyle(.quaternary)
-                Text(label)
             }
         }
         .font(.caption2)
