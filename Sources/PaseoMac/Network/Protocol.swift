@@ -647,18 +647,18 @@ enum TimelineItem: Decodable, Hashable, Sendable {
 
     var displayText: String {
         switch self {
-        case .userMessage(let t, _): t
-        case .assistantMessage(let t): t
-        case .reasoning(let t): t
-        case .toolCall(let name, let status, _, _): "\(name) · \(status)"
+        case .userMessage(let t, _): return t
+        case .assistantMessage(let t): return t
+        case .reasoning(let t): return t
+        case .toolCall(let name, let status, _, _): return "\(name) · \(status)"
         case .todo(let items):
-            items.map { ($0.completed ? "[x] " : "[ ] ") + $0.text }.joined(separator: "\n")
+            return items.map { ($0.completed ? "[x] " : "[ ] ") + $0.text }.joined(separator: "\n")
         case .error(let m):
             if m.contains("[object Object]") {
                 return "Backend internal error (Quota limit or API failure)"
             }
             return m
-        case .other(let t): "[\(t)]"
+        case .other(let t): return "[\(t)]"
         }
     }
 }
