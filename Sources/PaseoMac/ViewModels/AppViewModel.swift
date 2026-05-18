@@ -1054,7 +1054,7 @@ final class AppViewModel {
         case .status, .fetchAgentsResponse, .fetchAgentTimelineResponse,
              .sendAgentMessageResponse, .setAgentModeResponse, .setAgentModelResponse,
              .setAgentThinkingResponse, .getProvidersSnapshotResponse, .cancelAgentResponse,
-             .unknown:
+             .fetchWorkspacesResponse, .unknown:
             break
         }
     }
