@@ -6,6 +6,7 @@ struct ConversationView: View {
     @State private var searchText: String = ""
     @State private var isSearchVisible: Bool = false
     @State private var isResumingArchived: Bool = false
+    @State private var gitHubUrl: String? = nil
     /// Live-measured composer height. Drives the bottom breathing room in
     /// MessageList so the last message stays above the composer even when
     /// it grows (e.g. providers populate after reconnect and chips appear).
@@ -155,8 +156,25 @@ struct ConversationView: View {
                 }
                 .help(isSearchVisible ? "Close search" : "Search messages (⌘F)")
             }
+            if let urlStr = gitHubUrl, let url = URL(string: urlStr) {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        NSWorkspace.shared.open(url)
+                    } label: {
+                        Label("Open", systemImage: "arrow.up.right.square")
+                    }
+                    .help("Open repository on GitHub")
+                }
+            }
         }
-        .onChange(of: agentId) { isResumingArchived = false }
+        .task(id: agentId) {
+            guard let cwd = agent()?.cwd else { return }
+            gitHubUrl = await app.fetchGitHubUrl(for: cwd)
+        }
+        .onChange(of: agentId) {
+            gitHubUrl = nil
+            isResumingArchived = false
+        }
         .onChange(of: vm.rows.count) { old, new in
             guard isResumingArchived, new > old else { return }
             // Keep isResumingArchived = true so the banner stays hidden during polling.
@@ -662,7 +680,6 @@ private struct MessageBubble: View {
     var onDenyPermission: (() -> Void)? = nil
     var onSubmitQuestionAnswers: (([String: String]) -> Void)? = nil
     @State private var reasoningExpanded: Bool = false
-    @State private var isHoveredForCopy: Bool = false
     @State private var isExpanded: Bool = false
 
     private var isLong: Bool { group.text.count > 500 }
@@ -732,6 +749,12 @@ private struct MessageBubble: View {
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
                     .background(Color.accentColor.opacity(0.18), in: RoundedRectangle(cornerRadius: 12))
+                    .contextMenu {
+                        Button("Copy text") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(group.text, forType: .string)
+                        }
+                    }
                 }
                 if let ts = group.timestamp, let label = formatTimestamp(ts) {
                     Text(label)
@@ -745,32 +768,21 @@ private struct MessageBubble: View {
         .padding(.vertical, 10)
     }
 
-    // MARK: Assistant narrative — clock icon, inline text, copy button on hover
+    // MARK: Assistant narrative — clock icon, inline text
 
     private var assistantTimelineItem: some View {
         FlowStep(iconName: "clock", showLine: showConnector) {
             VStack(alignment: .leading, spacing: 4) {
                 MarkdownBodyView(text: group.text, isStreaming: isStreaming)
                 if let chipLabel = displayProviderModel(provider: agentProvider, model: group.modelUsed) {
-                    TurnMetaChip(model: chipLabel, durationSec: group.durationSec)
+                    TurnMetaChip(model: chipLabel, durationSec: group.durationSec, timestamp: group.timestamp)
                 }
             }
-        }
-        .onHover { isHoveredForCopy = $0 }
-        .overlay(alignment: .topTrailing) {
-            if isHoveredForCopy {
-                Button {
+            .contextMenu {
+                Button("Copy text") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(group.text, forType: .string)
-                } label: {
-                    Image(systemName: "doc.on.doc")
-                        .font(.caption2)
-                        .padding(5)
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
                 }
-                .buttonStyle(.plain)
-                .padding(4)
-                .help("Copy message")
             }
         }
     }
@@ -912,20 +924,6 @@ private struct MessageBubble: View {
     private func wordCount(_ text: String) -> Int {
         text.split(whereSeparator: \.isWhitespace).count
     }
-
-    private func formatTimestamp(_ iso: String) -> String? {
-        let frac = ISO8601DateFormatter()
-        frac.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let plain = ISO8601DateFormatter()
-        guard let date = frac.date(from: iso) ?? plain.date(from: iso) else { return nil }
-        let diff = Date().timeIntervalSince(date)
-        if diff < 60 { return "just now" }
-        if diff < 3600 { return "\(Int(diff / 60))m ago" }
-        if Calendar.current.isDateInToday(date) {
-            return DateFormatter.localizedString(from: date, dateStyle: .none, timeStyle: .short)
-        }
-        return DateFormatter.localizedString(from: date, dateStyle: .short, timeStyle: .short)
-    }
 }
 
 // MARK: - Timeline connector wrapper
@@ -983,6 +981,10 @@ private struct ToolRowTimeline: View {
 
     private var summaryRow: some View {
         HStack(alignment: .center, spacing: 6) {
+            Image(systemName: info.iconName)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 14, alignment: .center)
             Text(info.name)
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -1365,16 +1367,28 @@ private struct DiffLine: View {
     }
 }
 
-// MARK: - Turn status bar (live timer + model, shown during and after a turn)
+// MARK: - Shared timestamp helper
 
-/// Persistent status bar below the last reply. While the agent is working it
-/// ticks every second; after completion it freezes on the final duration.
-/// Styled like Claude Code's bottom status line.
-// MARK: - Per-bubble model + duration chip
+private func formatTimestamp(_ iso: String) -> String? {
+    let frac = ISO8601DateFormatter()
+    frac.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    let plain = ISO8601DateFormatter()
+    guard let date = frac.date(from: iso) ?? plain.date(from: iso) else { return nil }
+    let diff = Date().timeIntervalSince(date)
+    if diff < 60 { return "just now" }
+    if diff < 3600 { return "\(Int(diff / 60))m ago" }
+    if Calendar.current.isDateInToday(date) {
+        return DateFormatter.localizedString(from: date, dateStyle: .none, timeStyle: .short)
+    }
+    return DateFormatter.localizedString(from: date, dateStyle: .short, timeStyle: .short)
+}
+
+// MARK: - Per-bubble model + duration + timestamp chip
 
 private struct TurnMetaChip: View {
     let model: String
     let durationSec: TimeInterval?
+    var timestamp: String? = nil
 
     var body: some View {
         HStack(spacing: 4) {
@@ -1384,6 +1398,11 @@ private struct TurnMetaChip: View {
                     .foregroundStyle(.quaternary)
                 Text(formatDuration(d))
                     .monospacedDigit()
+            }
+            if let ts = timestamp, let label = formatTimestamp(ts) {
+                Text("·")
+                    .foregroundStyle(.quaternary)
+                Text(label)
             }
         }
         .font(.caption2)
@@ -1412,6 +1431,8 @@ private struct TurnMetaChip: View {
         return String(format: "%dm %ds", Int(t) / 60, Int(t) % 60)
     }
 }
+
+// MARK: - Turn status bar (live timer + model, shown during and after a turn)
 
 private struct TurnStatusBar: View {
     let model: String

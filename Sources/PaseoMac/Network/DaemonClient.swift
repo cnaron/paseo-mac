@@ -439,6 +439,20 @@ actor DaemonClient {
         try await rawSend(.session(.archiveAgent(req)))
     }
 
+    /// Returns the git remote URL for the workspace at `cwd`, or nil if not a git repo / no remote.
+    func fetchWorkspaceGitRemote(cwd: String) async throws -> String? {
+        let requestId = UUID().uuidString
+        let req = FetchWorkspacesRequest(requestId: requestId)
+        let reply = try await requestResponse(requestId: requestId, outbound: .session(.fetchWorkspaces(req)))
+        guard case let .fetchWorkspacesResponse(resp) = reply else {
+            throw DaemonError.protocolError("Expected fetch_workspaces_response, got \(reply)")
+        }
+        let workspace = resp.payload.entries.first { ws in
+            ws.workspaceDirectory == cwd || ws.projectRootPath == cwd
+        }
+        return workspace?.gitRuntime?.remoteUrl
+    }
+
     func getProvidersSnapshot(cwd: String? = nil) async throws -> [ProviderSnapshot] {
         let requestId = UUID().uuidString
         let req = GetProvidersSnapshotRequest(requestId: requestId, cwd: cwd)
@@ -561,6 +575,7 @@ actor DaemonClient {
             case .setAgentThinkingResponse(let r): return r.payload.requestId
             case .getProvidersSnapshotResponse(let r): return r.payload.requestId
             case .cancelAgentResponse(let r): return r.payload.requestId
+            case .fetchWorkspacesResponse(let r): return r.payload.requestId
             case .status(let r): return r.payload.requestId  // agent_created response
             default: return nil
             }

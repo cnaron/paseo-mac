@@ -623,6 +623,30 @@ final class AppViewModel {
         }
     }
 
+    // MARK: - GitHub URL (git remote → github.com link, per-cwd cache)
+
+    private var workspaceGitUrlCache: [String: String?] = [:]
+
+    func fetchGitHubUrl(for cwd: String) async -> String? {
+        if let cached = workspaceGitUrlCache[cwd] { return cached }
+        guard let client else { return nil }
+        let remoteUrl: String?
+        do { remoteUrl = try await client.fetchWorkspaceGitRemote(cwd: cwd) } catch { remoteUrl = nil }
+        let githubUrl = remoteUrl.flatMap { parseGitHubUrl($0) }
+        workspaceGitUrlCache[cwd] = githubUrl
+        return githubUrl
+    }
+
+    private func parseGitHubUrl(_ remote: String) -> String? {
+        var url = remote
+        if url.hasPrefix("git@github.com:") {
+            url = "https://github.com/" + url.dropFirst("git@github.com:".count)
+        }
+        if url.hasSuffix(".git") { url = String(url.dropLast(4)) }
+        guard url.contains("github.com") else { return nil }
+        return url
+    }
+
     // MARK: - Blocked models
 
     func isModelBlocked(provider: String, modelId: String) -> Bool {

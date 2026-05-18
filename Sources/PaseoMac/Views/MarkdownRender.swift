@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 enum Markdown {
 
@@ -249,9 +250,7 @@ enum Markdown {
         guard var parsed = try? AttributedString(markdown: processed, options: options) else {
             return AttributedString(s)
         }
-        // Style inline `code` spans the way claude.ai does: warm orange foreground
-        // on a subtle gray tint. AttributedString's backgroundColor renders as a
-        // flat rectangle (no rounded corners) — the closest native approximation.
+        // Style inline `code` spans: blue foreground on subtle gray tint.
         for run in parsed.runs {
             guard let intent = run.inlinePresentationIntent,
                   intent.contains(.code) else { continue }
@@ -260,7 +259,33 @@ enum Markdown {
             container.backgroundColor = Color.secondary.opacity(0.15)
             parsed[run.range].mergeAttributes(container)
         }
+        // Auto-link plain URLs that markdown didn't already turn into links.
+        // Runs NSDataDetector on the rendered plain text and stamps .link +
+        // .underlineStyle onto any URL span not already carrying a link attribute.
+        autoLinkURLs(in: &parsed)
         return parsed
+    }
+
+    private static func autoLinkURLs(in str: inout AttributedString) {
+        let plain = String(str.characters)
+        guard !plain.isEmpty,
+              let detector = try? NSDataDetector(
+                types: NSTextCheckingResult.CheckingType.link.rawValue) else { return }
+        let nsRange = NSRange(plain.startIndex..., in: plain)
+        let matches = detector.matches(in: plain, range: nsRange)
+        for match in matches {
+            guard let url = match.url,
+                  let strRange = Range(match.range, in: plain) else { continue }
+            let startOff = plain.distance(from: plain.startIndex, to: strRange.lowerBound)
+            let endOff   = plain.distance(from: plain.startIndex, to: strRange.upperBound)
+            let charStart = str.characters.index(str.characters.startIndex, offsetBy: startOff)
+            let charEnd   = str.characters.index(str.characters.startIndex, offsetBy: endOff)
+            let attrRange = charStart..<charEnd
+            if str[attrRange].link == nil {
+                str[attrRange].link = url
+                str[attrRange].underlineStyle = .single
+            }
+        }
     }
 }
 

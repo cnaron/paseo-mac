@@ -51,6 +51,7 @@ enum SessionRequest: Encodable {
     case createAgent(CreateAgentRequest)
     case archiveAgent(ArchiveAgentRequest)
     case agentPermissionResponse(AgentPermissionResponseRequest)
+    case fetchWorkspaces(FetchWorkspacesRequest)
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.singleValueContainer()
@@ -66,6 +67,7 @@ enum SessionRequest: Encodable {
         case .createAgent(let r): try c.encode(r)
         case .archiveAgent(let r): try c.encode(r)
         case .agentPermissionResponse(let r): try c.encode(r)
+        case .fetchWorkspaces(let r): try c.encode(r)
         }
     }
 }
@@ -345,6 +347,7 @@ enum SessionInbound: Decodable, @unchecked Sendable {
     case getProvidersSnapshotResponse(GetProvidersSnapshotResponse)
     case providersSnapshotUpdate(ProvidersSnapshotUpdatePayload)
     case cancelAgentResponse(CancelAgentResponse)
+    case fetchWorkspacesResponse(FetchWorkspacesResponse)
     case unknown(type: String, raw: Data)
 
     private enum Keys: String, CodingKey { case type }
@@ -381,6 +384,8 @@ enum SessionInbound: Decodable, @unchecked Sendable {
             self = .providersSnapshotUpdate(try JSONDecoder.paseo.decode(ProvidersSnapshotUpdatePayload.self, from: raw))
         case "cancel_agent_response":
             self = .cancelAgentResponse(try JSONDecoder.paseo.decode(CancelAgentResponse.self, from: raw))
+        case "fetch_workspaces_response":
+            self = .fetchWorkspacesResponse(try JSONDecoder.paseo.decode(FetchWorkspacesResponse.self, from: raw))
         default:
             self = .unknown(type: type, raw: raw)
         }
@@ -840,6 +845,34 @@ enum AgentStreamEvent: Decodable, Sendable {
 }
 
 // MARK: - Agent snapshot
+
+// MARK: - Workspace git remote fetch
+
+struct FetchWorkspacesRequest: Encodable {
+    let type = "fetch_workspaces_request"
+    let requestId: String
+}
+
+struct WorkspaceGitRuntime: Decodable, Sendable {
+    let currentBranch: String?
+    let remoteUrl: String?
+}
+
+struct WorkspaceDescriptor: Decodable, Sendable {
+    let id: String
+    let workspaceDirectory: String?
+    let projectRootPath: String
+    let gitRuntime: WorkspaceGitRuntime?
+}
+
+struct FetchWorkspacesResponse: Decodable, Sendable {
+    let type: String
+    let payload: Payload
+    struct Payload: Decodable, Sendable {
+        let requestId: String
+        let entries: [WorkspaceDescriptor]
+    }
+}
 
 struct AgentSnapshot: Decodable, Sendable, Identifiable, Hashable {
     let id: String
