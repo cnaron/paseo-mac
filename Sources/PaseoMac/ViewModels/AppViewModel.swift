@@ -59,6 +59,10 @@ final class AppViewModel {
     /// agent ID landing.
     var creatingAgentText: String? = nil
     var creatingAgentImages: [PendingImageAttachment] = []
+    /// Last error from `submitPendingAgent`. Surfaces in the "Type a message"
+    /// empty state so the user knows why the previous send failed and can
+    /// retry with the restored composer content.
+    var creatingAgentError: String? = nil
     /// Tracks which agent ID has a branch createAgent in flight so the
     /// toolbar ProgressView can show. Nil when no branch is pending.
     var branchInFlight: String? = nil
@@ -260,6 +264,7 @@ final class AppViewModel {
         pendingNewAgentThinkingOptionId = nil
         creatingAgentText = nil
         creatingAgentImages = []
+        creatingAgentError = nil
         claudeCodeLatestVersion = nil
         daemonVersion = nil
         daemonHostname = nil
@@ -337,6 +342,7 @@ final class AppViewModel {
     func cancelPendingAgent() {
         pendingNewAgentCwd = nil
         pendingNewAgentThinkingOptionId = nil
+        creatingAgentError = nil
         if selectedAgentId == AppViewModel.pendingAgentId {
             selectedAgentId = agents.first?.id
         }
@@ -348,12 +354,35 @@ final class AppViewModel {
         let model = pendingNewAgentModel
         let modeId = pendingNewAgentModeId
         let thinkingOptionId = pendingNewAgentThinkingOptionId
+        // Snapshot so we can restore composer + pending picker state if the
+        // create flow fails partway. Without this the user loses their typed
+        // message + attached images and has to retype everything.
+        let restoreCwd = cwd
+        let restoreText = text
+        let restoreImages = images
+        let restoreModel = model
+        let restoreModeId = modeId
+        let restoreThinking = thinkingOptionId
+        let failAndRestore: (String) -> Void = { [weak self] reason in
+            guard let self else { return }
+            self.creatingAgentError = reason
+            self.creatingAgentText = nil
+            self.creatingAgentImages = []
+            self.pendingNewAgentCwd = restoreCwd
+            self.pendingNewAgentModel = restoreModel
+            self.pendingNewAgentModeId = restoreModeId
+            self.pendingNewAgentThinkingOptionId = restoreThinking
+            let vm = self.conversation(for: AppViewModel.pendingAgentId)
+            vm.composerText = restoreText
+            vm.pendingImages = restoreImages
+        }
         pendingNewAgentCwd = nil
         pendingNewAgentModel = nil
         pendingNewAgentModeId = nil
         pendingNewAgentThinkingOptionId = nil
         creatingAgentText = text
         creatingAgentImages = images
+        creatingAgentError = nil
         knownAgentIds = Set(agents.map(\.id))
         EventLogger.shared.log("create_agent", "request", [
             "provider": provider, "model": model ?? "<default>",
@@ -376,9 +405,7 @@ final class AppViewModel {
             )
         } catch {
             EventLogger.shared.log("create_agent", "error", ["err": error.localizedDescription])
-            creatingAgentText = nil
-            creatingAgentImages = []
-            selectedAgentId = agents.first?.id
+            failAndRestore("Could not create agent: \(error.localizedDescription)")
             return
         }
         // Wait for the new agent via stream event (fast) or poll fallback.
@@ -405,9 +432,7 @@ final class AppViewModel {
         }
         guard let agentId else {
             EventLogger.shared.log("create_agent", "timeout")
-            creatingAgentText = nil
-            creatingAgentImages = []
-            selectedAgentId = agents.first?.id
+            failAndRestore("Timed out waiting for the new agent to start. Check the daemon connection and try again.")
             return
         }
         EventLogger.shared.log("create_agent", "detected", ["agent": agentId])
@@ -425,10 +450,23 @@ final class AppViewModel {
                     mimeType: $0.mimeType
                 )
             }
-            _ = try? await client.sendMessage(
-                agentId: agentId, text: text, messageId: messageId,
-                images: wireImages.isEmpty ? nil : wireImages
-            )
+            do {
+                try await client.sendMessage(
+                    agentId: agentId, text: text, messageId: messageId,
+                    images: wireImages.isEmpty ? nil : wireImages
+                )
+            } catch {
+                // Agent exists on daemon but we never got the first message
+                // through. Surface the real error on the new conversation
+                // and put the typed content back in the composer so the
+                // user can retry without retyping.
+                EventLogger.shared.log("send", "error", [
+                    "agent": agentId, "err": error.localizedDescription
+                ])
+                vm.composerText = text
+                vm.pendingImages = images
+                vm.lastError = "Send failed: \(error.localizedDescription)"
+            }
         } else {
             selectedAgentId = agentId
             creatingAgentText = nil

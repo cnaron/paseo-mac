@@ -32,14 +32,33 @@ struct ConversationView: View {
                                 bottomPadding: max(measuredComposerHeight, 210)
                             )
                         } else {
-                            VStack(spacing: 12) {
+                            VStack(spacing: 14) {
                                 Spacer()
-                                Image(systemName: "ellipsis.bubble")
-                                    .font(.system(size: 36, weight: .light))
-                                    .foregroundStyle(.tertiary)
-                                Text("Type a message to start the conversation")
-                                    .font(.callout)
-                                    .foregroundStyle(.secondary)
+                                if let err = app.creatingAgentError {
+                                    Image(systemName: "exclamationmark.triangle.fill")
+                                        .font(.system(size: 28, weight: .regular))
+                                        .foregroundStyle(.orange)
+                                    Text("Couldn't start the agent")
+                                        .font(.headline)
+                                    Text(err)
+                                        .font(.callout)
+                                        .foregroundStyle(.secondary)
+                                        .multilineTextAlignment(.center)
+                                        .padding(.horizontal, 32)
+                                        .textSelection(.enabled)
+                                    Text("Your message has been put back into the composer — edit and try again, or hit ⌘W to cancel.")
+                                        .font(.caption)
+                                        .foregroundStyle(.tertiary)
+                                        .multilineTextAlignment(.center)
+                                        .padding(.horizontal, 32)
+                                } else {
+                                    Image(systemName: "ellipsis.bubble")
+                                        .font(.system(size: 36, weight: .light))
+                                        .foregroundStyle(.tertiary)
+                                    Text("Type a message to start the conversation")
+                                        .font(.callout)
+                                        .foregroundStyle(.secondary)
+                                }
                                 Spacer()
                                 Color.clear.frame(height: 120)
                             }

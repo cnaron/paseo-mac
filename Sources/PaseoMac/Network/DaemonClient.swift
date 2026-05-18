@@ -229,6 +229,11 @@ actor DaemonClient {
             throw DaemonError.protocolError("Could not build WS URL for \(host):\(port)")
         }
         let ws = session.webSocketTask(with: url)
+        // Default is 1MB. A single timeline event echoing 4 attached images
+        // (each ~2MB raw + base64 inflation) easily blows past that, closing
+        // the connection with "Message Too Big" the moment daemon sends the
+        // user_message stream back.
+        ws.maximumMessageSize = 64 * 1024 * 1024
         ws.resume()
         self.transport = .direct(ws)
 

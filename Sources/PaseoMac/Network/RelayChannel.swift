@@ -83,6 +83,11 @@ actor RelayChannel {
         self.ourPublicKeyB64 = ourKeyPair.publicKey.base64EncodedString()
 
         let task = session.webSocketTask(with: relayURL)
+        // URLSessionWebSocketTask default is 1MB. With E2EE encrypt + base64
+        // overhead on top of multi-image payloads, a single frame routinely
+        // exceeds that — the receive loop then throws "Message Too Big" and
+        // we lose the channel mid-create_agent.
+        task.maximumMessageSize = 64 * 1024 * 1024
         self.task = task
         task.resume()
 
