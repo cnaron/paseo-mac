@@ -4,18 +4,32 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 /// A pasted or dropped image that's ready to send with a message.
-/// For MVP we only handle images (the original iOS-on-Mac blocker) and convert
-/// them to PNG bytes with a small thumbnail for the composer UI.
+/// Images are downsized + JPEG-compressed at attach time so the wire payload
+/// stays well under the relay's 1MB-per-WS-message limit even with several
+/// attachments. The on-disk file is the compressed JPEG, not the original.
 struct PendingImageAttachment: Identifiable, Hashable, Sendable {
     let id: UUID
-    let fileURL: URL      // ~/Library/Caches/PaseoMac/images/<uuid>.png
+    let fileURL: URL      // ~/Library/Caches/PaseoMac/images/<uuid>.<ext>
     let width: Int
     let height: Int
-    let mimeType: String  // always "image/png" for now
+    let mimeType: String  // "image/jpeg" for compressed; "image/png" fallback
 
     var pngData: Data {
+        // Name kept for protocol-callsite compatibility; payload may be JPEG.
         (try? Data(contentsOf: fileURL)) ?? Data()
     }
+
+    /// Constrained by the Cloudflare Workers WebSocket 1 MiB per-message
+    /// limit on the relay edge. After encrypt+base64 inflation, an entire
+    /// `send_agent_message_request` payload needs to stay under ~780KB plain,
+    /// so each image has to compress down to roughly 150KB or less for a
+    /// 4-image attachment set to fit. Anthropic's vision pipeline accepts up
+    /// to 1568px, but going slightly smaller here saves a lot of bytes and
+    /// keeps room for the prose around the images.
+    private static let maxLongEdge: CGFloat = 1280
+    /// JPEG quality. 0.75 keeps screenshots legible while compressing a
+    /// typical Retina screenshot to ~80-150KB.
+    private static let jpegQuality: CGFloat = 0.75
 
     static func from(image: NSImage) -> PendingImageAttachment? {
         // Use the best available bitmap rep to get actual pixel dimensions,
@@ -28,21 +42,63 @@ struct PendingImageAttachment: Identifiable, Hashable, Sendable {
                 .compactMap { $0 as? NSBitmapImageRep }
                 .max(by: { $0.pixelsWide < $1.pixelsWide })
         }
-        guard let bitmapRep = rep,
-              let png = bitmapRep.representation(using: .png, properties: [.interlaced: false]) else {
+        guard let bitmapRep = rep else { return nil }
+
+        // pixelsWide/High = actual device pixels (2x on Retina)
+        let srcW = bitmapRep.pixelsWide
+        let srcH = bitmapRep.pixelsHigh
+        let longEdge = max(srcW, srcH)
+        let scale: CGFloat = longEdge > Int(maxLongEdge)
+            ? maxLongEdge / CGFloat(longEdge)
+            : 1.0
+        let dstW = max(Int(CGFloat(srcW) * scale), 1)
+        let dstH = max(Int(CGFloat(srcH) * scale), 1)
+
+        // Always go through CGImage + draw-into-new-context so we get a
+        // predictable pixel size + drop alpha (JPEG can't carry it).
+        guard let cg = bitmapRep.cgImage else { return nil }
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let ctx = CGContext(
+            data: nil,
+            width: dstW,
+            height: dstH,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+        ) else { return nil }
+        ctx.interpolationQuality = .high
+        // JPEG can't carry alpha; fill white so transparent regions don't
+        // come out black (CGContext buffers start zeroed).
+        ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+        ctx.fill(CGRect(x: 0, y: 0, width: dstW, height: dstH))
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: dstW, height: dstH))
+        guard let resized = ctx.makeImage() else { return nil }
+        let resizedRep = NSBitmapImageRep(cgImage: resized)
+
+        let id = UUID()
+        let cacheDir = PendingImageAttachment.cacheDirectory()
+        if let jpeg = resizedRep.representation(
+            using: .jpeg,
+            properties: [.compressionFactor: jpegQuality]
+        ) {
+            let fileURL = cacheDir.appendingPathComponent("\(id.uuidString).jpg")
+            guard (try? jpeg.write(to: fileURL, options: .atomic)) != nil else { return nil }
+            return PendingImageAttachment(
+                id: id, fileURL: fileURL,
+                width: dstW, height: dstH,
+                mimeType: "image/jpeg"
+            )
+        }
+        // JPEG export failed (very rare). Fall back to PNG of the resized version.
+        guard let png = resizedRep.representation(using: .png, properties: [.interlaced: false]) else {
             return nil
         }
-        // pixelsWide/High = actual device pixels (2x on Retina)
-        let w = bitmapRep.pixelsWide
-        let h = bitmapRep.pixelsHigh
-        let id = UUID()
-        let fileURL = PendingImageAttachment.cacheDirectory().appendingPathComponent("\(id.uuidString).png")
+        let fileURL = cacheDir.appendingPathComponent("\(id.uuidString).png")
         guard (try? png.write(to: fileURL, options: .atomic)) != nil else { return nil }
         return PendingImageAttachment(
-            id: id,
-            fileURL: fileURL,
-            width: max(w, 1),
-            height: max(h, 1),
+            id: id, fileURL: fileURL,
+            width: dstW, height: dstH,
             mimeType: "image/png"
         )
     }

@@ -172,7 +172,25 @@ actor RelayChannel {
         guard let task else { throw RelayChannelError.notConnected }
         let bundle = try RelayCrypto.encrypt(sharedKey: sharedKey, plaintext: data)
         let base64 = bundle.base64EncodedString()
-        try await task.send(.string(base64))
+        do {
+            try await task.send(.string(base64))
+        } catch {
+            // Surface the actual URLError code so disconnect causes (e.g.
+            // CloudflareWorkerSocket's 1MB-per-message limit hitting
+            // NSURLErrorCannotConnectToHost / NSURLErrorBadServerResponse)
+            // show up in the file log rather than disappearing.
+            var fields: [String: Any] = [
+                "wireBytes": base64.utf8.count,
+                "plaintextBytes": data.count,
+                "raw": String(describing: error)
+            ]
+            if let urlErr = error as? URLError {
+                fields["urlErrorCode"] = urlErr.errorCode
+                fields["urlErrorReason"] = urlErr.localizedDescription
+            }
+            EventLogger.shared.log("relay", "send_error", fields)
+            throw error
+        }
     }
 
     private func runHelloRetry() async {
@@ -263,7 +281,16 @@ actor RelayChannel {
 
     private func handleReceiveError(_ error: Error) async {
         debug("receive error: \(error)")
-        let reason = (error as? URLError)?.localizedDescription ?? String(describing: error)
+        let reason: String
+        var fields: [String: Any] = ["raw": String(describing: error)]
+        if let urlErr = error as? URLError {
+            reason = urlErr.localizedDescription
+            fields["urlErrorCode"] = urlErr.errorCode
+            fields["urlErrorReason"] = urlErr.localizedDescription
+        } else {
+            reason = String(describing: error)
+        }
+        EventLogger.shared.log("relay", "receive_error", fields)
         failOpenContinuation(with: RelayChannelError.channelClosed(reason))
         state = .closed(reason: reason)
         helloRetryTask?.cancel()
