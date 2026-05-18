@@ -567,3 +567,85 @@ ProgressView during spawn.
 
 ### Version
 0.2.49 -> 0.2.50 build 51. Commit fb95e6d, tag v0.2.50, pushed.
+
+
+---
+
+## 2026-05-18 UX 打磨：时间戳、URL 链接、GitHub 按钮、右键菜单、子 agent 图标
+
+参考上游 paseo Electron v0.1.70 → v0.1.76 改动，结合用户明确提出的 3 个需求。
+
+### 需求来源
+
+1. **时间戳**：对话里看不出每条回复是什么时候生成的
+2. **URL 可点击**：对话里的普通链接是死文字，无法直接跳转
+3. **GitHub 直达按钮**：要在会话标题栏看到当前会话仓库的 GitHub 链接
+4. **去掉 hover 复制效果**：assistant bubble hover 变色可复制经常误触，富文本内 code block 的复制保留
+5. **右键 contextMenu**：用标准右键菜单替代 hover 复制
+
+### 实现细节
+
+#### 1. Assistant 消息时间戳（`ConversationView.swift`）
+
+`TurnMetaChip` 加 `var timestamp: String? = nil` 字段，在现有的「模型 · 时长」后追加「· HH:mm」。
+
+`formatTimestamp` 原来是 `MessageBubble` 内部的 `private func`，提到文件级 `private func`，让 `TurnMetaChip` 也能调用。
+
+`assistantTimelineItem` 计算属性里把 `group.timestamp` 传给 `TurnMetaChip`。
+
+#### 2. URL 自动链接（`MarkdownRender.swift`）
+
+新增 `autoLinkURLs(in: inout AttributedString)` 静态函数，在 `renderInline` 最后调用：
+
+- 从 `AttributedString.characters` 提取纯文字
+- `NSDataDetector` 找出所有 URL range
+- 把 NSRange 通过字符偏移量映射回 `AttributedString` 下标范围
+- 仅当该段没有 `link` 属性时才加 `.link = url` + `.underlineStyle = .single`（避免覆盖 Markdown 已解析的 `[text](url)` 链接）
+
+加了 `import AppKit`（NSDataDetector 需要）。
+
+#### 3. GitHub 仓库按钮（`ConversationView.swift` + `DaemonClient.swift` + `AppViewModel.swift` + `Protocol.swift`）
+
+**协议层**（`Protocol.swift`）：
+
+新增 `FetchWorkspacesRequest` / `FetchWorkspacesResponse` / `WorkspaceDescriptor` / `WorkspaceGitRuntime` 结构体，对应 daemon 已有 RPC `fetch_workspaces_request`。`SessionRequest` 加 `case fetchWorkspaces`，`SessionInbound` 加 `case fetchWorkspacesResponse`。
+
+**传输层**（`DaemonClient.swift`）：
+
+新增 `fetchWorkspaceGitRemote(cwd:) async throws -> String?`，走 `requestResponse` 走 RPC，按 `workspaceDirectory`/`projectRootPath` 匹配返回 `gitRuntime.remoteUrl`。`dispatch()` 加 `.fetchWorkspacesResponse` 分支做 requestId 对账。
+
+**业务层**（`AppViewModel.swift`）：
+
+`fetchGitHubUrl(for cwd: String) async -> String?`：先查 `workspaceGitUrlCache` 缓存，未命中就调上面的 RPC，再通过 `parseGitHubUrl` 把 `git@github.com:` 和 `https://github.com/` 两种 remote URL 格式统一成 HTTPS 可访问地址。
+
+`ingest(session:)` 的 exhaustive switch 加 `.fetchWorkspacesResponse` 到 `break` 分支（编译错误，已修）。
+
+**视图层**（`ConversationView.swift`）：
+
+加 `@State private var gitHubUrl: String? = nil`。`.task(id: agentId)` 里异步调 `app.fetchGitHubUrl(for: cwd)` 填充。toolbar 加条件 `ToolbarItem`：`if let urlStr = gitHubUrl, let url = URL(string: urlStr)` 才显示，图标 `arrow.up.right.square`，点击 `NSWorkspace.shared.open(url)`。切换会话时在 `.onChange(of: agentId)` 里清零 `gitHubUrl = nil`。
+
+#### 4. 去掉 hover 复制 + 加右键菜单（`ConversationView.swift`）
+
+删掉 `@State private var isHoveredForCopy: Bool`，`assistantTimelineItem` 不再有 `.onHover` + 背景色变化。
+
+assistant bubble 和 user bubble 各加 `.contextMenu { Button("Copy text") { ... } }`，使用标准 macOS 右键菜单复制纯文本。
+
+代码块里的 copy button（`CodeBlockView`）不受影响，继续独立工作。
+
+#### 5. 子 agent 图标（`ConversationView.swift`）
+
+`ToolRowTimeline.summaryRow` 的 leading 加了一个 `Image(systemName: info.iconName)` 小图标（10pt medium weight），之前 `iconName` 存在 `info` 里但没渲染出来。子 agent 类型的 tool row（`iconName = "person.2"`）现在在折叠后的摘要行里能和普通工具调用区分开。
+
+### 文件清单
+
+| 文件 | 改动 |
+|---|---|
+| `Protocol.swift` | 新增 4 个 struct + 2 个 enum case |
+| `DaemonClient.swift` | 新增 `fetchWorkspaceGitRemote(cwd:)` + dispatch 分支 |
+| `AppViewModel.swift` | 新增 `fetchGitHubUrl` / `parseGitHubUrl` / cache；ingest switch 补 case |
+| `MarkdownRender.swift` | 新增 `autoLinkURLs(in:)` + `import AppKit` |
+| `ConversationView.swift` | 时间戳、GitHub 按钮、URL 展示、去 hover 复制、加 contextMenu、子 agent 图标 |
+
+### 版本
+
+commits `330e516`（主改动）+ `5d505ba`（修 exhaustive switch 编译错误）。Air 上 `swift build -c release` 通过（0 error，若干历史 warning），`scripts/bundle.sh release` 打包，已覆盖 `/Applications/PaseoMac.app`。
