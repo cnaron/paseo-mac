@@ -376,10 +376,6 @@ final class AppViewModel {
             vm.composerText = restoreText
             vm.pendingImages = restoreImages
         }
-        pendingNewAgentCwd = nil
-        pendingNewAgentModel = nil
-        pendingNewAgentModeId = nil
-        pendingNewAgentThinkingOptionId = nil
         creatingAgentText = text
         creatingAgentImages = images
         creatingAgentError = nil
@@ -420,13 +416,21 @@ final class AppViewModel {
             }
         }
         var agentId = detected
-        if agentId == nil {
-            for _ in 0..<10 {
+        // Even if we 'detected' the ID via turnStarted, we must ensure it's
+        // in the `agents` list so it shows up in the sidebar. Stream events
+        // often arrive before the list is updated via agent_status, and we
+        // want to avoid the "blank sidebar" gap.
+        if agentId == nil || !agents.contains(where: { $0.id == agentId }) {
+            for _ in 0..<15 { // Up to 3s of polling
+                if let aid = agentId, agents.contains(where: { $0.id == aid }) {
+                    break
+                }
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 try? await refreshAgents()
-                if let newAgent = agents.first(where: { !knownAgentIds.contains($0.id) }) {
-                    agentId = newAgent.id
-                    break
+                if agentId == nil {
+                    if let newAgent = agents.first(where: { !knownAgentIds.contains($0.id) }) {
+                        agentId = newAgent.id
+                    }
                 }
             }
         }
@@ -436,6 +440,13 @@ final class AppViewModel {
             return
         }
         EventLogger.shared.log("create_agent", "detected", ["agent": agentId])
+        // Clear pending placeholder state ONLY after the real agent is ready
+        // and in the list, to keep the sidebar from flickering empty.
+        pendingNewAgentCwd = nil
+        pendingNewAgentModel = nil
+        pendingNewAgentModeId = nil
+        pendingNewAgentThinkingOptionId = nil
+
         // Image-only path: pre-populate optimistic user row and sendMessage.
         if !images.isEmpty {
             let vm = conversation(for: agentId)
@@ -520,13 +531,21 @@ final class AppViewModel {
             }
         }
         var agentId = detected
-        if agentId == nil {
-            for _ in 0..<10 {
+        // Even if we 'detected' the ID via turnStarted, we must ensure it's
+        // in the `agents` list so it shows up in the sidebar. Stream events
+        // often arrive before the list is updated via agent_status, and we
+        // want to avoid the "blank sidebar" gap.
+        if agentId == nil || !agents.contains(where: { $0.id == agentId }) {
+            for _ in 0..<15 { // Up to 3s of polling
+                if let aid = agentId, agents.contains(where: { $0.id == aid }) {
+                    break
+                }
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 try? await refreshAgents()
-                if let newAgent = agents.first(where: { !knownAgentIds.contains($0.id) }) {
-                    agentId = newAgent.id
-                    break
+                if agentId == nil {
+                    if let newAgent = agents.first(where: { !knownAgentIds.contains($0.id) }) {
+                        agentId = newAgent.id
+                    }
                 }
             }
         }
