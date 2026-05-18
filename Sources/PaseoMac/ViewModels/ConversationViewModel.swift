@@ -581,7 +581,20 @@ final class ConversationViewModel {
                     "agent": agentId, "durSec": Int(dur)
                 ])
             }
-            lastTurnModel = currentTurnModel
+            if case let .turnFailed(rawErr) = streamEvent {
+                var displayErr = rawErr
+                // Heuristic: if the daemon sends an unformatted JS object,
+                // try to find the actual error message in the timeline we just received.
+                if displayErr == "[object Object]" {
+                    if let lastRowErr = rows.last(where: { $0.kind == "error" })?.text {
+                        displayErr = lastRowErr
+                    } else {
+                        displayErr = "Backend internal error (unspecified)"
+                    }
+                }
+                self.lastError = displayErr
+            }
+            flushQueueIfNeeded()
                 ?? rows.last(where: { $0.modelUsed != nil })?.modelUsed
             turnStartedAt = nil
             // Stamp duration + resolved model onto the last assistant row so
