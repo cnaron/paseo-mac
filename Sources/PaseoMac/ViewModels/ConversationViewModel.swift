@@ -595,6 +595,8 @@ final class ConversationViewModel {
                 self.lastError = displayErr
             }
             flushQueueIfNeeded()
+            let m = currentTurnModel
+                ?? lastTurnModel
                 ?? rows.last(where: { $0.modelUsed != nil })?.modelUsed
             turnStartedAt = nil
             // Stamp duration + resolved model onto the last assistant row so
