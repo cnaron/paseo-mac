@@ -585,11 +585,11 @@ final class ConversationViewModel {
                 var displayErr = rawErr
                 // Heuristic: if the daemon sends an unformatted JS object,
                 // try to find the actual error message in the timeline we just received.
-                if displayErr == "[object Object]" {
-                    if let lastRowErr = rows.last(where: { $0.kind == "error" })?.text {
+                if displayErr.contains("[object Object]") {
+                    if let lastRowErr = rows.last(where: { $0.kind == "error" && !$0.text.contains("[object Object]") })?.text {
                         displayErr = lastRowErr
                     } else {
-                        displayErr = "Backend internal error (unspecified)"
+                        displayErr = "Backend internal error (unformatted JS error). This often indicates an API Quota limit or transient network failure."
                     }
                 }
                 self.lastError = displayErr

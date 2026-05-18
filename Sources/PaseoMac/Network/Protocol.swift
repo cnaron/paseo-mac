@@ -653,7 +653,11 @@ enum TimelineItem: Decodable, Hashable, Sendable {
         case .toolCall(let name, let status, _, _): "\(name) · \(status)"
         case .todo(let items):
             items.map { ($0.completed ? "[x] " : "[ ] ") + $0.text }.joined(separator: "\n")
-        case .error(let m): m
+        case .error(let m):
+            if m.contains("[object Object]") {
+                return "Backend internal error (Quota limit or API failure)"
+            }
+            return m
         case .other(let t): "[\(t)]"
         }
     }
