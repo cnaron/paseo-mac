@@ -713,6 +713,11 @@ final class AppViewModel {
             url = "https://github.com/" + url.dropFirst("git@github.com:".count)
         }
         if url.hasSuffix(".git") { url = String(url.dropLast(4)) }
+        if url.contains("/git-mirrors/") {
+            if let repo = url.split(separator: "/").last {
+                return "https://github.com/cnaron/\(repo)"
+            }
+        }
         guard url.contains("github.com") else { return nil }
         return url
     }
