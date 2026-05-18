@@ -239,8 +239,10 @@ struct ProviderIcon: View {
 
     private static func brandImage(for provider: String?) -> NSImage? {
         guard let name = brandAssetName(for: provider) else { return nil }
-        return NSImage(named: name)
-            ?? (Bundle.main.path(forResource: name, ofType: "png").flatMap { NSImage(contentsOfFile: $0) })
+        guard let nsImage = NSImage(named: name)
+            ?? (Bundle.main.path(forResource: name, ofType: "png").flatMap { NSImage(contentsOfFile: $0) }) else { return nil }
+        nsImage.size = NSSize(width: 16, height: 16)
+        return nsImage
     }
 
     private static func brandAssetName(for provider: String?) -> String? {

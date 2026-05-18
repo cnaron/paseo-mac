@@ -146,12 +146,18 @@ struct ConversationView: View {
                 Menu {
                     ForEach(branchTargets, id: \.provider) { entry in
                         Button {
-                            Task { await app.branchAgent(fromAgentId: agentId, newProvider: entry.provider) }
+                            Task {
+                                // Allow the menu to close before triggering a state change
+                                // that replaces the ConversationView identity. Otherwise AppKit
+                                // gets stuck in its menu tracking runloop.
+                                try? await Task.sleep(nanoseconds: 200_000_000)
+                                await app.branchAgent(fromAgentId: agentId, newProvider: entry.provider)
+                            }
                         } label: {
                             Label {
                                 Text(entry.label + (entry.isCurrent ? " (current)" : ""))
                             } icon: {
-                                ProviderIcon(provider: entry.provider)
+                                Image(systemName: ProviderIcon.symbolName(for: entry.provider))
                             }
                         }
                         .disabled(entry.isCurrent || entry.status != "ready")

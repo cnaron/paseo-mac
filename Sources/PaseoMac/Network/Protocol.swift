@@ -600,7 +600,7 @@ enum TimelineItem: Decodable, Hashable, Sendable {
         let completed: Bool
     }
 
-    private enum Keys: String, CodingKey { case type, text, messageId, name, status, callId, detail, items, message }
+    private enum Keys: String, CodingKey { case type, text, messageId, name, status, callId, id, detail, items, message }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
@@ -620,7 +620,7 @@ enum TimelineItem: Decodable, Hashable, Sendable {
             self = .toolCall(
                 name: (try? c.decode(String.self, forKey: .name)) ?? "",
                 status: (try? c.decode(String.self, forKey: .status)) ?? "",
-                callId: (try? c.decode(String.self, forKey: .callId)) ?? "",
+                callId: (try? c.decode(String.self, forKey: .id)) ?? (try? c.decode(String.self, forKey: .callId)) ?? "",
                 detail: detail
             )
         case "todo":

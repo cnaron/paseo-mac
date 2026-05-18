@@ -452,10 +452,15 @@ actor DaemonClient {
         guard case let .fetchWorkspacesResponse(resp) = reply else {
             throw DaemonError.protocolError("Expected fetch_workspaces_response, got \(reply)")
         }
-        let workspace = resp.payload.entries.first { ws in
-            ws.workspaceDirectory == cwd || ws.projectRootPath == cwd
+        let match = resp.payload.entries.filter { ws in
+            let dir = ws.workspaceDirectory ?? ws.projectRootPath
+            return cwd == dir || cwd.hasPrefix(dir + "/") || cwd == ws.projectRootPath || cwd.hasPrefix(ws.projectRootPath + "/")
+        }.max { a, b in
+            let aLen = (a.workspaceDirectory ?? a.projectRootPath).count
+            let bLen = (b.workspaceDirectory ?? b.projectRootPath).count
+            return aLen < bLen
         }
-        return workspace?.gitRuntime?.remoteUrl
+        return match?.gitRuntime?.remoteUrl
     }
 
     func getProvidersSnapshot(cwd: String? = nil) async throws -> [ProviderSnapshot] {
