@@ -383,7 +383,14 @@ private func groupRows(_ rows: [ConversationViewModel.Row]) -> [BubbleGroup] {
         if row.kind == "tool", let info = row.tool,
            let last = out.last, last.kind == "tool_cluster" {
             var cluster = last.toolCluster
-            cluster.append(info)
+            if shouldFoldToolEmit(into: cluster.last, info: info) {
+                // Same call's lifecycle update (running → running with target,
+                // or running → completed). Daemon emits these as separate
+                // rows when callId is empty, so collapse here. Latest wins.
+                cluster[cluster.count - 1] = info
+            } else {
+                cluster.append(info)
+            }
             out.removeLast()
             out.append(BubbleGroup(
                 id: last.id,
@@ -449,6 +456,24 @@ private func groupRows(_ rows: [ConversationViewModel.Row]) -> [BubbleGroup] {
         }
     }
     return out
+}
+
+/// Decide whether a new tool emit is just a lifecycle update of the last one
+/// in the cluster, vs a genuinely new call. We only fold when the prior entry
+/// is still `running` (sealed entries — completed/failed — never absorb
+/// subsequent ones) and the names match. Targets must match unless one side
+/// is empty, which is how the daemon's initial running emit looks before the
+/// argument detail arrives.
+private func shouldFoldToolEmit(
+    into last: ConversationViewModel.ToolInfo?,
+    info: ConversationViewModel.ToolInfo
+) -> Bool {
+    guard let last = last else { return false }
+    guard last.status == "running" else { return false }
+    guard last.name == info.name else { return false }
+    let lt = last.target ?? ""
+    let it = info.target ?? ""
+    return lt == it || lt.isEmpty || it.isEmpty
 }
 
 // MARK: - Timeline grouping helper
