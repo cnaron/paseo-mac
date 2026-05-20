@@ -151,3 +151,108 @@ public enum PendingFileError: LocalizedError {
         }
     }
 }
+
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
+
+public extension PendingImageAttachment {
+    static func from(image: PlatformImage) -> PendingImageAttachment? {
+        #if os(macOS)
+        let rep: NSBitmapImageRep?
+        if let tiff = image.tiffRepresentation {
+            rep = NSBitmapImageRep(data: tiff)
+        } else {
+            rep = image.representations.compactMap { $0 as? NSBitmapImageRep }
+                .max(by: { $0.pixelsWide < $1.pixelsWide })
+        }
+        guard let bitmapRep = rep else { return nil }
+        let srcW = bitmapRep.pixelsWide; let srcH = bitmapRep.pixelsHigh
+        let longEdge = max(srcW, srcH)
+        let scale: CGFloat = longEdge > 1280 ? 1280 / CGFloat(longEdge) : 1.0
+        let dstW = max(Int(CGFloat(srcW) * scale), 1); let dstH = max(Int(CGFloat(srcH) * scale), 1)
+        guard let cg = bitmapRep.cgImage else { return nil }
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let ctx = CGContext(data: nil, width: dstW, height: dstH, bitsPerComponent: 8,
+                                  bytesPerRow: 0, space: colorSpace,
+                                  bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return nil }
+        ctx.interpolationQuality = .high
+        ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+        ctx.fill(CGRect(x: 0, y: 0, width: dstW, height: dstH))
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: dstW, height: dstH))
+        guard let resized = ctx.makeImage() else { return nil }
+        let resizedRep = NSBitmapImageRep(cgImage: resized)
+        let id = UUID()
+        let cacheDir = PendingImageAttachment.cacheDirectory()
+        if let jpeg = resizedRep.representation(using: .jpeg, properties: [.compressionFactor: 0.75]) {
+            let fileURL = cacheDir.appendingPathComponent("\(id.uuidString).jpg")
+            guard (try? jpeg.write(to: fileURL, options: .atomic)) != nil else { return nil }
+            return PendingImageAttachment(id: id, fileURL: fileURL, width: dstW, height: dstH, mimeType: "image/jpeg")
+        }
+        guard let png = resizedRep.representation(using: .png, properties: [.interlaced: false]) else { return nil }
+        let fileURL = cacheDir.appendingPathComponent("\(id.uuidString).png")
+        guard (try? png.write(to: fileURL, options: .atomic)) != nil else { return nil }
+        return PendingImageAttachment(id: id, fileURL: fileURL, width: dstW, height: dstH, mimeType: "image/png")
+        #else
+        let srcW = Int(image.size.width * image.scale)
+        let srcH = Int(image.size.height * image.scale)
+        let maxEdge: CGFloat = 1280
+        let longEdge = max(srcW, srcH)
+        let scale: CGFloat = longEdge > Int(maxEdge) ? maxEdge / CGFloat(longEdge) : 1.0
+        let dstW = max(Int(CGFloat(srcW) * scale), 1)
+        let dstH = max(Int(CGFloat(srcH) * scale), 1)
+
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: dstW, height: dstH))
+        let resized = renderer.image { _ in
+            UIColor.white.setFill()
+            UIRectFill(CGRect(origin: .zero, size: CGSize(width: dstW, height: dstH)))
+            image.draw(in: CGRect(origin: .zero, size: CGSize(width: dstW, height: dstH)))
+        }
+
+        let id = UUID()
+        let cacheDir = PendingImageAttachment.cacheDirectory()
+        guard let jpegData = resized.jpegData(compressionQuality: 0.75) else { return nil }
+        let fileURL = cacheDir.appendingPathComponent("\(id.uuidString).jpg")
+        guard (try? jpegData.write(to: fileURL, options: .atomic)) != nil else { return nil }
+        return PendingImageAttachment(id: id, fileURL: fileURL, width: dstW, height: dstH, mimeType: "image/jpeg")
+        #endif
+    }
+
+    static func fromFileURL(_ url: URL) -> PendingImageAttachment? {
+        #if os(macOS)
+        guard let image = NSImage(contentsOf: url) else { return nil }
+        return from(image: image)
+        #else
+        guard let image = UIImage(contentsOfFile: url.path) else { return nil }
+        return from(image: image)
+        #endif
+    }
+
+    func thumbnail(maxDim: CGFloat = 64) -> PlatformImage? {
+        #if os(macOS)
+        guard let src = NSImage(contentsOf: fileURL) else { return nil }
+        let ratio = CGFloat(width) / max(CGFloat(height), 1)
+        let size: CGSize = ratio >= 1
+            ? CGSize(width: maxDim, height: maxDim / ratio)
+            : CGSize(width: maxDim * ratio, height: maxDim)
+        let thumb = NSImage(size: size)
+        thumb.lockFocus()
+        src.draw(in: CGRect(origin: .zero, size: size))
+        thumb.unlockFocus()
+        return thumb
+        #else
+        guard let src = UIImage(contentsOfFile: fileURL.path) else { return nil }
+        let ratio = CGFloat(width) / max(CGFloat(height), 1)
+        let size: CGSize = ratio >= 1
+            ? CGSize(width: maxDim, height: maxDim / ratio)
+            : CGSize(width: maxDim * ratio, height: maxDim)
+        UIGraphicsBeginImageContextWithOptions(size, false, 0.0)
+        src.draw(in: CGRect(origin: .zero, size: size))
+        let thumb = UIGraphicsGetImageFromCurrentImageContext()
+        UIGraphicsEndImageContext()
+        return thumb
+        #endif
+    }
+}
