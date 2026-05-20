@@ -1034,6 +1034,44 @@ public struct AgentSnapshot: Decodable, Sendable, Identifiable, Hashable {
     public let requiresAttention: Bool?
     public let attentionReason: String?
 
+    public init(
+        id: String,
+        provider: String?,
+        cwd: String,
+        status: String,
+        title: String?,
+        createdAt: String,
+        updatedAt: String,
+        lastUserMessageAt: String?,
+        model: String?,
+        thinkingOptionId: String?,
+        effectiveThinkingOptionId: String?,
+        currentModeId: String?,
+        availableModes: [AgentMode]?,
+        lastUsage: AgentUsage?,
+        archivedAt: String?,
+        requiresAttention: Bool?,
+        attentionReason: String?
+    ) {
+        self.id = id
+        self.provider = provider
+        self.cwd = cwd
+        self.status = status
+        self.title = title
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.lastUserMessageAt = lastUserMessageAt
+        self.model = model
+        self.thinkingOptionId = thinkingOptionId
+        self.effectiveThinkingOptionId = effectiveThinkingOptionId
+        self.currentModeId = currentModeId
+        self.availableModes = availableModes
+        self.lastUsage = lastUsage
+        self.archivedAt = archivedAt
+        self.requiresAttention = requiresAttention
+        self.attentionReason = attentionReason
+    }
+
     public var displayName: String {
         if let t = title, !t.isEmpty { return t }
         return String(id.prefix(8))
