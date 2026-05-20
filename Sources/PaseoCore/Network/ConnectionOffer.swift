@@ -7,14 +7,14 @@ import Foundation
 /// { "v": 2, "serverId": "srv_xxx", "daemonPublicKeyB64": "...",
 ///   "relay": { "endpoint": "relay.example.com:443" } }
 /// ```
-struct ConnectionOffer: Sendable, Hashable {
-    let serverId: String
-    let daemonPublicKeyB64: String
-    let relayEndpoint: String   // e.g. "relay.example.com:443"
+public struct ConnectionOffer: Sendable, Hashable {
+    public let serverId: String
+    public let daemonPublicKeyB64: String
+    public let relayEndpoint: String   // e.g. "relay.example.com:443"
 
     /// Parses `https://app.paseo.sh/#offer=<base64>`, a `paseo://` link, or the raw
     /// base64 payload. Also accepts plain JSON for testing.
-    static func parse(_ raw: String) throws -> ConnectionOffer {
+    public static func parse(_ raw: String) throws -> ConnectionOffer {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
 
         // 1) Try as URL with `offer=<b64>` in fragment or query.
@@ -99,12 +99,12 @@ struct ConnectionOffer: Sendable, Hashable {
     }
 }
 
-enum ConnectionOfferError: Error, LocalizedError {
+public enum ConnectionOfferError: Error, LocalizedError {
     case unrecognizedInput
     case invalidBase64
     case unsupportedVersion(Int)
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .unrecognizedInput: "Could not parse offer (expected paseo://..., https://app.paseo.sh/#offer=..., base64, or JSON)"
         case .invalidBase64: "Offer is not valid base64"
@@ -116,7 +116,7 @@ enum ConnectionOfferError: Error, LocalizedError {
 extension ConnectionOffer {
     /// Relay WS URL that the mobile/desktop client should connect to.
     /// Matches `buildRelayWebSocketUrl` in packages/server's daemon-endpoints.ts.
-    func relayWebSocketURL() throws -> URL {
+    public func relayWebSocketURL() throws -> URL {
         let (host, port, isIPv6) = try parseHostPort(relayEndpoint)
         let scheme = port == 443 ? "wss" : "ws"
         let hostPart = isIPv6 ? "[\(host)]" : host

@@ -11,8 +11,8 @@ import Foundation
 /// Intended for post-hoc diagnosis ("show me what happened around 14:32") not
 /// real-time monitoring. SSH-tail with:
 ///     ssh naron@100.112.136.122 'tail -f ~/Library/Logs/PaseoMac/paseomac.log'
-final class EventLogger: @unchecked Sendable {
-    static let shared = EventLogger()
+public final class EventLogger: @unchecked Sendable {
+    public static let shared = EventLogger()
 
     private let queue = DispatchQueue(label: "paseomac.logger", qos: .utility)
     private let url: URL
@@ -36,7 +36,7 @@ final class EventLogger: @unchecked Sendable {
     /// Lightweight enqueue. The fields dictionary is captured by value but
     /// rendering happens on the background queue, so the caller pays only for
     /// the dictionary allocation and the async hop.
-    func log(_ area: String, _ event: String, _ fields: [String: Any] = [:]) {
+    public func log(_ area: String, _ event: String, _ fields: [String: Any] = [:]) {
         let ts = iso.string(from: Date())
         queue.async { [weak self] in
             self?.write(ts: ts, area: area, event: event, fields: fields)

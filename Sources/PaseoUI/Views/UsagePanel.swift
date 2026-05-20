@@ -3,19 +3,32 @@ import Foundation
 
 // MARK: - Data (shared with AppViewModel)
 
-struct ClaudeUsageData {
-    let planName: String
-    let fiveHour: Int?
-    let sevenDay: Int?
-    let fiveHourResetAt: Date?
-    let sevenDayResetAt: Date?
-    let sevenDaySonnet: Int?
-    let sevenDaySonnetResetAt: Date?
-    let sevenDayOpus: Int?
-    let sevenDayOpusResetAt: Date?
-    let fetchedAt: Date
+public struct ClaudeUsageData {
+    public let planName: String
+    public let fiveHour: Int?
+    public let sevenDay: Int?
+    public let fiveHourResetAt: Date?
+    public let sevenDayResetAt: Date?
+    public let sevenDaySonnet: Int?
+    public let sevenDaySonnetResetAt: Date?
+    public let sevenDayOpus: Int?
+    public let sevenDayOpusResetAt: Date?
+    public let fetchedAt: Date
 
-    var fetchedTimestamp: String {
+    public init(planName: String, fiveHour: Int?, sevenDay: Int?, fiveHourResetAt: Date?, sevenDayResetAt: Date?, sevenDaySonnet: Int?, sevenDaySonnetResetAt: Date?, sevenDayOpus: Int?, sevenDayOpusResetAt: Date?, fetchedAt: Date) {
+        self.planName = planName
+        self.fiveHour = fiveHour
+        self.sevenDay = sevenDay
+        self.fiveHourResetAt = fiveHourResetAt
+        self.sevenDayResetAt = sevenDayResetAt
+        self.sevenDaySonnet = sevenDaySonnet
+        self.sevenDaySonnetResetAt = sevenDaySonnetResetAt
+        self.sevenDayOpus = sevenDayOpus
+        self.sevenDayOpusResetAt = sevenDayOpusResetAt
+        self.fetchedAt = fetchedAt
+    }
+
+    public var fetchedTimestamp: String {
         let f = DateFormatter()
         f.dateFormat = "HH:mm"
         return f.string(from: fetchedAt)

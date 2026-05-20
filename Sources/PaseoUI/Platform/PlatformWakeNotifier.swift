@@ -5,5 +5,6 @@ public protocol PlatformWakeNotifier: Sendable {
 }
 
 public struct NoOpWakeNotifier: PlatformWakeNotifier {
+    public init() {}
     public func observe(handler: @escaping @Sendable () -> Void) {}
 }

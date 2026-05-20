@@ -6,11 +6,11 @@ import Foundation
 ///
 /// - `direct`: a plain WebSocket to the daemon (typically localhost, optionally through an SSH tunnel).
 /// - `relay`: traverse a Paseo relay server with E2EE via `ConnectionOffer`.
-enum DaemonEndpoint: Sendable, Hashable {
+public enum DaemonEndpoint: Sendable, Hashable {
     case direct(host: String, port: Int, clientId: String)
     case relay(offer: ConnectionOffer, clientId: String)
 
-    var clientId: String {
+    public var clientId: String {
         switch self {
         case .direct(_, _, let id): id
         case .relay(_, let id): id
@@ -18,27 +18,27 @@ enum DaemonEndpoint: Sendable, Hashable {
     }
 
     /// Label used in error messages and logs.
-    var displayName: String {
+    public var displayName: String {
         switch self {
         case .direct(let host, let port, _): "\(host):\(port)"
         case .relay(let offer, _): "relay \(offer.relayEndpoint)/\(offer.serverId)"
         }
     }
 
-    static func directLocalhost() -> DaemonEndpoint {
+    public static func directLocalhost() -> DaemonEndpoint {
         .direct(host: "localhost", port: 6767, clientId: "cid_paseomac_\(UUID().uuidString.prefix(16))")
     }
 }
 
 // MARK: - Errors
 
-enum DaemonError: Error, LocalizedError {
+public enum DaemonError: Error, LocalizedError {
     case notConnected
     case protocolError(String)
     case rpcFailed(String)
     case rpcTimeout
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .notConnected: "Daemon is not connected."
         case .protocolError(let m): "Protocol error: \(m)"
@@ -56,7 +56,7 @@ enum DaemonError: Error, LocalizedError {
 /// Two transports are supported: a direct WebSocket (for loopback / SSH-tunnel use),
 /// and a relay-backed E2EE channel (`RelayChannel`) when connecting through a
 /// Paseo relay server. Both behave identically from the caller's perspective.
-actor DaemonClient {
+public actor DaemonClient {
     private let endpoint: DaemonEndpoint
     private let session: URLSession
 
@@ -89,10 +89,10 @@ actor DaemonClient {
     private var connectedAt: Date?
 
     /// Fires for every inbound session message we didn't match to a pending request.
-    let events: AsyncStream<SessionInbound>
+    public let events: AsyncStream<SessionInbound>
     private let eventContinuation: AsyncStream<SessionInbound>.Continuation
 
-    init(endpoint: DaemonEndpoint, session: URLSession = .shared) {
+    public init(endpoint: DaemonEndpoint, session: URLSession = .shared) {
         self.endpoint = endpoint
         self.session = session
         var cont: AsyncStream<SessionInbound>.Continuation!
@@ -102,7 +102,7 @@ actor DaemonClient {
 
     // MARK: - Lifecycle
 
-    func connect() async throws {
+    public func connect() async throws {
         guard transport == nil else { return }
 
         switch endpoint {
@@ -126,7 +126,7 @@ actor DaemonClient {
 
     /// How long this connection has been alive. Used by AppViewModel to
     /// stamp `secondsAlive` onto the disconnect log line.
-    func aliveDuration() -> TimeInterval {
+    public func aliveDuration() -> TimeInterval {
         guard let connectedAt else { return 0 }
         return Date().timeIntervalSince(connectedAt)
     }
@@ -196,7 +196,7 @@ actor DaemonClient {
         // and call failAllPending, which finishes eventContinuation.
     }
 
-    func disconnect() {
+    public func disconnect() {
         keepaliveTask?.cancel()
         keepaliveTask = nil
         receiveTask?.cancel()
@@ -259,7 +259,7 @@ actor DaemonClient {
 
     // MARK: - Public RPCs
 
-    func listAgents(limit: Int = 100) async throws -> [AgentSnapshot] {
+    public func listAgents(limit: Int = 100) async throws -> [AgentSnapshot] {
         let requestId = UUID().uuidString
         let req = FetchAgentsRequest(
             requestId: requestId,
@@ -277,7 +277,7 @@ actor DaemonClient {
         return resp.payload.agents
     }
 
-    func listArchivedAgents(limit: Int = 200) async throws -> [AgentSnapshot] {
+    public func listArchivedAgents(limit: Int = 200) async throws -> [AgentSnapshot] {
         let requestId = UUID().uuidString
         let req = FetchAgentsRequest(
             requestId: requestId,
@@ -293,7 +293,7 @@ actor DaemonClient {
         return resp.payload.agents.filter { $0.archivedAt != nil }
     }
 
-    func fetchTimeline(
+    public func fetchTimeline(
         agentId: String,
         direction: String = "tail",
         cursor: AgentTimelineCursor? = nil,
@@ -323,7 +323,7 @@ actor DaemonClient {
     }
 
     @discardableResult
-    func sendMessage(
+    public func sendMessage(
         agentId: String,
         text: String,
         messageId: String? = nil,
@@ -352,7 +352,7 @@ actor DaemonClient {
     }
 
     @discardableResult
-    func setAgentMode(agentId: String, modeId: String) async throws -> AckResponsePayload {
+    public func setAgentMode(agentId: String, modeId: String) async throws -> AckResponsePayload {
         let requestId = UUID().uuidString
         let req = SetAgentModeRequest(requestId: requestId, agentId: agentId, modeId: modeId)
         let reply = try await requestResponse(requestId: requestId, outbound: .session(.setAgentMode(req)))
@@ -364,7 +364,7 @@ actor DaemonClient {
     }
 
     @discardableResult
-    func setAgentModel(agentId: String, modelId: String?) async throws -> AckResponsePayload {
+    public func setAgentModel(agentId: String, modelId: String?) async throws -> AckResponsePayload {
         let requestId = UUID().uuidString
         let req = SetAgentModelRequest(requestId: requestId, agentId: agentId, modelId: modelId)
         let reply = try await requestResponse(requestId: requestId, outbound: .session(.setAgentModel(req)))
@@ -376,7 +376,7 @@ actor DaemonClient {
     }
 
     @discardableResult
-    func setAgentThinking(agentId: String, thinkingOptionId: String?) async throws -> AckResponsePayload {
+    public func setAgentThinking(agentId: String, thinkingOptionId: String?) async throws -> AckResponsePayload {
         let requestId = UUID().uuidString
         let req = SetAgentThinkingRequest(
             requestId: requestId, agentId: agentId, thinkingOptionId: thinkingOptionId
@@ -390,7 +390,7 @@ actor DaemonClient {
     }
 
     @discardableResult
-    func cancelAgent(agentId: String) async throws -> CancelAgentResponse.Payload {
+    public func cancelAgent(agentId: String) async throws -> CancelAgentResponse.Payload {
         let requestId = UUID().uuidString
         let req = CancelAgentRequest(requestId: requestId, agentId: agentId)
         let reply = try await requestResponse(requestId: requestId, outbound: .session(.cancelAgent(req)))
@@ -400,7 +400,7 @@ actor DaemonClient {
         return resp.payload
     }
 
-    func createAgent(
+    public func createAgent(
         cwd: String,
         provider: String,
         model: String? = nil,
@@ -425,7 +425,7 @@ actor DaemonClient {
     /// `.allow(updatedInput:)` carrying the questions + answers. For a tool
     /// permission, pass `.allow(updatedInput: nil)` to approve, or
     /// `.deny(message:)` to reject.
-    func respondPermission(
+    public func respondPermission(
         agentId: String,
         requestId: String,
         response: AgentPermissionResponseRequest.Response
@@ -438,14 +438,14 @@ actor DaemonClient {
         try await rawSend(.session(.agentPermissionResponse(req)))
     }
 
-    func archiveAgent(agentId: String) async throws {
+    public func archiveAgent(agentId: String) async throws {
         let requestId = UUID().uuidString
         let req = ArchiveAgentRequest(requestId: requestId, agentId: agentId)
         try await rawSend(.session(.archiveAgent(req)))
     }
 
     /// Returns the git remote URL for the workspace at `cwd`, or nil if not a git repo / no remote.
-    func fetchWorkspaceGitRemote(cwd: String) async throws -> String? {
+    public func fetchWorkspaceGitRemote(cwd: String) async throws -> String? {
         let requestId = UUID().uuidString
         let req = FetchWorkspacesRequest(requestId: requestId)
         let reply = try await requestResponse(requestId: requestId, outbound: .session(.fetchWorkspaces(req)))
@@ -463,7 +463,7 @@ actor DaemonClient {
         return match?.gitRuntime?.remoteUrl
     }
 
-    func getProvidersSnapshot(cwd: String? = nil) async throws -> [ProviderSnapshot] {
+    public func getProvidersSnapshot(cwd: String? = nil) async throws -> [ProviderSnapshot] {
         let requestId = UUID().uuidString
         let req = GetProvidersSnapshotRequest(requestId: requestId, cwd: cwd)
         let reply = try await requestResponse(requestId: requestId, outbound: .session(.getProvidersSnapshot(req)))

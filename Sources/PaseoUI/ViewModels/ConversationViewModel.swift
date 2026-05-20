@@ -11,36 +11,36 @@ import Observation
 /// needed — the daemon hands us finalized rows.
 @MainActor
 @Observable
-final class ConversationViewModel {
+public final class ConversationViewModel {
 
-    struct Row: Identifiable, Hashable {
-        let id: String
-        let kind: String          // "user", "assistant", "reasoning", "tool", "todo", "error", "other"
-        let text: String
-        let timestamp: String?
+    public struct Row: Identifiable, Hashable {
+        public let id: String
+        public let kind: String          // "user", "assistant", "reasoning", "tool", "todo", "error", "other"
+        public let text: String
+        public let timestamp: String?
         /// Populated only when `kind == "tool"`. Carries the structured name,
         /// target, status, and an optional long-form detail that the tool row
         /// in the UI can expand on click.
-        let tool: ToolInfo?
+        public let tool: ToolInfo?
         /// Images the user attached to this message. Populated on the local
         /// optimistic row; preserved across the server's user_message echo
         /// (which doesn't ship the image bytes back).
-        let images: [PendingImageAttachment]
+        public let images: [PendingImageAttachment]
 
         /// Model the agent was running with when this row was produced.
         /// Populated on live streaming so a subsequent model switch shows up
         /// as a differently-tagged chip on the next assistant turn.
-        let modelUsed: String?
+        public let modelUsed: String?
         /// Wall-clock seconds the turn took. Only set on the last assistant
         /// row of a turn, after turn_completed/failed/canceled arrives.
-        var durationSec: TimeInterval?
+        public var durationSec: TimeInterval?
         /// Set on permission/attention rows so the View can collapse them
         /// after `permission_resolved` arrives — otherwise the row falls
         /// back to a stale Allow/Deny banner that still appears to ask the
         /// user for input even though the answer already went through.
-        let permissionRequestId: String?
+        public let permissionRequestId: String?
 
-        init(
+        public init(
             id: String,
             kind: String,
             text: String,
@@ -66,7 +66,7 @@ final class ConversationViewModel {
     /// Shape of a tool's expanded detail. Drives the picker in ToolRow so
     /// each tool type can use the most readable rendering: plain monospace,
     /// colored +/- unified-diff lines, or a before/after split for edits.
-    enum DetailKind: Hashable {
+    public enum DetailKind: Hashable {
         case none
         case plain(text: String, monospaced: Bool)
         case beforeAfter(before: String, after: String)
@@ -75,16 +75,16 @@ final class ConversationViewModel {
 
     /// UI-facing tool summary built from `ToolDetail`. Keeps presentation logic
     /// (icon pick, target formatting, detail body) in one place.
-    struct ToolInfo: Hashable {
-        let name: String             // "Edit", "Bash", "WebSearch", ...
-        let target: String?          // file path, command, query — one-line summary
-        let status: String           // "running" | "completed" | "failed" | "canceled"
-        let iconName: String         // SF Symbol
-        let detailKind: DetailKind
+    public struct ToolInfo: Hashable {
+        public let name: String             // "Edit", "Bash", "WebSearch", ...
+        public let target: String?          // file path, command, query — one-line summary
+        public let status: String           // "running" | "completed" | "failed" | "canceled"
+        public let iconName: String         // SF Symbol
+        public let detailKind: DetailKind
 
         /// Plain single-string version of the detail for tools that need it
         /// (e.g. to drop into a truncated preview). Returns "" for .none.
-        var detailPlain: String {
+        public var detailPlain: String {
             switch detailKind {
             case .none: return ""
             case .plain(let t, _): return t
@@ -93,7 +93,7 @@ final class ConversationViewModel {
             }
         }
 
-        var hasDetail: Bool {
+        public var hasDetail: Bool {
             switch detailKind {
             case .none: return false
             case .plain(let t, _): return !t.isEmpty
@@ -102,7 +102,7 @@ final class ConversationViewModel {
             }
         }
 
-        static func from(name: String, status: String, detail: ToolDetail) -> ToolInfo {
+        public static func from(name: String, status: String, detail: ToolDetail) -> ToolInfo {
             switch detail {
             case .shell(let cmd, _, let output, let exit):
                 let target = cmd.split(separator: "\n").first.map(String.init) ?? cmd
@@ -220,44 +220,44 @@ final class ConversationViewModel {
         }
     }
 
-    let agentId: String
+    public let agentId: String
 
-    var rows: [Row] = []
-    var isLoading: Bool = false
-    var isAgentWorking: Bool = false
-    var lastError: String? = nil
-    var composerText: String = ""
-    var pendingImages: [PendingImageAttachment] = []
-    var pendingTextFiles: [PendingTextFile] = []
-    var composerForceUpdate: UInt = 0
+    public var rows: [Row] = []
+    public var isLoading: Bool = false
+    public var isAgentWorking: Bool = false
+    public var lastError: String? = nil
+    public var composerText: String = ""
+    public var pendingImages: [PendingImageAttachment] = []
+    public var pendingTextFiles: [PendingTextFile] = []
+    public var composerForceUpdate: UInt = 0
 
-    var hasOlderMessages: Bool = false
+    public var hasOlderMessages: Bool = false
     private var oldestCursor: AgentTimelineCursor? = nil
     private var currentPermissionRequestId: String? = nil
     /// Latest pending permission request. `nil` when no permission is
     /// pending; set when a `permission_requested` event arrives and cleared
     /// on `permission_resolved`. Drives the UI's question vs. allow/deny
     /// rendering inside the permission timeline row.
-    var pendingPermission: PermissionRequestPayload? = nil
+    public var pendingPermission: PermissionRequestPayload? = nil
     /// Permission request IDs we've seen a `permission_resolved` for. The
     /// View checks this to collapse the corresponding permission/attention
     /// rows so the user doesn't see a stale Allow/Deny banner after they
     /// already answered the question.
-    var resolvedPermissionIds: Set<String> = []
+    public var resolvedPermissionIds: Set<String> = []
 
     /// Messages the user submitted while the agent was busy. We display them
     /// above the composer and flush them one at a time as turns complete.
-    var queued: [QueuedMessage] = []
+    public var queued: [QueuedMessage] = []
 
-    struct QueuedMessage: Identifiable, Hashable {
-        let id: UUID = UUID()
-        let text: String                  // final text (text files already inlined)
-        let messageId: String             // client-chosen for dedup
-        let images: [PendingImageAttachment]
-        let createdAt: Date = Date()
+    public struct QueuedMessage: Identifiable, Hashable {
+        public let id: UUID = UUID()
+        public let text: String                  // final text (text files already inlined)
+        public let messageId: String             // client-chosen for dedup
+        public let images: [PendingImageAttachment]
+        public let createdAt: Date = Date()
 
         /// Short preview for the chip strip.
-        var preview: String {
+        public var preview: String {
             let first = text.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? text
             let trimmed = first.trimmingCharacters(in: .whitespaces)
             return trimmed.isEmpty
@@ -271,14 +271,14 @@ final class ConversationViewModel {
     /// Model the agent was running with when the most recent `turn_started`
     /// event fired. Used to tag subsequent assistant_message rows so a
     /// mid-conversation model switch is visible per bubble.
-    private(set) var currentTurnModel: String? = nil
-    private(set) var turnStartedAt: Date? = nil
+    public private(set) var currentTurnModel: String? = nil
+    public private(set) var turnStartedAt: Date? = nil
     /// Elapsed seconds for the most recent completed turn.
-    var lastTurnDuration: TimeInterval? = nil
+    public var lastTurnDuration: TimeInterval? = nil
     /// Model used in the most recent turn (for bottom-of-reply display).
-    var lastTurnModel: String? = nil
+    public var lastTurnModel: String? = nil
     /// Model to show while a turn is in progress (before lastTurnModel is set).
-    var currentDisplayModel: String? { currentTurnModel }
+    public var currentDisplayModel: String? { currentTurnModel }
 
     /// Cached per-bubble (model, duration) keyed by stream seq. Stream events
     /// stamp this on turn_completed; loadInitial restores it so historical
@@ -325,7 +325,7 @@ final class ConversationViewModel {
         return Int(id.dropFirst(4))
     }
 
-    init(agentId: String, getClient: @escaping () -> DaemonClient?) {
+    public init(agentId: String, getClient: @escaping () -> DaemonClient?) {
         self.agentId = agentId
         self.getClient = getClient
         let ud = UserDefaults.standard
@@ -344,7 +344,7 @@ final class ConversationViewModel {
         let messageId: String
     }
 
-    func saveDraft() {
+    public func saveDraft() {
         let ud = UserDefaults.standard
         if composerText.isEmpty {
             ud.removeObject(forKey: "draft_\(agentId)")
@@ -353,7 +353,7 @@ final class ConversationViewModel {
         }
     }
 
-    func saveQueued() {
+    public func saveQueued() {
         let ud = UserDefaults.standard
         let items = queued.map { PersistedQueued(text: $0.text, messageId: $0.messageId) }
         if items.isEmpty {
@@ -365,7 +365,7 @@ final class ConversationViewModel {
 
     // MARK: - Loading
 
-    func loadInitial() async {
+    public func loadInitial() async {
         guard !isLoading else { return }
         // The placeholder VM created during the new-conversation flow has
         // agentId = AppViewModel.pendingAgentId; calling fetchTimeline on it
@@ -398,7 +398,7 @@ final class ConversationViewModel {
         }
     }
 
-    func loadOlderMessages() async {
+    public func loadOlderMessages() async {
         guard !isLoading, hasOlderMessages, let cursor = oldestCursor else { return }
         isLoading = true
         defer { isLoading = false }
@@ -424,7 +424,7 @@ final class ConversationViewModel {
 
     /// Default send path: if the agent is mid-turn, queue up for later flush.
     /// Otherwise fire immediately.
-    func sendComposer() async {
+    public func sendComposer() async {
         guard let pending = drainComposerForSend() else { return }
         if isAgentWorking {
             queued.append(pending)
@@ -439,7 +439,7 @@ final class ConversationViewModel {
     /// now, then sends this message immediately (without touching the rest
     /// of the queue). Useful when the user realizes the current run is off
     /// the rails and they want to steer without waiting.
-    func sendInterrupting() async {
+    public func sendInterrupting() async {
         guard let pending = drainComposerForSend() else { return }
         if isAgentWorking, let client = getClient() {
             do { _ = try await client.cancelAgent(agentId: agentId) }
@@ -448,13 +448,13 @@ final class ConversationViewModel {
         await dispatch(pending)
     }
 
-    func removeQueued(id: UUID) {
+    public func removeQueued(id: UUID) {
         queued.removeAll { $0.id == id }
         saveQueued()
     }
 
     /// Pull a queued message back into the composer for editing.
-    func editQueued(id: UUID) {
+    public func editQueued(id: UUID) {
         guard let idx = queued.firstIndex(where: { $0.id == id }) else { return }
         let msg = queued.remove(at: idx)
         composerText = msg.text
@@ -545,25 +545,25 @@ final class ConversationViewModel {
 
     // MARK: - Pending attachments
 
-    func addImages(_ images: [PendingImageAttachment]) {
+    public func addImages(_ images: [PendingImageAttachment]) {
         pendingImages.append(contentsOf: images)
     }
 
-    func removeImage(id: UUID) {
+    public func removeImage(id: UUID) {
         pendingImages.removeAll { $0.id == id }
     }
 
-    func addTextFile(_ file: PendingTextFile) {
+    public func addTextFile(_ file: PendingTextFile) {
         pendingTextFiles.append(file)
     }
 
-    func removeTextFile(id: UUID) {
+    public func removeTextFile(id: UUID) {
         pendingTextFiles.removeAll { $0.id == id }
     }
 
     // MARK: - Stream ingestion
 
-    func apply(streamEvent: AgentStreamEvent, seq: Int?, timestamp: String, currentModel: String? = nil) {
+    public func apply(streamEvent: AgentStreamEvent, seq: Int?, timestamp: String, currentModel: String? = nil) {
         switch streamEvent {
         case .turnStarted:
             isAgentWorking = true
@@ -737,7 +737,7 @@ final class ConversationViewModel {
     /// pre-populate the new conversation with an optimistic user bubble before
     /// the daemon's user_message echo arrives. Without this, switching to the
     /// just-created agent would briefly render an empty conversation.
-    func injectOptimisticFirstMessage(
+    public func injectOptimisticFirstMessage(
         text: String,
         messageId: String,
         images: [PendingImageAttachment]
@@ -749,7 +749,7 @@ final class ConversationViewModel {
     /// over from a disconnect window. Called by AppViewModel after a
     /// successful reconnect so the red error banner doesn't linger
     /// indefinitely while the sidebar already shows "Connected".
-    func clearConnectionError() {
+    public func clearConnectionError() {
         guard let err = lastError else { return }
         let lower = err.lowercased()
         if lower.contains("not connected")
@@ -767,7 +767,7 @@ final class ConversationViewModel {
     /// currentModel: nil at turn_started and the per-bubble
     /// model + duration chip never appears on the first reply.
     /// Idempotent — only seeds when no model is currently in flight.
-    func seedTurnModel(_ model: String) {
+    public func seedTurnModel(_ model: String) {
         if currentTurnModel == nil {
             currentTurnModel = model
         }
@@ -778,7 +778,7 @@ final class ConversationViewModel {
     /// daemon says idle but we think we're still working, the
     /// `turn_completed` event was lost (briefly disconnected). Without this
     /// the spinner hangs forever and the only fix is restarting the app.
-    func reconcileAgentStatus(_ status: String) {
+    public func reconcileAgentStatus(_ status: String) {
         if status == "idle" && isAgentWorking {
             EventLogger.shared.log("turn", "reconciled_idle", [
                 "agent": agentId,
@@ -864,7 +864,7 @@ final class ConversationViewModel {
         ))
     }
 
-    func approvePermission() async {
+    public func approvePermission() async {
         guard let client = getClient() else { return }
         if let req = pendingPermission {
             // Real permission_response RPC. Works for tool/plan/mode kinds.
@@ -880,7 +880,7 @@ final class ConversationViewModel {
         }
     }
 
-    func denyPermission() async {
+    public func denyPermission() async {
         guard let client = getClient() else { return }
         if let req = pendingPermission {
             _ = try? await client.respondPermission(
@@ -895,7 +895,7 @@ final class ConversationViewModel {
     /// Submit answers for the pending AskUserQuestion. `answers` is keyed by
     /// the question's `header` field (daemon-side normalizer re-keys for the
     /// underlying tool's expected schema).
-    func submitQuestionAnswers(_ answers: [String: String]) async {
+    public func submitQuestionAnswers(_ answers: [String: String]) async {
         guard let client = getClient(),
               let req = pendingPermission,
               let aq = req.askUserQuestion else { return }

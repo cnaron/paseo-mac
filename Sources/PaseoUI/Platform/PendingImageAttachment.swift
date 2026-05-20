@@ -2,18 +2,26 @@ import Foundation
 import UniformTypeIdentifiers
 
 /// A pasted or dropped image that's ready to send with a message.
-struct PendingImageAttachment: Identifiable, Hashable, Sendable {
-    let id: UUID
-    let fileURL: URL
-    let width: Int
-    let height: Int
-    let mimeType: String
+public struct PendingImageAttachment: Identifiable, Hashable, Sendable {
+    public let id: UUID
+    public let fileURL: URL
+    public let width: Int
+    public let height: Int
+    public let mimeType: String
 
-    var pngData: Data {
+    public init(id: UUID, fileURL: URL, width: Int, height: Int, mimeType: String) {
+        self.id = id
+        self.fileURL = fileURL
+        self.width = width
+        self.height = height
+        self.mimeType = mimeType
+    }
+
+    public var pngData: Data {
         (try? Data(contentsOf: fileURL)) ?? Data()
     }
 
-    static func cacheDirectory() -> URL {
+    public static func cacheDirectory() -> URL {
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         let dir = caches.appendingPathComponent("PaseoMac/images", isDirectory: true)
@@ -21,7 +29,7 @@ struct PendingImageAttachment: Identifiable, Hashable, Sendable {
         return dir
     }
 
-    static func cleanOldCache(olderThan age: TimeInterval = 7 * 24 * 3600) {
+    public static func cleanOldCache(olderThan age: TimeInterval = 7 * 24 * 3600) {
         let dir = cacheDirectory()
         let fm = FileManager.default
         guard let items = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.creationDateKey]) else { return }
@@ -35,15 +43,22 @@ struct PendingImageAttachment: Identifiable, Hashable, Sendable {
     }
 }
 
-struct PendingTextFile: Identifiable, Hashable, Sendable {
-    let id: UUID
-    let name: String
-    let content: String
-    let languageHint: String?
+public struct PendingTextFile: Identifiable, Hashable, Sendable {
+    public let id: UUID
+    public let name: String
+    public let content: String
+    public let languageHint: String?
 
-    static let maxInlineBytes = 256 * 1024
+    public init(id: UUID, name: String, content: String, languageHint: String?) {
+        self.id = id
+        self.name = name
+        self.content = content
+        self.languageHint = languageHint
+    }
 
-    static func fromFileURL(_ url: URL) throws -> PendingTextFile {
+    public static let maxInlineBytes = 256 * 1024
+
+    public static func fromFileURL(_ url: URL) throws -> PendingTextFile {
         let values = try url.resourceValues(forKeys: [.fileSizeKey])
         if let size = values.fileSize, size > maxInlineBytes {
             throw PendingTextFileError.tooLarge(actual: size, limit: maxInlineBytes)
@@ -58,11 +73,11 @@ struct PendingTextFile: Identifiable, Hashable, Sendable {
     }
 }
 
-enum PendingTextFileError: LocalizedError {
+public enum PendingTextFileError: LocalizedError {
     case tooLarge(actual: Int, limit: Int)
     case binaryFile
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .tooLarge(let a, let l): return "File too large (\(a / 1024) KB > \(l / 1024) KB)"
         case .binaryFile: return "Binary files are not supported; drop text only."
@@ -70,16 +85,24 @@ enum PendingTextFileError: LocalizedError {
     }
 }
 
-struct PendingFileAttachment: Identifiable, Hashable, Sendable {
-    let id: UUID
-    let name: String
-    let data: Data
-    let mimeType: String
-    let fileExtension: String
+public struct PendingFileAttachment: Identifiable, Hashable, Sendable {
+    public let id: UUID
+    public let name: String
+    public let data: Data
+    public let mimeType: String
+    public let fileExtension: String
 
-    static let maxBytes = 10 * 1024 * 1024
+    public init(id: UUID, name: String, data: Data, mimeType: String, fileExtension: String) {
+        self.id = id
+        self.name = name
+        self.data = data
+        self.mimeType = mimeType
+        self.fileExtension = fileExtension
+    }
 
-    static func fromFileURL(_ url: URL) throws -> PendingFileAttachment {
+    public static let maxBytes = 10 * 1024 * 1024
+
+    public static func fromFileURL(_ url: URL) throws -> PendingFileAttachment {
         let values = try url.resourceValues(forKeys: [.fileSizeKey])
         if let size = values.fileSize, size > maxBytes {
             throw PendingFileError.tooLarge(actual: size, limit: maxBytes)
@@ -91,7 +114,7 @@ struct PendingFileAttachment: Identifiable, Hashable, Sendable {
                                      mimeType: mime, fileExtension: ext)
     }
 
-    var iconName: String {
+    public var iconName: String {
         switch fileExtension {
         case "pdf": return "doc.richtext"
         case "zip", "gz", "tar", "rar", "7z": return "doc.zipper"
@@ -118,10 +141,10 @@ struct PendingFileAttachment: Identifiable, Hashable, Sendable {
     }
 }
 
-enum PendingFileError: LocalizedError {
+public enum PendingFileError: LocalizedError {
     case tooLarge(actual: Int, limit: Int)
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .tooLarge(let a, let l):
             return "File too large (\(a / 1024 / 1024) MB > \(l / 1024 / 1024) MB)"

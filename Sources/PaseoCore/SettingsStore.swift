@@ -6,14 +6,14 @@ import Observation
 /// scale, paragraph line spacing, and the gap between bubbles.
 @MainActor
 @Observable
-final class SettingsStore {
+public final class SettingsStore {
 
     // MARK: - Knob ranges
 
-    static let fontScaleRange: ClosedRange<Double> = 0.85...1.5
-    static let lineSpacingRange: ClosedRange<Double> = 0...10
-    static let bubbleGapRange: ClosedRange<Double> = 8...28
-    static let composerHeightRange: ClosedRange<Double> = 44...420
+    public static let fontScaleRange: ClosedRange<Double> = 0.85...1.5
+    public static let lineSpacingRange: ClosedRange<Double> = 0...10
+    public static let bubbleGapRange: ClosedRange<Double> = 8...28
+    public static let composerHeightRange: ClosedRange<Double> = 44...420
 
     // MARK: - Defaults keys
 
@@ -24,22 +24,22 @@ final class SettingsStore {
 
     // MARK: - Published state
 
-    var fontScale: Double {
+    public var fontScale: Double {
         didSet { UserDefaults.standard.set(fontScale, forKey: kFontScale) }
     }
-    var paragraphLineSpacing: Double {
+    public var paragraphLineSpacing: Double {
         didSet { UserDefaults.standard.set(paragraphLineSpacing, forKey: kLineSpacing) }
     }
-    var bubbleGap: Double {
+    public var bubbleGap: Double {
         didSet { UserDefaults.standard.set(bubbleGap, forKey: kBubbleGap) }
     }
-    var composerHeight: Double {
+    public var composerHeight: Double {
         didSet { UserDefaults.standard.set(composerHeight, forKey: kComposerHeight) }
     }
 
     // MARK: - Init
 
-    init() {
+    public init() {
         let d = UserDefaults.standard
         self.fontScale = d.object(forKey: kFontScale) as? Double ?? 1.0
         self.paragraphLineSpacing = d.object(forKey: kLineSpacing) as? Double ?? 3.0
@@ -51,7 +51,7 @@ final class SettingsStore {
 
     // MARK: - Helpers
 
-    func resetToDefaults() {
+    public func resetToDefaults() {
         fontScale = 1.0
         paragraphLineSpacing = 3.0
         bubbleGap = 14.0
@@ -60,7 +60,7 @@ final class SettingsStore {
 
     /// Scales a base point size by `fontScale`. Rounded to 0.5 so fonts stay
     /// crisp at common scales.
-    func scaled(_ points: CGFloat) -> CGFloat {
+    public func scaled(_ points: CGFloat) -> CGFloat {
         let raw = points * CGFloat(fontScale)
         return (raw * 2).rounded() / 2
     }

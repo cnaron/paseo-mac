@@ -3,11 +3,11 @@ import PackageDescription
 
 let package = Package(
     name: "PaseoMac",
-    platforms: [
-        .macOS(.v14)
-    ],
+    platforms: [.macOS(.v14), .iOS(.v17)],
     products: [
-        .executable(name: "PaseoMac", targets: ["PaseoMacApp"])
+        .executable(name: "PaseoMac", targets: ["PaseoMacApp"]),
+        .library(name: "PaseoCore", targets: ["PaseoCore"]),
+        .library(name: "PaseoUI", targets: ["PaseoUI"]),
     ],
     dependencies: [
         // Vendored under .vendor/swift-sodium because Air's git proxy is unreachable
@@ -15,25 +15,25 @@ let package = Package(
         .package(path: ".vendor/swift-sodium")
     ],
     targets: [
-        // Phase-0: all three layers compiled in one module so the existing
-        // internal access level is preserved across the PaseoCore / PaseoUI /
-        // PaseoMacApp directories. The directory split documents the intended
-        // future module boundaries; the true three-target split (with public
-        // APIs) is Phase 1 when iOS is added.
-        .executableTarget(
-            name: "PaseoMacApp",
+        .target(
+            name: "PaseoCore",
             dependencies: [
                 .product(name: "Clibsodium", package: "swift-sodium")
             ],
-            path: "Sources",
-            sources: [
-                "PaseoCore",
-                "PaseoUI",
-                "PaseoMacApp",
-            ],
-            swiftSettings: [
-                .swiftLanguageMode(.v6)
-            ]
-        )
+            path: "Sources/PaseoCore",
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .target(
+            name: "PaseoUI",
+            dependencies: ["PaseoCore"],
+            path: "Sources/PaseoUI",
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .executableTarget(
+            name: "PaseoMacApp",
+            dependencies: ["PaseoCore", "PaseoUI"],
+            path: "Sources/PaseoMacApp",
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
     ]
 )

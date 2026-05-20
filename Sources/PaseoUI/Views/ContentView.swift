@@ -1,10 +1,12 @@
 import SwiftUI
 
-struct ContentView: View {
+public struct ContentView: View {
     @Environment(AppViewModel.self) private var app
     @State private var showConnect: Bool = false
 
-    var body: some View {
+    public init() {}
+
+    public var body: some View {
         @Bindable var app = app
         NavigationSplitView {
             AgentListView(showConnect: $showConnect)

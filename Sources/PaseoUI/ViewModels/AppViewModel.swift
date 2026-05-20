@@ -3,19 +3,19 @@ import Observation
 
 @MainActor
 @Observable
-final class AppViewModel {
+public final class AppViewModel {
 
-    enum ConnectionState: Sendable, Equatable {
+    public enum ConnectionState: Sendable, Equatable {
         case disconnected
         case connecting
         case connected
         case failed(String)
     }
 
-    struct LiveStatus: Equatable {
-        var status: String
-        var requiresAttention: Bool
-        var attentionReason: String?
+    public struct LiveStatus: Equatable {
+        public var status: String
+        public var requiresAttention: Bool
+        public var attentionReason: String?
     }
 
     // MARK: Persisted offer
@@ -36,51 +36,51 @@ final class AppViewModel {
         return new
     }
 
-    var connectionState: ConnectionState = .disconnected
-    var agents: [AgentSnapshot] = []
-    var archivedAgents: [AgentSnapshot] = []
-    var isLoadingArchived: Bool = false
-    var selectedAgentId: String? = nil {
+    public var connectionState: ConnectionState = .disconnected
+    public var agents: [AgentSnapshot] = []
+    public var archivedAgents: [AgentSnapshot] = []
+    public var isLoadingArchived: Bool = false
+    public var selectedAgentId: String? = nil {
         didSet {
             if let id = selectedAgentId, id != AppViewModel.pendingAgentId {
                 UserDefaults.standard.set(id, forKey: "paseomac.lastSelectedAgentId")
             }
         }
     }
-    var pendingNewAgentCwd: String? = nil
-    var pendingNewAgentProvider: String = "claude"
-    var pendingNewAgentModel: String? = nil
-    var pendingNewAgentModeId: String? = nil
-    var pendingNewAgentThinkingOptionId: String? = nil
+    public var pendingNewAgentCwd: String? = nil
+    public var pendingNewAgentProvider: String = "claude"
+    public var pendingNewAgentModel: String? = nil
+    public var pendingNewAgentModeId: String? = nil
+    public var pendingNewAgentThinkingOptionId: String? = nil
     /// Set while createAgent is in flight after the user submitted their first
     /// message. Drives the optimistic user bubble + "Starting agent…" spinner
     /// so the new-conversation view never goes blank between submit and the new
     /// agent ID landing.
-    var creatingAgentText: String? = nil
-    var creatingAgentImages: [PendingImageAttachment] = []
+    public var creatingAgentText: String? = nil
+    public var creatingAgentImages: [PendingImageAttachment] = []
     /// Last error from `submitPendingAgent`. Surfaces in the "Type a message"
     /// empty state so the user knows why the previous send failed and can
     /// retry with the restored composer content.
-    var creatingAgentError: String? = nil
+    public var creatingAgentError: String? = nil
     /// Tracks which agent ID has a branch createAgent in flight so the
     /// toolbar ProgressView can show. Nil when no branch is pending.
-    var branchInFlight: String? = nil
+    public var branchInFlight: String? = nil
     /// Models the user's account can't actually use (right now the only
     /// observed cause is the "Extra usage is required for 1M context" gate
     /// on selectively-enabled [1m] variants). Keyed as "provider/modelId".
     /// Detected at runtime when a turn ends with that specific error and
     /// persisted so the picker keeps hiding them across restarts. Reset via
     /// Preferences > "Reset blocked models".
-    var blockedModels: Set<String> = {
+    public var blockedModels: Set<String> = {
         if let arr = UserDefaults.standard.array(forKey: "paseomac.blockedModels") as? [String] {
             return Set(arr)
         }
         return []
     }()
-    static let pendingAgentId = "__pending__"
+    public static let pendingAgentId = "__pending__"
     private var knownAgentIds: Set<String> = []
     private var pendingCreationContinuation: CheckedContinuation<String?, Never>? = nil
-    var savedOfferRaw: String? {
+    public var savedOfferRaw: String? {
         get { UserDefaults.standard.string(forKey: storedOfferKey) }
         set {
             if let v = newValue, !v.isEmpty {
@@ -91,17 +91,17 @@ final class AppViewModel {
         }
     }
 
-    var liveStatus: [String: LiveStatus] = [:]
-    var providers: [ProviderSnapshot] = []
+    public var liveStatus: [String: LiveStatus] = [:]
+    public var providers: [ProviderSnapshot] = []
 
-    var daemonVersion: String? = nil
-    var daemonHostname: String? = nil
-    var versionMismatchDismissed: Bool = false
+    public var daemonVersion: String? = nil
+    public var daemonHostname: String? = nil
+    public var versionMismatchDismissed: Bool = false
 
     /// Compatible Paseo daemon version prefix (major.minor)
-    static let compatibleDaemonPrefix = "0.1"
+    public static let compatibleDaemonPrefix = "0.1"
 
-    var daemonVersionMismatch: Bool {
+    public var daemonVersionMismatch: Bool {
         guard !versionMismatchDismissed,
               let v = daemonVersion else { return false }
         let prefix = Self.compatibleDaemonPrefix
@@ -109,16 +109,16 @@ final class AppViewModel {
     }
 
     /// Claude subscription usage — fetched from VPS proxy after connect.
-    var usageData: ClaudeUsageData? = nil
-    var statsData: ClaudeStatsData? = nil
+    public var usageData: ClaudeUsageData? = nil
+    public var statsData: ClaudeStatsData? = nil
 
     /// Claude Code CLI version state.
-    var claudeCodeCurrentVersion: String? = nil
-    var claudeCodeLatestVersion: String? = nil
-    var isCheckingClaudeCodeVersion = false
-    var isUpdatingClaudeCode = false
+    public var claudeCodeCurrentVersion: String? = nil
+    public var claudeCodeLatestVersion: String? = nil
+    public var isCheckingClaudeCodeVersion = false
+    public var isUpdatingClaudeCode = false
 
-    var claudeCodeUpdateAvailable: Bool {
+    public var claudeCodeUpdateAvailable: Bool {
         guard let current = claudeCodeCurrentVersion,
               let latest = claudeCodeLatestVersion,
               !current.isEmpty, current != "unknown" else { return false }
@@ -138,25 +138,25 @@ final class AppViewModel {
 
     private var wakeNotifier: (any PlatformWakeNotifier)?
 
-    func setWakeNotifier(_ notifier: any PlatformWakeNotifier) {
+    public func setWakeNotifier(_ notifier: any PlatformWakeNotifier) {
         self.wakeNotifier = notifier
     }
 
     // MARK: - Lifecycle
 
-    var selectedAgentIsWorking: Bool {
+    public var selectedAgentIsWorking: Bool {
         guard let id = selectedAgentId else { return false }
         return conversations[id]?.isAgentWorking ?? false
     }
 
-    func autoConnectIfPossible() {
+    public func autoConnectIfPossible() {
         guard case .disconnected = connectionState else { return }
         guard let raw = savedOfferRaw, !raw.isEmpty else { return }
         Task { await connect(withOfferRaw: raw) }
     }
 
 
-    func connect(withOfferRaw raw: String) async {
+    public func connect(withOfferRaw raw: String) async {
         EventLogger.shared.log("conn", "connect_start")
         connectionState = .connecting
         // Cancel the old event-listener task before tearing down the old
@@ -251,7 +251,7 @@ final class AppViewModel {
         }
     }
 
-    func disconnect() async {
+    public func disconnect() async {
         reconnectTask?.cancel()
         reconnectTask = nil
         eventTask?.cancel()
@@ -320,7 +320,7 @@ final class AppViewModel {
         return UInt64(f * factor)
     }
 
-    func startWakeObserver() {
+    public func startWakeObserver() {
         wakeNotifier?.observe { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self, case .disconnected = self.connectionState,
@@ -332,7 +332,7 @@ final class AppViewModel {
 
     // MARK: - Agent creation
 
-    func createAgent(cwd: String) async {
+    public func createAgent(cwd: String) async {
         let agent = currentAgent()
         pendingNewAgentProvider = agent?.provider ?? "claude"
         pendingNewAgentModel = agent?.model
@@ -342,7 +342,7 @@ final class AppViewModel {
         selectedAgentId = AppViewModel.pendingAgentId
     }
 
-    func cancelPendingAgent() {
+    public func cancelPendingAgent() {
         pendingNewAgentCwd = nil
         pendingNewAgentThinkingOptionId = nil
         creatingAgentError = nil
@@ -351,7 +351,7 @@ final class AppViewModel {
         }
     }
 
-    func submitPendingAgent(text: String, images: [PendingImageAttachment] = []) async {
+    public func submitPendingAgent(text: String, images: [PendingImageAttachment] = []) async {
         guard let cwd = pendingNewAgentCwd, let client else { return }
         let provider = pendingNewAgentProvider
         let model = pendingNewAgentModel
@@ -496,7 +496,7 @@ final class AppViewModel {
 
     // MARK: - Branch (continue conversation in another provider)
 
-    func branchAgent(fromAgentId: String, newProvider: String) async {
+    public func branchAgent(fromAgentId: String, newProvider: String) async {
         guard let source = agents.first(where: { $0.id == fromAgentId }) ?? archivedAgents.first(where: { $0.id == fromAgentId }),
               let client else { return }
         let vm = conversations[fromAgentId]
@@ -619,7 +619,7 @@ final class AppViewModel {
         }
     }
 
-    func archiveAgent(agentId: String) async {
+    public func archiveAgent(agentId: String) async {
         agents.removeAll { $0.id == agentId }
         liveStatus.removeValue(forKey: agentId)
         conversations.removeValue(forKey: agentId)
@@ -635,7 +635,7 @@ final class AppViewModel {
         }
     }
 
-    func loadArchivedAgents() async {
+    public func loadArchivedAgents() async {
         guard let client else { return }
         isLoadingArchived = true
         defer { isLoadingArchived = false }
@@ -646,7 +646,7 @@ final class AppViewModel {
         }
     }
 
-    func clearArchivedAgents() {
+    public func clearArchivedAgents() {
         archivedAgents = []
         // Deselect if the currently selected agent is archived
         if let id = selectedAgentId,
@@ -657,7 +657,7 @@ final class AppViewModel {
 
     // MARK: - Data access
 
-    func refreshAgents() async throws {
+    public func refreshAgents() async throws {
         guard let client else { return }
         let list = try await client.listAgents(limit: 100)
         // @Observable invalidates every dependent on *any* write to `agents`
@@ -687,7 +687,7 @@ final class AppViewModel {
 
     private var workspaceGitUrlCache: [String: String?] = [:]
 
-    func fetchGitHubUrl(for cwd: String) async -> String? {
+    public func fetchGitHubUrl(for cwd: String) async -> String? {
         if let cached = workspaceGitUrlCache[cwd] {
             EventLogger.shared.log("github", "cache_hit", ["cwd": cwd, "url": cached ?? "nil"])
             return cached
@@ -727,11 +727,11 @@ final class AppViewModel {
 
     // MARK: - Blocked models
 
-    func isModelBlocked(provider: String, modelId: String) -> Bool {
+    public func isModelBlocked(provider: String, modelId: String) -> Bool {
         blockedModels.contains("\(provider)/\(modelId)")
     }
 
-    func markModelBlocked(provider: String, modelId: String) {
+    public func markModelBlocked(provider: String, modelId: String) {
         let key = "\(provider)/\(modelId)"
         guard !blockedModels.contains(key) else { return }
         blockedModels.insert(key)
@@ -739,7 +739,7 @@ final class AppViewModel {
         EventLogger.shared.log("model", "blocked", ["key": key])
     }
 
-    func clearBlockedModels() {
+    public func clearBlockedModels() {
         blockedModels.removeAll()
         UserDefaults.standard.removeObject(forKey: "paseomac.blockedModels")
     }
@@ -755,7 +755,7 @@ final class AppViewModel {
         markModelBlocked(provider: provider, modelId: model)
     }
 
-    func conversation(for agentId: String) -> ConversationViewModel {
+    public func conversation(for agentId: String) -> ConversationViewModel {
         if let existing = conversations[agentId] { return existing }
         let vm = ConversationViewModel(agentId: agentId) { [weak self] in self?.client }
         conversations[agentId] = vm
@@ -775,7 +775,7 @@ final class AppViewModel {
         }
     }
 
-    func effectiveStatus(for agentId: String) -> (status: String, attention: Bool) {
+    public func effectiveStatus(for agentId: String) -> (status: String, attention: Bool) {
         let base = agents.first(where: { $0.id == agentId })
         if let live = liveStatus[agentId] {
             return (live.status, live.requiresAttention)
@@ -783,18 +783,18 @@ final class AppViewModel {
         return (base?.status ?? "unknown", base?.requiresAttention ?? false)
     }
 
-    func currentAgent() -> AgentSnapshot? {
+    public func currentAgent() -> AgentSnapshot? {
         guard let id = selectedAgentId else { return nil }
         return agents.first { $0.id == id } ?? archivedAgents.first { $0.id == id }
     }
 
-    func isArchivedAgent(_ agentId: String) -> Bool {
+    public func isArchivedAgent(_ agentId: String) -> Bool {
         archivedAgents.contains(where: { $0.id == agentId })
     }
 
     // MARK: - Model / mode / thinking dispatch
 
-    func setAgentMode(agentId: String, modeId: String) async {
+    public func setAgentMode(agentId: String, modeId: String) async {
         guard let client else { return }
         do {
             _ = try await client.setAgentMode(agentId: agentId, modeId: modeId)
@@ -802,7 +802,7 @@ final class AppViewModel {
         } catch { }
     }
 
-    func setAgentModel(agentId: String, modelId: String?) async {
+    public func setAgentModel(agentId: String, modelId: String?) async {
         guard let client else { return }
         do {
             _ = try await client.setAgentModel(agentId: agentId, modelId: modelId)
@@ -810,7 +810,7 @@ final class AppViewModel {
         } catch { }
     }
 
-    func setAgentThinking(agentId: String, thinkingOptionId: String?) async {
+    public func setAgentThinking(agentId: String, thinkingOptionId: String?) async {
         guard let client else { return }
         do {
             _ = try await client.setAgentThinking(agentId: agentId, thinkingOptionId: thinkingOptionId)
@@ -826,7 +826,7 @@ final class AppViewModel {
 
     // MARK: - Usage quota
 
-    func fetchUsage() async {
+    public func fetchUsage() async {
         let urlString = UserDefaults.standard.string(forKey: "paseomac.usageApiUrl") ?? ""
         let token     = UserDefaults.standard.string(forKey: "paseomac.usageApiToken") ?? ""
         guard !urlString.isEmpty, let url = URL(string: urlString) else { return }
@@ -889,7 +889,7 @@ final class AppViewModel {
         )
     }
 
-    func fetchStats() async {
+    public func fetchStats() async {
         let urlString = UserDefaults.standard.string(forKey: "paseomac.usageApiUrl") ?? ""
         let token     = UserDefaults.standard.string(forKey: "paseomac.usageApiToken") ?? ""
         guard !urlString.isEmpty,
@@ -973,7 +973,7 @@ final class AppViewModel {
         return url.deletingLastPathComponent()
     }
 
-    func checkClaudeCodeVersion() async {
+    public func checkClaudeCodeVersion() async {
         guard !isCheckingClaudeCodeVersion else { return }
         isCheckingClaudeCodeVersion = true
         defer { isCheckingClaudeCodeVersion = false }
@@ -1005,7 +1005,7 @@ final class AppViewModel {
         }
     }
 
-    func updateClaudeCode() async {
+    public func updateClaudeCode() async {
         guard !isUpdatingClaudeCode, let base = claudeVersionBaseURL() else { return }
         isUpdatingClaudeCode = true
         defer { isUpdatingClaudeCode = false }
@@ -1238,17 +1238,17 @@ private extension AgentSnapshot {
 
 // MARK: - Stats data
 
-struct ClaudeStatsData {
-    struct DailyEntry: Identifiable {
-        var id: String { date }
-        let date: String
-        let messageCount: Int
-        let sessionCount: Int
-        let toolCallCount: Int
-        let tokensByModel: [String: Int]
-        var totalTokens: Int { tokensByModel.values.reduce(0, +) }
+public struct ClaudeStatsData {
+    public struct DailyEntry: Identifiable {
+        public var id: String { date }
+        public let date: String
+        public let messageCount: Int
+        public let sessionCount: Int
+        public let toolCallCount: Int
+        public let tokensByModel: [String: Int]
+        public var totalTokens: Int { tokensByModel.values.reduce(0, +) }
 
-        var displayDate: String {
+        public var displayDate: String {
             let parts = date.split(separator: "-")
             guard parts.count == 3,
                   let month = Int(parts[1]),
@@ -1260,15 +1260,15 @@ struct ClaudeStatsData {
         }
     }
 
-    struct ModelUsage: Identifiable {
-        var id: String { modelId }
-        let modelId: String
-        let inputTokens: Int
-        let outputTokens: Int
-        let cacheReadTokens: Int
-        let cacheWriteTokens: Int
+    public struct ModelUsage: Identifiable {
+        public var id: String { modelId }
+        public let modelId: String
+        public let inputTokens: Int
+        public let outputTokens: Int
+        public let cacheReadTokens: Int
+        public let cacheWriteTokens: Int
 
-        var displayName: String {
+        public var displayName: String {
             let l = modelId.lowercased()
             if l.contains("opus")   { return "Opus" }
             if l.contains("haiku")  { return "Haiku" }
@@ -1276,7 +1276,7 @@ struct ClaudeStatsData {
             return modelId
         }
 
-        var apiEquivCostUSD: Double {
+        public var apiEquivCostUSD: Double {
             let (pi, po, pr, pw) = pricing
             return Double(inputTokens)      / 1_000_000 * pi
                  + Double(outputTokens)     / 1_000_000 * po
@@ -1292,20 +1292,28 @@ struct ClaudeStatsData {
         }
     }
 
-    let lastComputedDate: String
-    let daily: [DailyEntry]
-    let modelUsage: [ModelUsage]
-    let totalMessages: Int
-    let totalSessions: Int
+    public let lastComputedDate: String
+    public let daily: [DailyEntry]
+    public let modelUsage: [ModelUsage]
+    public let totalMessages: Int
+    public let totalSessions: Int
 
-    static func fmtTokens(_ n: Int) -> String {
+    public init(lastComputedDate: String, daily: [DailyEntry], modelUsage: [ModelUsage], totalMessages: Int, totalSessions: Int) {
+        self.lastComputedDate = lastComputedDate
+        self.daily = daily
+        self.modelUsage = modelUsage
+        self.totalMessages = totalMessages
+        self.totalSessions = totalSessions
+    }
+
+    public static func fmtTokens(_ n: Int) -> String {
         if n >= 1_000_000_000 { return String(format: "%.1fB", Double(n) / 1_000_000_000) }
         if n >= 1_000_000     { return String(format: "%.1fM", Double(n) / 1_000_000) }
         if n >= 1_000         { return String(format: "%.0fK", Double(n) / 1_000) }
         return "\(n)"
     }
 
-    static func fmtCost(_ usd: Double) -> String {
+    public static func fmtCost(_ usd: Double) -> String {
         if usd >= 10_000 { return String(format: "$%.0fK", usd / 1000) }
         if usd >= 100    { return String(format: "$%.0f",  usd) }
         if usd >= 1      { return String(format: "$%.1f",  usd) }

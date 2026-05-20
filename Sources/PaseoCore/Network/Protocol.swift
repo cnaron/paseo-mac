@@ -2,44 +2,63 @@ import Foundation
 
 // MARK: - WebSocket protocol constants
 
-enum WSProtocol {
-    static let version = 1
+public enum WSProtocol {
+    public static let version = 1
 }
 
 // MARK: - Outbound (Mac → daemon)
 
-struct HelloMessage: Encodable {
-    let type = "hello"
-    let clientId: String
-    let clientType: ClientType
-    let protocolVersion: Int
-    let appVersion: String?
-    let capabilities: Capabilities?
+public struct HelloMessage: Encodable {
+    public let type = "hello"
+    public let clientId: String
+    public let clientType: ClientType
+    public let protocolVersion: Int
+    public let appVersion: String?
+    public let capabilities: Capabilities?
 
-    enum ClientType: String, Encodable {
+    public enum ClientType: String, Encodable {
         case mobile, browser, cli, mcp
     }
 
-    struct Capabilities: Encodable {
-        var voice: Bool?
-        var pushNotifications: Bool?
+    public struct Capabilities: Encodable {
+        public var voice: Bool?
+        public var pushNotifications: Bool?
+        public init(voice: Bool? = nil, pushNotifications: Bool? = nil) {
+            self.voice = voice
+            self.pushNotifications = pushNotifications
+        }
+    }
+
+    public init(clientId: String, clientType: ClientType, protocolVersion: Int, appVersion: String?, capabilities: Capabilities?) {
+        self.clientId = clientId
+        self.clientType = clientType
+        self.protocolVersion = protocolVersion
+        self.appVersion = appVersion
+        self.capabilities = capabilities
     }
 }
 
-struct PongMessage: Encodable { let type = "pong" }
+public struct PongMessage: Encodable {
+    public let type = "pong"
+    public init() {}
+}
 
 /// Application-level keepalive. Sent every ~15s while connected so the
 /// relay (and daemon) sees fresh app traffic on the wire — WebSocket
 /// control-frame PINGs aren't always preserved across relays/CDNs.
 /// Daemon replies with a bare `{"type":"pong"}`.
-struct PingMessage: Encodable {
-    let type = "ping"
-    let requestId: String
-    let clientSentAt: Int64    // ms since epoch
+public struct PingMessage: Encodable {
+    public let type = "ping"
+    public let requestId: String
+    public let clientSentAt: Int64    // ms since epoch
+    public init(requestId: String, clientSentAt: Int64) {
+        self.requestId = requestId
+        self.clientSentAt = clientSentAt
+    }
 }
 
 /// Session-level request wrapped in `{type:"session", message:<inner>}`.
-enum SessionRequest: Encodable {
+public enum SessionRequest: Encodable {
     case fetchAgents(FetchAgentsRequest)
     case fetchAgentTimeline(FetchAgentTimelineRequest)
     case sendAgentMessage(SendAgentMessageRequest)
@@ -53,7 +72,7 @@ enum SessionRequest: Encodable {
     case agentPermissionResponse(AgentPermissionResponseRequest)
     case fetchWorkspaces(FetchWorkspacesRequest)
 
-    func encode(to encoder: Encoder) throws {
+    public func encode(to encoder: Encoder) throws {
         var c = encoder.singleValueContainer()
         switch self {
         case .fetchAgents(let r): try c.encode(r)
@@ -78,21 +97,21 @@ enum SessionRequest: Encodable {
 /// `kind == "question"` (or `name == "AskUserQuestion"`) means the agent is
 /// asking the user to pick from structured options, not just allow/deny a
 /// tool call. `askUserQuestion` is non-nil exactly in that case.
-struct PermissionRequestPayload: Decodable, Hashable, Sendable {
-    let id: String
-    let name: String          // tool name, e.g. "AskUserQuestion", "Bash"
-    let kind: String          // "tool" | "plan" | "question" | "mode" | "other"
-    let title: String?
-    let description: String?
-    let askUserQuestion: AskUserQuestion?
+public struct PermissionRequestPayload: Decodable, Hashable, Sendable {
+    public let id: String
+    public let name: String          // tool name, e.g. "AskUserQuestion", "Bash"
+    public let kind: String          // "tool" | "plan" | "question" | "mode" | "other"
+    public let title: String?
+    public let description: String?
+    public let askUserQuestion: AskUserQuestion?
 
-    var isQuestion: Bool { kind == "question" || askUserQuestion != nil }
+    public var isQuestion: Bool { kind == "question" || askUserQuestion != nil }
 
     private enum CodingKeys: String, CodingKey {
         case id, name, kind, title, description, input
     }
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.id = try c.decode(String.self, forKey: .id)
         self.name = try c.decode(String.self, forKey: .name)
@@ -108,22 +127,22 @@ struct PermissionRequestPayload: Decodable, Hashable, Sendable {
 }
 
 /// Typed view into `AskUserQuestion`'s tool input.
-struct AskUserQuestion: Codable, Hashable, Sendable {
-    let questions: [Question]
+public struct AskUserQuestion: Codable, Hashable, Sendable {
+    public let questions: [Question]
 
-    struct Question: Codable, Hashable, Sendable, Identifiable {
-        let header: String
-        let question: String
-        let multiSelect: Bool?
-        let options: [Option]
+    public struct Question: Codable, Hashable, Sendable, Identifiable {
+        public let header: String
+        public let question: String
+        public let multiSelect: Bool?
+        public let options: [Option]
 
-        var id: String { header }
+        public var id: String { header }
 
-        struct Option: Codable, Hashable, Sendable, Identifiable {
-            let label: String
-            let description: String?
+        public struct Option: Codable, Hashable, Sendable, Identifiable {
+            public let label: String
+            public let description: String?
 
-            var id: String { label }
+            public var id: String { label }
         }
     }
 }
@@ -131,19 +150,25 @@ struct AskUserQuestion: Codable, Hashable, Sendable {
 /// Builds `agent_permission_response` payload. For an AskUserQuestion this
 /// echoes the original questions back alongside the user's answers (keyed
 /// by question header — daemon normalizes to whatever the tool expects).
-struct AgentPermissionResponseRequest: Encodable {
-    let type = "agent_permission_response"
-    let agentId: String
-    let requestId: String
-    let response: Response
+public struct AgentPermissionResponseRequest: Encodable {
+    public let type = "agent_permission_response"
+    public let agentId: String
+    public let requestId: String
+    public let response: Response
 
-    enum Response: Encodable {
+    public init(agentId: String, requestId: String, response: Response) {
+        self.agentId = agentId
+        self.requestId = requestId
+        self.response = response
+    }
+
+    public enum Response: Encodable {
         case allow(updatedInput: AskUserQuestionAnswers?)
         case deny(message: String?)
 
         private enum Keys: String, CodingKey { case behavior, updatedInput, message }
 
-        func encode(to encoder: Encoder) throws {
+        public func encode(to encoder: Encoder) throws {
             var c = encoder.container(keyedBy: Keys.self)
             switch self {
             case .allow(let input):
@@ -160,21 +185,25 @@ struct AgentPermissionResponseRequest: Encodable {
 /// Shape of `updatedInput` when answering AskUserQuestion. Carries the
 /// original questions back verbatim so the daemon-side normalizer can
 /// re-key answers to whatever the underlying tool wants.
-struct AskUserQuestionAnswers: Encodable {
-    let questions: [AskUserQuestion.Question]
-    let answers: [String: String]
+public struct AskUserQuestionAnswers: Encodable {
+    public let questions: [AskUserQuestion.Question]
+    public let answers: [String: String]
+    public init(questions: [AskUserQuestion.Question], answers: [String: String]) {
+        self.questions = questions
+        self.answers = answers
+    }
 }
 
-struct CreateAgentRequest: Encodable {
-    let type = "create_agent_request"
-    let requestId: String
-    let config: Config
-    var initialPrompt: String? = nil
+public struct CreateAgentRequest: Encodable {
+    public let type = "create_agent_request"
+    public let requestId: String
+    public let config: Config
+    public var initialPrompt: String? = nil
 
     private enum CodingKeys: String, CodingKey {
         case type, requestId, config, initialPrompt
     }
-    func encode(to encoder: Encoder) throws {
+    public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(type, forKey: .type)
         try c.encode(requestId, forKey: .requestId)
@@ -182,22 +211,27 @@ struct CreateAgentRequest: Encodable {
         try c.encodeIfPresent(initialPrompt, forKey: .initialPrompt)
     }
 
-    struct Config: Encodable {
-        let provider: String
-        let cwd: String
-        let model: String?
-        let modeId: String?
+    public init(requestId: String, config: Config) {
+        self.requestId = requestId
+        self.config = config
+    }
+
+    public struct Config: Encodable {
+        public let provider: String
+        public let cwd: String
+        public let model: String?
+        public let modeId: String?
         /// Set in the createAgent payload itself so the daemon initializes
         /// the agent at the chosen thinking level. Sending it later via
         /// set_agent_thinking_request while turn 1 is starting up trips a
         /// daemon-side race that fails the turn with
         /// "Cannot read properties of null (reading 'push')".
-        let thinkingOptionId: String?
+        public let thinkingOptionId: String?
 
         private enum CodingKeys: String, CodingKey {
             case provider, cwd, model, modeId, thinkingOptionId
         }
-        func encode(to encoder: Encoder) throws {
+        public func encode(to encoder: Encoder) throws {
             var c = encoder.container(keyedBy: CodingKeys.self)
             try c.encode(provider, forKey: .provider)
             try c.encode(cwd, forKey: .cwd)
@@ -205,110 +239,210 @@ struct CreateAgentRequest: Encodable {
             try c.encodeIfPresent(modeId, forKey: .modeId)
             try c.encodeIfPresent(thinkingOptionId, forKey: .thinkingOptionId)
         }
+
+        public init(provider: String, cwd: String, model: String?, modeId: String?, thinkingOptionId: String?) {
+            self.provider = provider
+            self.cwd = cwd
+            self.model = model
+            self.modeId = modeId
+            self.thinkingOptionId = thinkingOptionId
+        }
     }
 }
 
-struct CancelAgentRequest: Encodable {
-    let type = "cancel_agent_request"
-    let requestId: String
-    let agentId: String
-}
-
-struct ArchiveAgentRequest: Encodable {
-    let type = "archive_agent_request"
-    let requestId: String
-    let agentId: String
-}
-
-struct SetAgentModeRequest: Encodable {
-    let type = "set_agent_mode_request"
-    let requestId: String
-    let agentId: String
-    let modeId: String
-}
-
-struct SetAgentModelRequest: Encodable {
-    let type = "set_agent_model_request"
-    let requestId: String
-    let agentId: String
-    let modelId: String?   // null clears the override
-}
-
-struct SetAgentThinkingRequest: Encodable {
-    let type = "set_agent_thinking_request"
-    let requestId: String
-    let agentId: String
-    let thinkingOptionId: String?
-}
-
-struct GetProvidersSnapshotRequest: Encodable {
-    let type = "get_providers_snapshot_request"
-    let requestId: String
-    var cwd: String?
-}
-
-struct FetchAgentsRequest: Encodable {
-    let type = "fetch_agents_request"
-    let requestId: String
-    var filter: AgentFilter?
-    var sort: [AgentSort]?
-    var page: AgentPage?
-    var subscribe: AgentSubscribe?
-
-    struct AgentFilter: Encodable {
-        var includeArchived: Bool?
-        var statuses: [String]?
-        var requiresAttention: Bool?
+public struct CancelAgentRequest: Encodable {
+    public let type = "cancel_agent_request"
+    public let requestId: String
+    public let agentId: String
+    public init(requestId: String, agentId: String) {
+        self.requestId = requestId
+        self.agentId = agentId
     }
-    struct AgentSort: Encodable { let key: String; let direction: String }
-    struct AgentPage: Encodable { let limit: Int; var cursor: String? }
-    struct AgentSubscribe: Encodable { var subscriptionId: String? }
 }
 
-struct FetchAgentTimelineRequest: Encodable {
-    let type = "fetch_agent_timeline_request"
-    let requestId: String
-    let agentId: String
+public struct ArchiveAgentRequest: Encodable {
+    public let type = "archive_agent_request"
+    public let requestId: String
+    public let agentId: String
+    public init(requestId: String, agentId: String) {
+        self.requestId = requestId
+        self.agentId = agentId
+    }
+}
+
+public struct SetAgentModeRequest: Encodable {
+    public let type = "set_agent_mode_request"
+    public let requestId: String
+    public let agentId: String
+    public let modeId: String
+    public init(requestId: String, agentId: String, modeId: String) {
+        self.requestId = requestId
+        self.agentId = agentId
+        self.modeId = modeId
+    }
+}
+
+public struct SetAgentModelRequest: Encodable {
+    public let type = "set_agent_model_request"
+    public let requestId: String
+    public let agentId: String
+    public let modelId: String?   // null clears the override
+    public init(requestId: String, agentId: String, modelId: String?) {
+        self.requestId = requestId
+        self.agentId = agentId
+        self.modelId = modelId
+    }
+}
+
+public struct SetAgentThinkingRequest: Encodable {
+    public let type = "set_agent_thinking_request"
+    public let requestId: String
+    public let agentId: String
+    public let thinkingOptionId: String?
+    public init(requestId: String, agentId: String, thinkingOptionId: String?) {
+        self.requestId = requestId
+        self.agentId = agentId
+        self.thinkingOptionId = thinkingOptionId
+    }
+}
+
+public struct GetProvidersSnapshotRequest: Encodable {
+    public let type = "get_providers_snapshot_request"
+    public let requestId: String
+    public var cwd: String?
+    public init(requestId: String, cwd: String? = nil) {
+        self.requestId = requestId
+        self.cwd = cwd
+    }
+}
+
+public struct FetchAgentsRequest: Encodable {
+    public let type = "fetch_agents_request"
+    public let requestId: String
+    public var filter: AgentFilter?
+    public var sort: [AgentSort]?
+    public var page: AgentPage?
+    public var subscribe: AgentSubscribe?
+
+    public init(requestId: String, filter: AgentFilter? = nil, sort: [AgentSort]? = nil, page: AgentPage? = nil, subscribe: AgentSubscribe? = nil) {
+        self.requestId = requestId
+        self.filter = filter
+        self.sort = sort
+        self.page = page
+        self.subscribe = subscribe
+    }
+
+    public struct AgentFilter: Encodable {
+        public var includeArchived: Bool?
+        public var statuses: [String]?
+        public var requiresAttention: Bool?
+        public init(includeArchived: Bool? = nil, statuses: [String]? = nil, requiresAttention: Bool? = nil) {
+            self.includeArchived = includeArchived
+            self.statuses = statuses
+            self.requiresAttention = requiresAttention
+        }
+    }
+    public struct AgentSort: Encodable {
+        public let key: String
+        public let direction: String
+        public init(key: String, direction: String) {
+            self.key = key
+            self.direction = direction
+        }
+    }
+    public struct AgentPage: Encodable {
+        public let limit: Int
+        public var cursor: String?
+        public init(limit: Int, cursor: String? = nil) {
+            self.limit = limit
+            self.cursor = cursor
+        }
+    }
+    public struct AgentSubscribe: Encodable {
+        public var subscriptionId: String?
+        public init(subscriptionId: String? = nil) {
+            self.subscriptionId = subscriptionId
+        }
+    }
+}
+
+public struct FetchAgentTimelineRequest: Encodable {
+    public let type = "fetch_agent_timeline_request"
+    public let requestId: String
+    public let agentId: String
     /// "tail" (default, most recent), "before", or "after".
-    var direction: String?
-    var cursor: AgentTimelineCursor?
+    public var direction: String?
+    public var cursor: AgentTimelineCursor?
     /// 0 = all. Omit to let the daemon pick a default.
-    var limit: Int?
+    public var limit: Int?
     /// "projected" (recommended for UI) or "canonical" (raw event log).
-    var projection: String?
+    public var projection: String?
+
+    public init(requestId: String, agentId: String, direction: String? = nil, cursor: AgentTimelineCursor? = nil, limit: Int? = nil, projection: String? = nil) {
+        self.requestId = requestId
+        self.agentId = agentId
+        self.direction = direction
+        self.cursor = cursor
+        self.limit = limit
+        self.projection = projection
+    }
 }
 
-struct AgentTimelineCursor: Codable, Hashable, Sendable {
-    let epoch: String
-    let seq: Int
+public struct AgentTimelineCursor: Codable, Hashable, Sendable {
+    public let epoch: String
+    public let seq: Int
+    public init(epoch: String, seq: Int) {
+        self.epoch = epoch
+        self.seq = seq
+    }
 }
 
-struct SendAgentMessageRequest: Encodable {
-    let type = "send_agent_message_request"
-    let requestId: String
-    let agentId: String
-    let text: String
-    var messageId: String?
-    var images: [ImageAttachment]?
-    var attachments: [AgentAttachment]?
+public struct SendAgentMessageRequest: Encodable {
+    public let type = "send_agent_message_request"
+    public let requestId: String
+    public let agentId: String
+    public let text: String
+    public var messageId: String?
+    public var images: [ImageAttachment]?
+    public var attachments: [AgentAttachment]?
 
-    struct ImageAttachment: Encodable {
-        let data: String      // base64
-        let mimeType: String
+    public init(requestId: String, agentId: String, text: String, messageId: String? = nil, images: [ImageAttachment]? = nil, attachments: [AgentAttachment]? = nil) {
+        self.requestId = requestId
+        self.agentId = agentId
+        self.text = text
+        self.messageId = messageId
+        self.images = images
+        self.attachments = attachments
+    }
+
+    public struct ImageAttachment: Encodable {
+        public let data: String      // base64
+        public let mimeType: String
+        public init(data: String, mimeType: String) {
+            self.data = data
+            self.mimeType = mimeType
+        }
     }
 
     /// Upstream `AgentAttachmentsSchema` is a flexible union (GitHub PR/issue etc.).
     /// We keep a minimal shape for MVP and extend as needed.
-    struct AgentAttachment: Encodable {
-        let kind: String
-        let name: String?
-        let mimeType: String?
-        let data: String?
-        let url: String?
+    public struct AgentAttachment: Encodable {
+        public let kind: String
+        public let name: String?
+        public let mimeType: String?
+        public let data: String?
+        public let url: String?
+        public init(kind: String, name: String? = nil, mimeType: String? = nil, data: String? = nil, url: String? = nil) {
+            self.kind = kind
+            self.name = name
+            self.mimeType = mimeType
+            self.data = data
+            self.url = url
+        }
     }
 }
 
-enum WSOutbound: Encodable {
+public enum WSOutbound: Encodable {
     case hello(HelloMessage)
     case pong(PongMessage)
     case ping(PingMessage)
@@ -316,7 +450,7 @@ enum WSOutbound: Encodable {
 
     private enum Keys: String, CodingKey { case type, message }
 
-    func encode(to encoder: Encoder) throws {
+    public func encode(to encoder: Encoder) throws {
         switch self {
         case .hello(let m): try m.encode(to: encoder)
         case .pong(let m): try m.encode(to: encoder)
@@ -333,7 +467,7 @@ enum WSOutbound: Encodable {
 
 /// Session-level inbound messages. Unknown types are preserved as `.unknown`
 /// (with raw JSON) for logging without breaking decode.
-enum SessionInbound: Decodable, @unchecked Sendable {
+public enum SessionInbound: Decodable, @unchecked Sendable {
     case serverInfo(ServerInfoPayload)
     case status(StatusPayload)
     case fetchAgentsResponse(FetchAgentsResponse)
@@ -352,7 +486,7 @@ enum SessionInbound: Decodable, @unchecked Sendable {
 
     private enum Keys: String, CodingKey { case type }
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         let type = try c.decode(String.self, forKey: .type)
         let raw = try Self.reencode(decoder)
@@ -398,7 +532,7 @@ enum SessionInbound: Decodable, @unchecked Sendable {
     }
 }
 
-enum WSInbound: Decodable {
+public enum WSInbound: Decodable {
     case ping
     case pong
     case session(SessionInbound)
@@ -406,7 +540,7 @@ enum WSInbound: Decodable {
 
     private enum Keys: String, CodingKey { case type, message }
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         let type = try c.decode(String.self, forKey: .type)
         switch type {
@@ -429,156 +563,156 @@ enum WSInbound: Decodable {
 
 // MARK: - Simple session payloads
 
-struct ServerInfoPayload: Decodable, Sendable {
-    let type: String
-    let status: String
-    let serverId: String?
-    let hostname: String?
-    let version: String?
+public struct ServerInfoPayload: Decodable, Sendable {
+    public let type: String
+    public let status: String
+    public let serverId: String?
+    public let hostname: String?
+    public let version: String?
 }
 
 /// `{type:"status", payload:{status:"server_info", ...}}` wrapper.
-struct StatusPayload: Decodable, Sendable {
-    let type: String
-    let payload: Inner
-    struct Inner: Decodable, Sendable {
-        let status: String
-        let serverId: String?
-        let hostname: String?
-        let version: String?
-        let agentId: String?    // present when status == "agent_created"
-        let requestId: String?  // present when status == "agent_created"
+public struct StatusPayload: Decodable, Sendable {
+    public let type: String
+    public let payload: Inner
+    public struct Inner: Decodable, Sendable {
+        public let status: String
+        public let serverId: String?
+        public let hostname: String?
+        public let version: String?
+        public let agentId: String?    // present when status == "agent_created"
+        public let requestId: String?  // present when status == "agent_created"
     }
 }
 
-struct FetchAgentsResponse: Decodable, Sendable {
-    let type: String
-    let payload: Payload
-    struct Payload: Decodable, Sendable {
-        let requestId: String
-        let entries: [Entry]
-        let pageInfo: PageInfo?
-        struct Entry: Decodable, Sendable { let agent: AgentSnapshot }
-        struct PageInfo: Decodable, Sendable {
-            let nextCursor: String?
-            let prevCursor: String?
-            let hasMore: Bool?
+public struct FetchAgentsResponse: Decodable, Sendable {
+    public let type: String
+    public let payload: Payload
+    public struct Payload: Decodable, Sendable {
+        public let requestId: String
+        public let entries: [Entry]
+        public let pageInfo: PageInfo?
+        public struct Entry: Decodable, Sendable { public let agent: AgentSnapshot }
+        public struct PageInfo: Decodable, Sendable {
+            public let nextCursor: String?
+            public let prevCursor: String?
+            public let hasMore: Bool?
         }
-        var agents: [AgentSnapshot] { entries.map(\.agent) }
+        public var agents: [AgentSnapshot] { entries.map(\.agent) }
     }
 }
 
-struct SendAgentMessageResponse: Decodable, Sendable {
-    let type: String
-    let payload: Payload
-    struct Payload: Decodable, Sendable {
-        let requestId: String
-        let agentId: String?
-        let accepted: Bool?
-        let error: String?
+public struct SendAgentMessageResponse: Decodable, Sendable {
+    public let type: String
+    public let payload: Payload
+    public struct Payload: Decodable, Sendable {
+        public let requestId: String
+        public let agentId: String?
+        public let accepted: Bool?
+        public let error: String?
     }
 }
 
-struct AckResponsePayload: Decodable, Sendable {
-    let requestId: String
-    let agentId: String?
-    let accepted: Bool?
-    let error: String?
+public struct AckResponsePayload: Decodable, Sendable {
+    public let requestId: String
+    public let agentId: String?
+    public let accepted: Bool?
+    public let error: String?
 }
 
-struct SetAgentModeResponse: Decodable, Sendable {
-    let type: String
-    let payload: AckResponsePayload
+public struct SetAgentModeResponse: Decodable, Sendable {
+    public let type: String
+    public let payload: AckResponsePayload
 }
 
-struct SetAgentModelResponse: Decodable, Sendable {
-    let type: String
-    let payload: AckResponsePayload
+public struct SetAgentModelResponse: Decodable, Sendable {
+    public let type: String
+    public let payload: AckResponsePayload
 }
 
-struct SetAgentThinkingResponse: Decodable, Sendable {
-    let type: String
-    let payload: AckResponsePayload
+public struct SetAgentThinkingResponse: Decodable, Sendable {
+    public let type: String
+    public let payload: AckResponsePayload
 }
 
 /// Lazily pushed status updates for a single agent. Handy for keeping the
 /// sidebar's little status dot in sync without a full `fetch_agents`.
-struct AgentStatusMessage: Decodable, Sendable {
-    let type: String     // "agent_status"
-    let payload: Payload
-    struct Payload: Decodable, Sendable {
-        let agentId: String
-        let status: String
-        let info: AgentSnapshot?
+public struct AgentStatusMessage: Decodable, Sendable {
+    public let type: String     // "agent_status"
+    public let payload: Payload
+    public struct Payload: Decodable, Sendable {
+        public let agentId: String
+        public let status: String
+        public let info: AgentSnapshot?
     }
 }
 
-struct CancelAgentResponse: Decodable, Sendable {
-    let type: String
-    let payload: Payload
-    struct Payload: Decodable, Sendable {
-        let requestId: String
-        let agentId: String
+public struct CancelAgentResponse: Decodable, Sendable {
+    public let type: String
+    public let payload: Payload
+    public struct Payload: Decodable, Sendable {
+        public let requestId: String
+        public let agentId: String
     }
 }
 
-struct GetProvidersSnapshotResponse: Decodable, Sendable {
-    let type: String    // "get_providers_snapshot_response"
-    let payload: Payload
-    struct Payload: Decodable, Sendable {
-        let entries: [ProviderSnapshot]
-        let generatedAt: String
-        let requestId: String
+public struct GetProvidersSnapshotResponse: Decodable, Sendable {
+    public let type: String    // "get_providers_snapshot_response"
+    public let payload: Payload
+    public struct Payload: Decodable, Sendable {
+        public let entries: [ProviderSnapshot]
+        public let generatedAt: String
+        public let requestId: String
     }
 }
 
-struct ProvidersSnapshotUpdatePayload: Decodable, Sendable {
-    let type: String
-    let payload: Payload
-    struct Payload: Decodable, Sendable {
-        let entries: [ProviderSnapshot]
-        let generatedAt: String?
-        let cwd: String?
+public struct ProvidersSnapshotUpdatePayload: Decodable, Sendable {
+    public let type: String
+    public let payload: Payload
+    public struct Payload: Decodable, Sendable {
+        public let entries: [ProviderSnapshot]
+        public let generatedAt: String?
+        public let cwd: String?
     }
 }
 
 /// One provider's model + mode catalog, as returned by
 /// `get_providers_snapshot_response`. Fields we don't consume are dropped.
-struct ProviderSnapshot: Decodable, Sendable, Hashable, Identifiable {
-    let provider: String              // "claude" | "codex" | ...
-    let status: String                // "ready" | "loading" | "error" | "unavailable"
-    let error: String?
-    let models: [ModelDefinition]?
-    let modes: [AgentMode]?
-    let label: String?
-    let defaultModeId: String?
+public struct ProviderSnapshot: Decodable, Sendable, Hashable, Identifiable {
+    public let provider: String              // "claude" | "codex" | ...
+    public let status: String                // "ready" | "loading" | "error" | "unavailable"
+    public let error: String?
+    public let models: [ModelDefinition]?
+    public let modes: [AgentMode]?
+    public let label: String?
+    public let defaultModeId: String?
 
-    var id: String { provider }
+    public var id: String { provider }
 }
 
-struct ModelDefinition: Decodable, Sendable, Hashable, Identifiable {
-    let provider: String
-    let id: String
-    let label: String
-    let description: String?
-    let isDefault: Bool?
-    let thinkingOptions: [SelectOption]?
-    let defaultThinkingOptionId: String?
+public struct ModelDefinition: Decodable, Sendable, Hashable, Identifiable {
+    public let provider: String
+    public let id: String
+    public let label: String
+    public let description: String?
+    public let isDefault: Bool?
+    public let thinkingOptions: [SelectOption]?
+    public let defaultThinkingOptionId: String?
 }
 
-struct AgentMode: Decodable, Sendable, Hashable, Identifiable {
-    let id: String
-    let label: String
-    let description: String?
-    let icon: String?
-    let colorTier: String?
+public struct AgentMode: Decodable, Sendable, Hashable, Identifiable {
+    public let id: String
+    public let label: String
+    public let description: String?
+    public let icon: String?
+    public let colorTier: String?
 }
 
-struct SelectOption: Decodable, Sendable, Hashable, Identifiable {
-    let id: String
-    let label: String
-    let description: String?
-    let isDefault: Bool?
+public struct SelectOption: Decodable, Sendable, Hashable, Identifiable {
+    public let id: String
+    public let label: String
+    public let description: String?
+    public let isDefault: Bool?
 }
 
 // MARK: - Timeline
@@ -586,7 +720,7 @@ struct SelectOption: Decodable, Sendable, Hashable, Identifiable {
 /// One item in the agent timeline. We decode the text-bearing shapes and keep
 /// everything else as `.other` (with the raw type name) so future additions
 /// don't break the client.
-enum TimelineItem: Decodable, Hashable, Sendable {
+public enum TimelineItem: Decodable, Hashable, Sendable {
     case userMessage(text: String, messageId: String?)
     case assistantMessage(text: String)
     case reasoning(text: String)
@@ -595,14 +729,14 @@ enum TimelineItem: Decodable, Hashable, Sendable {
     case error(message: String)
     case other(type: String)
 
-    struct TodoItem: Decodable, Hashable, Sendable {
-        let text: String
-        let completed: Bool
+    public struct TodoItem: Decodable, Hashable, Sendable {
+        public let text: String
+        public let completed: Bool
     }
 
     private enum Keys: String, CodingKey { case type, text, messageId, name, status, callId, id, detail, items, message }
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         let type = try c.decode(String.self, forKey: .type)
         switch type {
@@ -633,7 +767,7 @@ enum TimelineItem: Decodable, Hashable, Sendable {
         }
     }
 
-    var displayKind: String {
+    public var displayKind: String {
         switch self {
         case .userMessage: "user"
         case .assistantMessage: "assistant"
@@ -645,7 +779,7 @@ enum TimelineItem: Decodable, Hashable, Sendable {
         }
     }
 
-    var displayText: String {
+    public var displayText: String {
         switch self {
         case .userMessage(let t, _): return t
         case .assistantMessage(let t): return t
@@ -667,7 +801,7 @@ enum TimelineItem: Decodable, Hashable, Sendable {
 /// `ToolCallDetailPayloadSchema` in upstream messages.ts, trimmed to the
 /// fields we actually render. Anything we don't explicitly model falls
 /// through as `.other(type:)`.
-enum ToolDetail: Decodable, Hashable, Sendable {
+public enum ToolDetail: Decodable, Hashable, Sendable {
     case shell(command: String, cwd: String?, output: String?, exitCode: Int?)
     case read(filePath: String, content: String?, offset: Int?, limit: Int?)
     case edit(filePath: String, unifiedDiff: String?, oldString: String?, newString: String?)
@@ -679,9 +813,9 @@ enum ToolDetail: Decodable, Hashable, Sendable {
     case plan(text: String)
     case other(type: String)
 
-    struct WebResult: Decodable, Hashable, Sendable {
-        let title: String
-        let url: String
+    public struct WebResult: Decodable, Hashable, Sendable {
+        public let title: String
+        public let url: String
     }
 
     private enum Keys: String, CodingKey {
@@ -694,7 +828,7 @@ enum ToolDetail: Decodable, Hashable, Sendable {
         case label, text, icon
     }
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         let t = (try? c.decode(String.self, forKey: .type)) ?? ""
         switch t {
@@ -760,49 +894,49 @@ enum ToolDetail: Decodable, Hashable, Sendable {
     }
 }
 
-struct TimelineEntry: Decodable, Hashable, Sendable, Identifiable {
-    let item: TimelineItem
-    let timestamp: String
-    let seqStart: Int
-    let seqEnd: Int
+public struct TimelineEntry: Decodable, Hashable, Sendable, Identifiable {
+    public let item: TimelineItem
+    public let timestamp: String
+    public let seqStart: Int
+    public let seqEnd: Int
 
     /// Stable identity based on the canonical seq range so SwiftUI lists
     /// don't re-create rows on incremental stream updates.
-    var id: String { "\(seqStart)-\(seqEnd)" }
+    public var id: String { "\(seqStart)-\(seqEnd)" }
 }
 
-struct FetchAgentTimelineResponse: Decodable, Sendable {
-    let type: String
-    let payload: Payload
-    struct Payload: Decodable, Sendable {
-        let requestId: String
-        let agentId: String
-        let epoch: String
-        let entries: [TimelineEntry]
-        let hasOlder: Bool
-        let hasNewer: Bool
-        let startCursor: AgentTimelineCursor?
-        let endCursor: AgentTimelineCursor?
-        let error: String?
+public struct FetchAgentTimelineResponse: Decodable, Sendable {
+    public let type: String
+    public let payload: Payload
+    public struct Payload: Decodable, Sendable {
+        public let requestId: String
+        public let agentId: String
+        public let epoch: String
+        public let entries: [TimelineEntry]
+        public let hasOlder: Bool
+        public let hasNewer: Bool
+        public let startCursor: AgentTimelineCursor?
+        public let endCursor: AgentTimelineCursor?
+        public let error: String?
     }
 }
 
 // MARK: - Agent stream events
 
-struct AgentStreamMessage: Decodable, Sendable {
-    let type: String   // "agent_stream"
-    let payload: Payload
+public struct AgentStreamMessage: Decodable, Sendable {
+    public let type: String   // "agent_stream"
+    public let payload: Payload
 
-    struct Payload: Decodable, Sendable {
-        let agentId: String
-        let timestamp: String
-        let seq: Int?
-        let epoch: String?
-        let event: AgentStreamEvent
+    public struct Payload: Decodable, Sendable {
+        public let agentId: String
+        public let timestamp: String
+        public let seq: Int?
+        public let epoch: String?
+        public let event: AgentStreamEvent
     }
 }
 
-enum AgentStreamEvent: Decodable, Sendable {
+public enum AgentStreamEvent: Decodable, Sendable {
     case threadStarted(sessionId: String)
     case turnStarted
     case turnCompleted
@@ -818,7 +952,7 @@ enum AgentStreamEvent: Decodable, Sendable {
         case type, sessionId, error, reason, item, request, requestId
     }
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         let type = try c.decode(String.self, forKey: .type)
         switch type {
@@ -852,52 +986,55 @@ enum AgentStreamEvent: Decodable, Sendable {
 
 // MARK: - Workspace git remote fetch
 
-struct FetchWorkspacesRequest: Encodable {
-    let type = "fetch_workspaces_request"
-    let requestId: String
-}
-
-struct WorkspaceGitRuntime: Decodable, Sendable {
-    let currentBranch: String?
-    let remoteUrl: String?
-}
-
-struct WorkspaceDescriptor: Decodable, Sendable {
-    let id: String
-    let workspaceDirectory: String?
-    let projectRootPath: String
-    let gitRuntime: WorkspaceGitRuntime?
-}
-
-struct FetchWorkspacesResponse: Decodable, Sendable {
-    let type: String
-    let payload: Payload
-    struct Payload: Decodable, Sendable {
-        let requestId: String
-        let entries: [WorkspaceDescriptor]
+public struct FetchWorkspacesRequest: Encodable {
+    public let type = "fetch_workspaces_request"
+    public let requestId: String
+    public init(requestId: String) {
+        self.requestId = requestId
     }
 }
 
-struct AgentSnapshot: Decodable, Sendable, Identifiable, Hashable {
-    let id: String
-    let provider: String?
-    let cwd: String
-    let status: String
-    let title: String?
-    let createdAt: String
-    let updatedAt: String
-    let lastUserMessageAt: String?
-    let model: String?
-    let thinkingOptionId: String?
-    let effectiveThinkingOptionId: String?
-    let currentModeId: String?
-    let availableModes: [AgentMode]?
-    let lastUsage: AgentUsage?
-    let archivedAt: String?
-    let requiresAttention: Bool?
-    let attentionReason: String?
+public struct WorkspaceGitRuntime: Decodable, Sendable {
+    public let currentBranch: String?
+    public let remoteUrl: String?
+}
 
-    var displayName: String {
+public struct WorkspaceDescriptor: Decodable, Sendable {
+    public let id: String
+    public let workspaceDirectory: String?
+    public let projectRootPath: String
+    public let gitRuntime: WorkspaceGitRuntime?
+}
+
+public struct FetchWorkspacesResponse: Decodable, Sendable {
+    public let type: String
+    public let payload: Payload
+    public struct Payload: Decodable, Sendable {
+        public let requestId: String
+        public let entries: [WorkspaceDescriptor]
+    }
+}
+
+public struct AgentSnapshot: Decodable, Sendable, Identifiable, Hashable {
+    public let id: String
+    public let provider: String?
+    public let cwd: String
+    public let status: String
+    public let title: String?
+    public let createdAt: String
+    public let updatedAt: String
+    public let lastUserMessageAt: String?
+    public let model: String?
+    public let thinkingOptionId: String?
+    public let effectiveThinkingOptionId: String?
+    public let currentModeId: String?
+    public let availableModes: [AgentMode]?
+    public let lastUsage: AgentUsage?
+    public let archivedAt: String?
+    public let requiresAttention: Bool?
+    public let attentionReason: String?
+
+    public var displayName: String {
         if let t = title, !t.isEmpty { return t }
         return String(id.prefix(8))
     }
@@ -905,13 +1042,13 @@ struct AgentSnapshot: Decodable, Sendable, Identifiable, Hashable {
 
 /// Rolling usage snapshot for an agent — tokens in/out, total cost, and
 /// context-window occupancy. Mirrors `AgentUsageSchema` in upstream messages.ts.
-struct AgentUsage: Decodable, Sendable, Hashable {
-    let inputTokens: Int?
-    let cachedInputTokens: Int?
-    let outputTokens: Int?
-    let totalCostUsd: Double?
-    let contextWindowMaxTokens: Int?
-    let contextWindowUsedTokens: Int?
+public struct AgentUsage: Decodable, Sendable, Hashable {
+    public let inputTokens: Int?
+    public let cachedInputTokens: Int?
+    public let outputTokens: Int?
+    public let totalCostUsd: Double?
+    public let contextWindowMaxTokens: Int?
+    public let contextWindowUsedTokens: Int?
 }
 
 // MARK: - Shared helpers
@@ -931,7 +1068,7 @@ extension JSONDecoder {
     }()
 }
 
-enum RawJSON: Codable, Sendable {
+public enum RawJSON: Codable, Sendable {
     case null
     case bool(Bool)
     case number(Double)
@@ -939,7 +1076,7 @@ enum RawJSON: Codable, Sendable {
     case array([RawJSON])
     case object([String: RawJSON])
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let c = try decoder.singleValueContainer()
         if c.decodeNil() { self = .null; return }
         if let v = try? c.decode(Bool.self) { self = .bool(v); return }
@@ -950,7 +1087,7 @@ enum RawJSON: Codable, Sendable {
         throw DecodingError.dataCorruptedError(in: c, debugDescription: "Unsupported JSON token")
     }
 
-    func encode(to encoder: Encoder) throws {
+    public func encode(to encoder: Encoder) throws {
         var c = encoder.singleValueContainer()
         switch self {
         case .null: try c.encodeNil()
