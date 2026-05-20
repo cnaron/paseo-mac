@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import PaseoCore
 
 /// Per-agent conversation state: renders a scrollable list of message rows,
 /// streams new items from `agent_stream` events, and sends outbound messages.

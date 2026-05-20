@@ -1,4 +1,5 @@
 import SwiftUI
+import PaseoCore
 
 struct PreferencesView: View {
     @Environment(SettingsStore.self) private var settings

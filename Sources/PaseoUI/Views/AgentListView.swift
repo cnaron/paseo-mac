@@ -2,6 +2,7 @@
 import AppKit
 #endif
 import SwiftUI
+import PaseoCore
 
 struct AgentListView: View {
     @Binding var showConnect: Bool

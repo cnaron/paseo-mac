@@ -3,6 +3,7 @@ import AppKit
 #endif
 import SwiftUI
 import UniformTypeIdentifiers
+import PaseoCore
 
 struct ComposerView: View {
     @Bindable var vm: ConversationViewModel

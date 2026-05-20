@@ -2,6 +2,7 @@
 import AppKit
 #endif
 import SwiftUI
+import PaseoCore
 
 struct ConversationView: View {
     @Environment(AppViewModel.self) private var app

@@ -1,4 +1,5 @@
 import SwiftUI
+import PaseoCore
 
 /// First-run / reconnect UI for pasting a relay pairing offer.
 /// Accepted formats (handled by `ConnectionOffer.parse`):
