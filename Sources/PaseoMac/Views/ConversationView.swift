@@ -582,16 +582,13 @@ private struct MessageList: View {
                             // Status bar: only shown when there is real turn data
                             // from this session. Nothing on cold start.
                             if searchText.isEmpty {
-                                if vm.isAgentWorking,
-                                   let model = vm.currentDisplayModel ?? vm.lastTurnModel {
+                                if vm.isAgentWorking {
                                     TurnStatusBar(
-                                        model: model,
                                         startedAt: vm.turnStartedAt,
                                         isWorking: true
                                     )
-                                } else if !vm.isAgentWorking, let model = vm.lastTurnModel {
+                                } else if vm.lastTurnModel != nil {
                                     TurnStatusBar(
-                                        model: model,
                                         startedAt: nil,
                                         isWorking: false,
                                         duration: vm.lastTurnDuration
@@ -803,7 +800,7 @@ private struct MessageBubble: View {
             VStack(alignment: .leading, spacing: 4) {
                 MarkdownBodyView(text: group.text, isStreaming: isStreaming)
                 if let chipLabel = displayProviderModel(provider: agentProvider, model: group.modelUsed) {
-                    TurnMetaChip(model: chipLabel, durationSec: group.durationSec, timestamp: group.timestamp)
+                    TurnMetaChip(model: chipLabel, durationSec: group.durationSec)
                 }
             }
             .contextMenu {
@@ -1408,20 +1405,14 @@ private func formatTimestamp(_ iso: String) -> String? {
     return DateFormatter.localizedString(from: date, dateStyle: .short, timeStyle: .short)
 }
 
-// MARK: - Per-bubble model + duration + timestamp chip
+// MARK: - Per-bubble model + duration chip
 
 private struct TurnMetaChip: View {
     let model: String
     let durationSec: TimeInterval?
-    var timestamp: String? = nil
 
     var body: some View {
         HStack(spacing: 4) {
-            if let ts = timestamp, let label = formatTimestamp(ts) {
-                Text(label)
-                Text("·")
-                    .foregroundStyle(.quaternary)
-            }
             Text(prettyModel(model))
             if let d = durationSec {
                 Text("·")
@@ -1457,43 +1448,57 @@ private struct TurnMetaChip: View {
     }
 }
 
-// MARK: - Turn status bar (live timer + model, shown during and after a turn)
+// MARK: - Turn status bar (pill with animated dots + elapsed time)
 
 private struct TurnStatusBar: View {
-    let model: String
     let startedAt: Date?
     let isWorking: Bool
     var duration: TimeInterval? = nil
 
     @State private var elapsed: TimeInterval = 0
+    @State private var phase: Int = 0
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 8) {
             if isWorking {
-                ProgressView()
-                    .controlSize(.mini)
-                    .scaleEffect(0.7)
+                HStack(spacing: 3) {
+                    ForEach(0..<3) { i in
+                        Circle()
+                            .fill(Color.orange.opacity(phase == i ? 0.95 : 0.35))
+                            .frame(width: 5, height: 5)
+                            .animation(.easeInOut(duration: 0.4), value: phase)
+                    }
+                }
             } else {
                 Image(systemName: "checkmark")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.green)
             }
-            Text(prettyModel(model))
-                .font(.caption)
-            Text("·")
-                .foregroundStyle(.tertiary)
             Text(displayTime)
                 .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
         }
-        .foregroundStyle(.secondary)
-        .padding(.leading, 58)  // align with timeline content column (16 padding + 22 icon + 10 gap = 48, +10 breathing room)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(
+            Capsule().fill(Color(nsColor: .controlBackgroundColor))
+        )
+        .overlay(
+            Capsule().stroke(Color.secondary.opacity(0.18), lineWidth: 0.5)
+        )
+        .padding(.leading, 58)
         .padding(.trailing, 16)
         .padding(.top, 4)
         .padding(.bottom, 6)
         .task(id: isWorking) {
             guard isWorking, let start = startedAt else { return }
+            var ticks = 0
             while !Task.isCancelled {
                 elapsed = Date().timeIntervalSince(start)
+                if ticks % 2 == 0 {
+                    phase = (phase + 1) % 3
+                }
+                ticks += 1
                 try? await Task.sleep(nanoseconds: 200_000_000)
             }
         }
@@ -1503,22 +1508,6 @@ private struct TurnStatusBar: View {
         let t = isWorking ? elapsed : (duration ?? elapsed)
         if t < 60 { return String(format: "%.1fs", t) }
         return String(format: "%dm %ds", Int(t) / 60, Int(t) % 60)
-    }
-
-    private func prettyModel(_ raw: String) -> String {
-        var s = raw
-        if s.hasPrefix("claude-") { s.removeFirst("claude-".count) }
-        s = s.replacingOccurrences(of: "[1m]", with: " 1M")
-            .replacingOccurrences(of: "[", with: " ")
-            .replacingOccurrences(of: "]", with: "")
-        let parts = s.split(separator: "-")
-        if parts.count >= 3 {
-            let name = parts[0].capitalized
-            let ver = "\(parts[1]).\(parts[2])"
-            let rest = parts.dropFirst(3).joined(separator: " ")
-            return "\(name) \(ver)\(rest.isEmpty ? "" : " \(rest)")"
-        }
-        return raw
     }
 }
 
