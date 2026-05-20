@@ -1,5 +1,4 @@
 import SwiftUI
-import AppKit
 
 enum Markdown {
 
@@ -463,25 +462,22 @@ private struct CodeBlockView: View {
     let language: String?
     let content: String
     @State private var copied = false
+    @Environment(\.platformPasteboard) private var pasteboard
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
                 if let lang = language, !lang.isEmpty {
-                    Text(lang)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                    Text(lang).font(.caption2).foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(content, forType: .string)
+                    pasteboard.copyString(content)
                     copied = true
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
                 } label: {
                     Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .font(.caption2).foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
                 .help("Copy code")

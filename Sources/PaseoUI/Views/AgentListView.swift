@@ -1,3 +1,6 @@
+#if os(macOS)
+import AppKit
+#endif
 import SwiftUI
 
 struct AgentListView: View {
@@ -223,8 +226,8 @@ private struct ArchivedAgentRow: View {
 struct ProviderIcon: View {
     let provider: String?
     var body: some View {
-        if let nsImage = Self.brandImage(for: provider) {
-            Image(nsImage: nsImage)
+        if let image = Self.brandImage(for: provider) {
+            Image(platformImage: image)
                 .resizable()
                 .interpolation(.high)
                 .aspectRatio(contentMode: .fit)
@@ -237,12 +240,16 @@ struct ProviderIcon: View {
         }
     }
 
-    private static func brandImage(for provider: String?) -> NSImage? {
+    private static func brandImage(for provider: String?) -> PlatformImage? {
         guard let name = brandAssetName(for: provider) else { return nil }
+        #if os(macOS)
         guard let nsImage = NSImage(named: name)
             ?? (Bundle.main.path(forResource: name, ofType: "png").flatMap { NSImage(contentsOfFile: $0) }) else { return nil }
         nsImage.size = NSSize(width: 16, height: 16)
         return nsImage
+        #else
+        return nil
+        #endif
     }
 
     private static func brandAssetName(for provider: String?) -> String? {

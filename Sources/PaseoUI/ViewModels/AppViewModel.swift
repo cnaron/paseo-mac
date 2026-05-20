@@ -1,5 +1,4 @@
 import Foundation
-import AppKit
 import Observation
 
 @MainActor
@@ -134,6 +133,14 @@ final class AppViewModel {
     private var conversations: [String: ConversationViewModel] = [:]
     private let maxCachedConversations = 8
     private var conversationAccessOrder: [String] = []
+
+    // MARK: - Wake notifier (platform-injected)
+
+    private var wakeNotifier: (any PlatformWakeNotifier)?
+
+    func setWakeNotifier(_ notifier: any PlatformWakeNotifier) {
+        self.wakeNotifier = notifier
+    }
 
     // MARK: - Lifecycle
 
@@ -314,11 +321,7 @@ final class AppViewModel {
     }
 
     func startWakeObserver() {
-        NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didWakeNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
+        wakeNotifier?.observe { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self, case .disconnected = self.connectionState,
                       let raw = self.savedOfferRaw, !raw.isEmpty else { return }

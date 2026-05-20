@@ -11,7 +11,9 @@ struct PaseoMacApp: App {
             runSmokeTestAndExit()
         }
         PendingImageAttachment.cleanOldCache()
-        self._appModel = State(initialValue: AppViewModel())
+        let vm = AppViewModel()
+        vm.setWakeNotifier(MacWakeNotifier())
+        self._appModel = State(initialValue: vm)
         self._settings = State(initialValue: SettingsStore())
     }
 
@@ -20,6 +22,9 @@ struct PaseoMacApp: App {
             ContentView()
                 .environment(appModel)
                 .environment(settings)
+                .environment(\.platformPasteboard, MacPasteboard())
+                .environment(\.platformAttachmentOpener, MacAttachmentOpener())
+                .environment(\.platformFileReveal, MacFileReveal())
                 .frame(minWidth: 900, minHeight: 600)
         }
         .windowResizability(.contentMinSize)

@@ -1,4 +1,6 @@
+#if os(macOS)
 import AppKit
+#endif
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -6,6 +8,7 @@ struct ComposerView: View {
     @Bindable var vm: ConversationViewModel
     @Environment(AppViewModel.self) private var app
     @Environment(SettingsStore.self) private var settings
+    @Environment(\.platformAttachmentOpener) private var attachmentOpener
     @FocusState private var focused: Bool
     @State private var dropError: String? = nil
     /// Height of the composer at the moment a drag began. Snapshot so we can
@@ -43,7 +46,11 @@ struct ComposerView: View {
             Color.clear
                 .frame(maxWidth: .infinity).frame(height: 8)
                 .contentShape(Rectangle())
-                .onHover { if $0 { NSCursor.resizeUpDown.push() } else { NSCursor.pop() } }
+                .onHover { hovering in
+                    #if os(macOS)
+                    if hovering { NSCursor.resizeUpDown.push() } else { NSCursor.pop() }
+                    #endif
+                }
                 .gesture(
                     DragGesture(minimumDistance: 0)
                         .onChanged { value in
@@ -69,7 +76,8 @@ struct ComposerView: View {
                     .padding(.horizontal, 12)
             }
 
-            // Text input (placeholder drawn natively by DropInterceptingTextView)
+            // Text input
+            #if os(macOS)
             ComposerTextView(
                 text: $vm.composerText,
                 height: $textFitHeight,
@@ -83,11 +91,21 @@ struct ComposerView: View {
             .frame(height: CGFloat(settings.composerHeight))
             .padding(.horizontal, 12)
             .padding(.bottom, 4)
+            #else
+            TextEditor(text: $vm.composerText)
+                .frame(height: CGFloat(settings.composerHeight))
+                .padding(.horizontal, 12)
+                .padding(.bottom, 4)
+            #endif
 
             // Bottom action row
             bottomActionRow
         }
+        #if os(macOS)
         .background(Color(NSColor.controlBackgroundColor), in: RoundedRectangle(cornerRadius: 14))
+        #else
+        .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 14))
+        #endif
         .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.secondary.opacity(0.15), lineWidth: 1))
         .shadow(color: .black.opacity(0.12), radius: 12, y: 4)
         .frame(maxWidth: 720)
@@ -169,7 +187,7 @@ struct ComposerView: View {
                     ZStack {
                         Circle().fill(Color.primary).frame(width: 28, height: 28)
                         RoundedRectangle(cornerRadius: 3)
-                            .fill(Color(NSColor.controlBackgroundColor))
+                            .fill(Color.white)
                             .frame(width: 10, height: 10)
                     }
                 }
@@ -188,7 +206,7 @@ struct ComposerView: View {
                         .foregroundStyle(
                             isSendDisabled
                             ? Color.secondary.opacity(0.4)
-                            : Color(NSColor.controlBackgroundColor)
+                            : Color.white
                         )
                 }
             }
@@ -200,16 +218,13 @@ struct ComposerView: View {
     }
 
     private func openAttachmentPicker() {
-        let panel = NSOpenPanel()
-        panel.allowsMultipleSelection = true
-        panel.canChooseDirectories = false
-        // Only types Claude Code can actually consume: images (vision) and text/source (inlined)
-        panel.allowedContentTypes = [
-            .image, .text, .sourceCode, .json, .xml, .commaSeparatedText, .shellScript,
-        ]
-        panel.begin { response in
-            guard response == .OK else { return }
-            handleFileURLDrop(panel.urls)
+        attachmentOpener.open(
+            allowedTypes: [
+                .image, .text, .sourceCode, .json, .xml, .commaSeparatedText, .shellScript,
+            ],
+            allowsMultiple: true
+        ) { urls in
+            handleFileURLDrop(urls)
         }
     }
 
@@ -324,9 +339,11 @@ struct ComposerView: View {
         }
     }
 
-    private func handleImageDrop(_ images: [NSImage]) {
+    private func handleImageDrop(_ images: [PlatformImage]) {
+        #if os(macOS)
         let attachments = images.compactMap { PendingImageAttachment.from(image: $0) }
         if !attachments.isEmpty { vm.addImages(attachments) }
+        #endif
     }
 
     private func handleLargeTextPaste(_ text: String) {
@@ -344,7 +361,16 @@ struct ComposerView: View {
 
     // MARK: - Drop
 
-    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+    private func handleDrop(_ providers: [AnyObject]) -> Bool {
+        #if os(macOS)
+        return handleDropMac(providers as? [NSItemProvider] ?? [])
+        #else
+        return false
+        #endif
+    }
+
+    #if os(macOS)
+    private func handleDropMac(_ providers: [NSItemProvider]) -> Bool {
         dropError = nil
         var consumed = false
         for provider in providers {
@@ -382,6 +408,7 @@ struct ComposerView: View {
         }
         return consumed
     }
+    #endif
 }
 
 // MARK: - Pickers
@@ -667,6 +694,7 @@ private struct ImageChip: View {
     var body: some View {
         ZStack(alignment: .topTrailing) {
             Group {
+                #if os(macOS)
                 if let ns = NSImage(contentsOf: attachment.fileURL) {
                     Image(nsImage: ns)
                         .resizable()
@@ -684,6 +712,11 @@ private struct ImageChip: View {
                         .fill(.ultraThinMaterial)
                         .frame(width: 64, height: 64)
                 }
+                #else
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(.ultraThinMaterial)
+                    .frame(width: 64, height: 64)
+                #endif
             }
             .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
 
@@ -772,6 +805,7 @@ private struct FileChip: View {
     }
 }
 
+#if os(macOS)
 /// Non-isolated so it can be called from provider callbacks that run off
 /// the main actor without tripping Swift-6 data-race checking.
 private func resolveFileURLNonIsolated(from item: NSSecureCoding?) -> URL? {
@@ -781,6 +815,7 @@ private func resolveFileURLNonIsolated(from item: NSSecureCoding?) -> URL? {
     }
     return nil
 }
+#endif
 
 
 
@@ -841,4 +876,3 @@ private struct PendingThinkingPicker: View {
         thinkingOptions?.first(where: { $0.id == effectiveId })?.label ?? "Thinking"
     }
 }
-

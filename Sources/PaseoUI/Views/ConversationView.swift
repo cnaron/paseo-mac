@@ -1,7 +1,11 @@
+#if os(macOS)
+import AppKit
+#endif
 import SwiftUI
 
 struct ConversationView: View {
     @Environment(AppViewModel.self) private var app
+    @Environment(\.openURL) private var openURL
     let agentId: String
     @State private var searchText: String = ""
     @State private var isSearchVisible: Bool = false
@@ -184,9 +188,7 @@ struct ConversationView: View {
             }
             if let urlStr = gitHubUrl, let url = URL(string: urlStr) {
                 ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        NSWorkspace.shared.open(url)
-                    } label: {
+                    Button { openURL(url) } label: {
                         Label("Open", systemImage: "arrow.up.right.square")
                     }
                     .help("Open repository on GitHub")
@@ -259,7 +261,11 @@ struct ConversationView: View {
             .padding(.vertical, 9)
             Divider()
         }
-        .background(Color(NSColor.windowBackgroundColor))
+        #if os(macOS)
+        .background(Color(nsColor: .windowBackgroundColor))
+        #else
+        .background(Color(.systemBackground))
+        #endif
     }
 
     private func toggleSearch() {
@@ -731,6 +737,7 @@ private struct MessageBubble: View {
     var onSubmitQuestionAnswers: (([String: String]) -> Void)? = nil
     @State private var reasoningExpanded: Bool = false
     @State private var isExpanded: Bool = false
+    @Environment(\.platformPasteboard) private var pasteboard
 
     private var isLong: Bool { group.text.count > 500 }
 
@@ -801,8 +808,7 @@ private struct MessageBubble: View {
                     .background(Color.accentColor.opacity(0.18), in: RoundedRectangle(cornerRadius: 12))
                     .contextMenu {
                         Button("Copy text") {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(group.text, forType: .string)
+                            pasteboard.copyString(group.text)
                         }
                     }
                 }
@@ -830,8 +836,7 @@ private struct MessageBubble: View {
             }
             .contextMenu {
                 Button("Copy text") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(group.text, forType: .string)
+                    pasteboard.copyString(group.text)
                 }
             }
         }
@@ -1019,6 +1024,7 @@ private struct FlowStep<Content: View>: View {
 private struct ToolRowTimeline: View {
     let info: ConversationViewModel.ToolInfo
     @State private var expanded: Bool = false
+    @Environment(\.platformFileReveal) private var fileReveal
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -1043,7 +1049,7 @@ private struct ToolRowTimeline: View {
                 if target.hasPrefix("/") {
                     Button {
                         let (filePath, _) = parseFilePath(target)
-                        NSWorkspace.shared.open(URL(fileURLWithPath: filePath))
+                        fileReveal.revealFile(atPath: filePath)
                     } label: {
                         Text(truncate(target, max: 64))
                             .font(.callout)
@@ -1286,6 +1292,7 @@ private struct UserBubbleImages: View {
     var body: some View {
         LazyVGrid(columns: gridColumns(count: images.count), spacing: 4) {
             ForEach(images) { img in
+                #if os(macOS)
                 if let ns = NSImage(contentsOf: img.fileURL) {
                     Image(nsImage: ns)
                         .resizable()
@@ -1298,9 +1305,11 @@ private struct UserBubbleImages: View {
                         .contentShape(Rectangle())
                         .onTapGesture { zoomed = img }
                 }
+                #endif
             }
         }
         .sheet(item: $zoomed) { img in
+            #if os(macOS)
             if let ns = NSImage(contentsOf: img.fileURL) {
                 ZStack(alignment: .topTrailing) {
                     Image(nsImage: ns)
@@ -1321,6 +1330,7 @@ private struct UserBubbleImages: View {
                     .padding(14)
                 }
             }
+            #endif
         }
     }
 
@@ -1506,7 +1516,11 @@ private struct TurnStatusBar: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .background(
+            #if os(macOS)
             Capsule().fill(Color(nsColor: .controlBackgroundColor))
+            #else
+            AnyShapeStyle(.regularMaterial)
+            #endif
         )
         .overlay(
             Capsule().stroke(Color.secondary.opacity(0.18), lineWidth: 0.5)
@@ -1953,4 +1967,3 @@ private struct FlowLayout: Layout {
         }
     }
 }
-

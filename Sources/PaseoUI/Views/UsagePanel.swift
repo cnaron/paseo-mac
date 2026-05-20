@@ -100,10 +100,11 @@ struct UsagePanel: View {
 // MARK: - Gemini usage link row
 
 private struct GeminiUsageRow: View {
+    @Environment(\.openURL) private var openURL
     var body: some View {
         Button {
             if let url = URL(string: "https://aistudio.google.com/app/usage") {
-                NSWorkspace.shared.open(url)
+                openURL(url)
             }
         } label: {
             HStack(spacing: 6) {

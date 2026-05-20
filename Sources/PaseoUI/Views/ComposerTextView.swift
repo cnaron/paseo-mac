@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
@@ -290,3 +291,4 @@ final class DropInterceptingTextView: NSTextView {
         pb.canReadObject(forClasses: [NSImage.self], options: nil)
     }
 }
+#endif
