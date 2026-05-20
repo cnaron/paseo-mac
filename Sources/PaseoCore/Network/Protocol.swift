@@ -8,7 +8,7 @@ public enum WSProtocol {
 
 // MARK: - Outbound (Mac → daemon)
 
-public struct HelloMessage: Encodable {
+public struct HelloMessage: Encodable, Sendable {
     public let type = "hello"
     public let clientId: String
     public let clientType: ClientType
@@ -16,11 +16,11 @@ public struct HelloMessage: Encodable {
     public let appVersion: String?
     public let capabilities: Capabilities?
 
-    public enum ClientType: String, Encodable {
+    public enum ClientType: String, Encodable, Sendable {
         case mobile, browser, cli, mcp
     }
 
-    public struct Capabilities: Encodable {
+    public struct Capabilities: Encodable, Sendable {
         public var voice: Bool?
         public var pushNotifications: Bool?
         public init(voice: Bool? = nil, pushNotifications: Bool? = nil) {
@@ -38,7 +38,7 @@ public struct HelloMessage: Encodable {
     }
 }
 
-public struct PongMessage: Encodable {
+public struct PongMessage: Encodable, Sendable {
     public let type = "pong"
     public init() {}
 }
@@ -47,7 +47,7 @@ public struct PongMessage: Encodable {
 /// relay (and daemon) sees fresh app traffic on the wire — WebSocket
 /// control-frame PINGs aren't always preserved across relays/CDNs.
 /// Daemon replies with a bare `{"type":"pong"}`.
-public struct PingMessage: Encodable {
+public struct PingMessage: Encodable, Sendable {
     public let type = "ping"
     public let requestId: String
     public let clientSentAt: Int64    // ms since epoch
@@ -58,7 +58,7 @@ public struct PingMessage: Encodable {
 }
 
 /// Session-level request wrapped in `{type:"session", message:<inner>}`.
-public enum SessionRequest: Encodable {
+public enum SessionRequest: Encodable, Sendable {
     case fetchAgents(FetchAgentsRequest)
     case fetchAgentTimeline(FetchAgentTimelineRequest)
     case sendAgentMessage(SendAgentMessageRequest)
@@ -150,7 +150,7 @@ public struct AskUserQuestion: Codable, Hashable, Sendable {
 /// Builds `agent_permission_response` payload. For an AskUserQuestion this
 /// echoes the original questions back alongside the user's answers (keyed
 /// by question header — daemon normalizes to whatever the tool expects).
-public struct AgentPermissionResponseRequest: Encodable {
+public struct AgentPermissionResponseRequest: Encodable, Sendable {
     public let type = "agent_permission_response"
     public let agentId: String
     public let requestId: String
@@ -162,7 +162,7 @@ public struct AgentPermissionResponseRequest: Encodable {
         self.response = response
     }
 
-    public enum Response: Encodable {
+    public enum Response: Encodable, Sendable {
         case allow(updatedInput: AskUserQuestionAnswers?)
         case deny(message: String?)
 
@@ -185,7 +185,7 @@ public struct AgentPermissionResponseRequest: Encodable {
 /// Shape of `updatedInput` when answering AskUserQuestion. Carries the
 /// original questions back verbatim so the daemon-side normalizer can
 /// re-key answers to whatever the underlying tool wants.
-public struct AskUserQuestionAnswers: Encodable {
+public struct AskUserQuestionAnswers: Encodable, Sendable {
     public let questions: [AskUserQuestion.Question]
     public let answers: [String: String]
     public init(questions: [AskUserQuestion.Question], answers: [String: String]) {
@@ -194,7 +194,7 @@ public struct AskUserQuestionAnswers: Encodable {
     }
 }
 
-public struct CreateAgentRequest: Encodable {
+public struct CreateAgentRequest: Encodable, Sendable {
     public let type = "create_agent_request"
     public let requestId: String
     public let config: Config
@@ -216,7 +216,7 @@ public struct CreateAgentRequest: Encodable {
         self.config = config
     }
 
-    public struct Config: Encodable {
+    public struct Config: Encodable, Sendable {
         public let provider: String
         public let cwd: String
         public let model: String?
@@ -250,7 +250,7 @@ public struct CreateAgentRequest: Encodable {
     }
 }
 
-public struct CancelAgentRequest: Encodable {
+public struct CancelAgentRequest: Encodable, Sendable {
     public let type = "cancel_agent_request"
     public let requestId: String
     public let agentId: String
@@ -260,7 +260,7 @@ public struct CancelAgentRequest: Encodable {
     }
 }
 
-public struct ArchiveAgentRequest: Encodable {
+public struct ArchiveAgentRequest: Encodable, Sendable {
     public let type = "archive_agent_request"
     public let requestId: String
     public let agentId: String
@@ -270,7 +270,7 @@ public struct ArchiveAgentRequest: Encodable {
     }
 }
 
-public struct SetAgentModeRequest: Encodable {
+public struct SetAgentModeRequest: Encodable, Sendable {
     public let type = "set_agent_mode_request"
     public let requestId: String
     public let agentId: String
@@ -282,7 +282,7 @@ public struct SetAgentModeRequest: Encodable {
     }
 }
 
-public struct SetAgentModelRequest: Encodable {
+public struct SetAgentModelRequest: Encodable, Sendable {
     public let type = "set_agent_model_request"
     public let requestId: String
     public let agentId: String
@@ -294,7 +294,7 @@ public struct SetAgentModelRequest: Encodable {
     }
 }
 
-public struct SetAgentThinkingRequest: Encodable {
+public struct SetAgentThinkingRequest: Encodable, Sendable {
     public let type = "set_agent_thinking_request"
     public let requestId: String
     public let agentId: String
@@ -306,7 +306,7 @@ public struct SetAgentThinkingRequest: Encodable {
     }
 }
 
-public struct GetProvidersSnapshotRequest: Encodable {
+public struct GetProvidersSnapshotRequest: Encodable, Sendable {
     public let type = "get_providers_snapshot_request"
     public let requestId: String
     public var cwd: String?
@@ -316,7 +316,7 @@ public struct GetProvidersSnapshotRequest: Encodable {
     }
 }
 
-public struct FetchAgentsRequest: Encodable {
+public struct FetchAgentsRequest: Encodable, Sendable {
     public let type = "fetch_agents_request"
     public let requestId: String
     public var filter: AgentFilter?
@@ -332,7 +332,7 @@ public struct FetchAgentsRequest: Encodable {
         self.subscribe = subscribe
     }
 
-    public struct AgentFilter: Encodable {
+    public struct AgentFilter: Encodable, Sendable {
         public var includeArchived: Bool?
         public var statuses: [String]?
         public var requiresAttention: Bool?
@@ -342,7 +342,7 @@ public struct FetchAgentsRequest: Encodable {
             self.requiresAttention = requiresAttention
         }
     }
-    public struct AgentSort: Encodable {
+    public struct AgentSort: Encodable, Sendable {
         public let key: String
         public let direction: String
         public init(key: String, direction: String) {
@@ -350,7 +350,7 @@ public struct FetchAgentsRequest: Encodable {
             self.direction = direction
         }
     }
-    public struct AgentPage: Encodable {
+    public struct AgentPage: Encodable, Sendable {
         public let limit: Int
         public var cursor: String?
         public init(limit: Int, cursor: String? = nil) {
@@ -358,7 +358,7 @@ public struct FetchAgentsRequest: Encodable {
             self.cursor = cursor
         }
     }
-    public struct AgentSubscribe: Encodable {
+    public struct AgentSubscribe: Encodable, Sendable {
         public var subscriptionId: String?
         public init(subscriptionId: String? = nil) {
             self.subscriptionId = subscriptionId
@@ -366,7 +366,7 @@ public struct FetchAgentsRequest: Encodable {
     }
 }
 
-public struct FetchAgentTimelineRequest: Encodable {
+public struct FetchAgentTimelineRequest: Encodable, Sendable {
     public let type = "fetch_agent_timeline_request"
     public let requestId: String
     public let agentId: String
@@ -397,7 +397,7 @@ public struct AgentTimelineCursor: Codable, Hashable, Sendable {
     }
 }
 
-public struct SendAgentMessageRequest: Encodable {
+public struct SendAgentMessageRequest: Encodable, Sendable {
     public let type = "send_agent_message_request"
     public let requestId: String
     public let agentId: String
@@ -415,7 +415,7 @@ public struct SendAgentMessageRequest: Encodable {
         self.attachments = attachments
     }
 
-    public struct ImageAttachment: Encodable {
+    public struct ImageAttachment: Encodable, Sendable {
         public let data: String      // base64
         public let mimeType: String
         public init(data: String, mimeType: String) {
@@ -426,7 +426,7 @@ public struct SendAgentMessageRequest: Encodable {
 
     /// Upstream `AgentAttachmentsSchema` is a flexible union (GitHub PR/issue etc.).
     /// We keep a minimal shape for MVP and extend as needed.
-    public struct AgentAttachment: Encodable {
+    public struct AgentAttachment: Encodable, Sendable {
         public let kind: String
         public let name: String?
         public let mimeType: String?
@@ -442,7 +442,7 @@ public struct SendAgentMessageRequest: Encodable {
     }
 }
 
-public enum WSOutbound: Encodable {
+public enum WSOutbound: Encodable, Sendable {
     case hello(HelloMessage)
     case pong(PongMessage)
     case ping(PingMessage)
@@ -986,7 +986,7 @@ public enum AgentStreamEvent: Decodable, Sendable {
 
 // MARK: - Workspace git remote fetch
 
-public struct FetchWorkspacesRequest: Encodable {
+public struct FetchWorkspacesRequest: Encodable, Sendable {
     public let type = "fetch_workspaces_request"
     public let requestId: String
     public init(requestId: String) {

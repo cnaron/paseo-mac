@@ -503,7 +503,7 @@ public actor DaemonClient {
         defer { timeoutTask.cancel() }
         return try await withCheckedThrowingContinuation { cont in
             self.pending[requestId] = cont
-            Task { [weak self] in
+            Task { [weak self, outbound] in
                 do {
                     try await self?.rawSend(outbound)
                 } catch {
