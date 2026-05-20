@@ -1523,6 +1523,7 @@ private struct TurnStatusBar: View {
         .overlay(
             Capsule().stroke(Color.secondary.opacity(0.18), lineWidth: 0.5)
         )
+        .shadow(color: .black.opacity(0.08), radius: 6, x: 0, y: 2)
         .padding(.leading, 58)
         .padding(.trailing, 16)
         .padding(.top, 4)
