@@ -1515,13 +1515,11 @@ private struct TurnStatusBar: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
-        .background(
-            #if os(macOS)
-            Capsule().fill(Color(nsColor: .controlBackgroundColor))
-            #else
-            AnyShapeStyle(.regularMaterial)
-            #endif
-        )
+        #if os(macOS)
+        .background(Capsule().fill(Color(nsColor: .controlBackgroundColor)))
+        #else
+        .background(.regularMaterial, in: Capsule())
+        #endif
         .overlay(
             Capsule().stroke(Color.secondary.opacity(0.18), lineWidth: 0.5)
         )
