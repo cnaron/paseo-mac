@@ -297,7 +297,7 @@ struct ConversationView: View {
         let isCurrent: Bool
     }
 
-    private static let providerOrder = ["claude", "gemini", "codex", "opencode", "copilot", "pi"]
+    private static let providerOrder = ["claude", "antigravity", "codex", "opencode", "copilot", "pi"]
 
     private var branchTargets: [BranchTarget] {
         let current = agent()?.provider
@@ -968,7 +968,7 @@ private struct MessageBubble: View {
     private func displayProviderModel(provider: String?, model: String?) -> String? {
         if let m = model, !m.isEmpty { return m }
         switch provider {
-        case "gemini": return "Gemini"
+        case "antigravity": return "Antigravity"
         case "claude": return "Claude"
         case "codex": return "Codex"
         case "opencode": return "OpenCode"

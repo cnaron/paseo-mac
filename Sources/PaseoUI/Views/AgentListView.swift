@@ -76,7 +76,7 @@ struct AgentListView: View {
                 isUpdating: app.isUpdatingClaudeCode,
                 onCheckVersion: { Task { await app.checkClaudeCodeVersion() } },
                 onUpdate: { Task { await app.updateClaudeCode() } },
-                hasGemini: app.providers.contains(where: { $0.provider == "gemini" && $0.status == "ready" })
+                hasAntigravity: app.providers.contains(where: { $0.provider == "antigravity" && $0.status == "ready" })
             )
             Divider()
             ConnectionFooter(showConnect: $showConnect)
@@ -222,7 +222,7 @@ private struct ArchivedAgentRow: View {
     }
 }
 
-// MARK: - Provider icon (real PNG logo for Claude/Gemini; SF Symbol fallback for others)
+// MARK: - Provider icon (real PNG logo for Claude/Antigravity; SF Symbol fallback for others)
 
 struct ProviderIcon: View {
     let provider: String?
@@ -256,7 +256,7 @@ struct ProviderIcon: View {
     private static func brandAssetName(for provider: String?) -> String? {
         switch provider {
         case "claude": return "claude"
-        case "gemini": return "gemini"
+        case "antigravity": return "antigravity"
         default: return nil
         }
     }
@@ -264,7 +264,7 @@ struct ProviderIcon: View {
     static func symbolName(for provider: String?) -> String {
         switch provider {
         case "claude": return "sparkles"
-        case "gemini": return "diamond.fill"
+        case "antigravity": return "arrow.up.circle.fill"
         case "codex": return "terminal.fill"
         case "opencode": return "chevron.left.forwardslash.chevron.right"
         case "copilot": return "airplane.circle"

@@ -46,7 +46,7 @@ struct UsagePanel: View {
     var isUpdating: Bool = false
     var onCheckVersion: (() -> Void)? = nil
     var onUpdate: (() -> Void)? = nil
-    var hasGemini: Bool = false
+    var hasAntigravity: Bool = false
 
     private var updateAvailable: Bool {
         guard let current = currentVersion, let latest = latestVersion,
@@ -90,12 +90,12 @@ struct UsagePanel: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 7)
             }
-            if hasGemini {
+            if hasAntigravity {
                 if usage != nil || currentVersion != nil { Divider() }
-                GeminiUsageRow()
+                AntigravityUsageRow()
             }
             if currentVersion != nil || latestVersion != nil {
-                if usage != nil || hasGemini { Divider() }
+                if usage != nil || hasAntigravity { Divider() }
                 ClaudeCodeVersionRow(
                     currentVersion: currentVersion,
                     latestVersion: latestVersion,
@@ -110,37 +110,22 @@ struct UsagePanel: View {
     }
 }
 
-// MARK: - Gemini usage link row
+// MARK: - Antigravity usage link row
 
-private struct GeminiUsageRow: View {
-    @Environment(\.openURL) private var openURL
+private struct AntigravityUsageRow: View {
     var body: some View {
-        Button {
-            if let url = URL(string: "https://aistudio.google.com/app/usage") {
-                openURL(url)
-            }
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "g.circle.fill")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Text("Gemini")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Text("· free tier: 60 RPM / 1000 RPD")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                Spacer()
-                Image(systemName: "arrow.up.right")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 7)
-            .contentShape(Rectangle())
+        HStack(spacing: 6) {
+            Image(systemName: "a.circle.fill")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Text("Antigravity")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text("· CLI provider ready")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+            Spacer()
         }
-        .buttonStyle(.plain)
-        .help("Open Google AI Studio usage page")
     }
 }
 

@@ -188,7 +188,7 @@ public final class AppViewModel {
             self.connectionState = .connected
             EventLogger.shared.log("conn", "connected", ["agents": agents.count])
 
-            let events = client.events
+            let events = await client.events
             self.eventTask = Task { [weak self] in
                 for await session in events {
                     await self?.ingest(session: session)
