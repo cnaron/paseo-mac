@@ -819,6 +819,11 @@ enum TimelineItem: Decodable, Hashable, Sendable {
     case toolCall(name: String, status: String, callId: String, detail: ToolDetail)
     case todo(items: [TodoItem])
     case error(message: String)
+    /// Codex' `/compact` (and auto-compaction) event. `status="loading"`
+    /// shows up while the daemon is compacting; the same call ID flips
+    /// to `status="completed"` when done. `trigger` is "auto" / "manual".
+    /// `preTokens` is the context-window size before compaction.
+    case compaction(status: String, trigger: String?, preTokens: Int?)
     case other(type: String)
 
     struct TodoItem: Decodable, Hashable, Sendable {
@@ -826,7 +831,9 @@ enum TimelineItem: Decodable, Hashable, Sendable {
         let completed: Bool
     }
 
-    private enum Keys: String, CodingKey { case type, text, messageId, name, status, callId, id, detail, items, message }
+    private enum Keys: String, CodingKey {
+        case type, text, messageId, name, status, callId, id, detail, items, message, trigger, preTokens
+    }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
@@ -859,6 +866,12 @@ enum TimelineItem: Decodable, Hashable, Sendable {
             // latter when callers used `String(err)` directly — we'd see
             // that text on the wire and now prefer the structured shape.
             self = .error(message: Self.decodeErrorMessage(container: c))
+        case "compaction":
+            self = .compaction(
+                status: (try? c.decode(String.self, forKey: .status)) ?? "completed",
+                trigger: try? c.decode(String.self, forKey: .trigger),
+                preTokens: try? c.decode(Int.self, forKey: .preTokens)
+            )
         default:
             self = .other(type: type)
         }
@@ -872,6 +885,7 @@ enum TimelineItem: Decodable, Hashable, Sendable {
         case .toolCall: "tool"
         case .todo: "todo"
         case .error: "error"
+        case .compaction: "compaction"
         case .other(let t): t
         }
     }
@@ -911,6 +925,12 @@ enum TimelineItem: Decodable, Hashable, Sendable {
                 return "Backend internal error (the daemon couldn't serialize the upstream error)"
             }
             return m
+        case .compaction(let status, let trigger, let preTokens):
+            let action = (trigger == "manual") ? "Compacted" : "Auto-compacted"
+            let suffix = preTokens.map { " · was \($0.formatted()) tokens" } ?? ""
+            return status == "loading"
+                ? "Compacting context…\(suffix)"
+                : "\(action) context\(suffix)"
         case .other(let t): return "[\(t)]"
         }
     }

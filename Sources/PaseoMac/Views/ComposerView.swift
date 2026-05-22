@@ -120,6 +120,16 @@ struct ComposerView: View {
             .buttonStyle(.plain)
             .help("Add attachment")
 
+            // Inline context window bar for the active agent. Toolbar
+            // already has a chip, but the composer is what the user is
+            // actually looking at while typing — so the same data lives
+            // here too, in a slimmer form.
+            if let agent = app.agents.first(where: { $0.id == vm.agentId }),
+               let used = agent.lastUsage?.contextWindowUsedTokens,
+               let max = agent.lastUsage?.contextWindowMaxTokens, max > 0 {
+                ComposerContextBar(used: used, max: max)
+            }
+
             Spacer()
 
             // Model + thinking + mode pickers (right-aligned text)
@@ -427,17 +437,20 @@ private struct ModePicker: View {
     }
     private var modeColor: Color {
         switch agent.currentModeId {
-        case "bypassPermissions": return .red
-        case "acceptEdits": return .orange
+        case "bypassPermissions", "full-access": return .red
+        case "acceptEdits", "auto": return .orange
         case "plan": return .blue
+        case "auto-review": return .green
         default: return .secondary
         }
     }
     private func iconFor(mode: AgentMode?) -> String {
         switch mode?.id {
-        case "bypassPermissions": return "shield.slash"
+        case "bypassPermissions", "full-access": return "shield.slash"
         case "acceptEdits": return "checkmark.shield"
         case "plan": return "list.bullet.rectangle"
+        case "auto": return "shield.lefthalf.filled"
+        case "auto-review": return "eye.trianglebadge.exclamationmark"
         default: return "shield"
         }
     }
@@ -635,13 +648,25 @@ private struct PendingModelPicker: View {
 
     var body: some View {
         if let models = availableModels, !models.isEmpty {
+            let split = Self.partition(models, provider: app.pendingNewAgentProvider)
             Menu {
-                ForEach(models) { m in
+                ForEach(split.primary) { m in
                     Button {
                         app.pendingNewAgentModel = m.id
                         app.pendingNewAgentThinkingOptionId = nil
                     } label: {
                         Text(m.label + (m.id == effectiveModelId ? "  ✓" : ""))
+                    }
+                }
+                if !split.secondary.isEmpty {
+                    Divider()
+                    ForEach(split.secondary) { m in
+                        Button {
+                            app.pendingNewAgentModel = m.id
+                            app.pendingNewAgentThinkingOptionId = nil
+                        } label: {
+                            Text(m.label + (m.id == effectiveModelId ? "  ✓" : ""))
+                        }
                     }
                 }
             } label: {
@@ -665,6 +690,47 @@ private struct PendingModelPicker: View {
         guard let models = availableModels else { return "Model" }
         let id = effectiveModelId
         return models.first(where: { $0.id == id })?.label ?? "Model"
+    }
+
+    /// Split models into a primary section (most useful: default model
+    /// plus any provider-specific "favored" variants) and a secondary
+    /// section (everything else: mini/older/etc.). Codex returns 5
+    /// models and the picker becomes tedious to scan; this brings the
+    /// likely picks to the top without hiding the rest.
+    private struct ModelSplit {
+        var primary: [ModelDefinition]
+        var secondary: [ModelDefinition]
+    }
+
+    private static func partition(_ models: [ModelDefinition], provider: String) -> ModelSplit {
+        var primary: [ModelDefinition] = []
+        var secondary: [ModelDefinition] = []
+        for m in models {
+            if isPrimary(m, provider: provider) { primary.append(m) }
+            else { secondary.append(m) }
+        }
+        // Only split if both sides are non-trivial. Otherwise show one flat list.
+        if primary.isEmpty || secondary.isEmpty {
+            return ModelSplit(primary: models, secondary: [])
+        }
+        return ModelSplit(primary: primary, secondary: secondary)
+    }
+
+    private static func isPrimary(_ m: ModelDefinition, provider: String) -> Bool {
+        if m.isDefault == true { return true }
+        let id = m.id.lowercased()
+        switch provider {
+        case "codex":
+            // Codex catalog includes -mini and older versions that most
+            // users rarely pick — keep the coding-tuned variant at the top.
+            return id.contains("codex")
+        case "claude":
+            // 1M-context Opus variants and the newest Opus are the
+            // common Claude picks. Push Sonnet / Haiku to the secondary list.
+            return id.contains("opus")
+        default:
+            return false
+        }
     }
 }
 
@@ -711,17 +777,20 @@ private struct PendingModePicker: View {
     }
     private var modeColor: Color {
         switch effectiveModeId {
-        case "bypassPermissions": return .red
-        case "acceptEdits": return .orange
+        case "bypassPermissions", "full-access": return .red
+        case "acceptEdits", "auto": return .orange
         case "plan": return .blue
+        case "auto-review": return .green
         default: return .secondary
         }
     }
     private func iconFor(mode: AgentMode?) -> String {
         switch mode?.id {
-        case "bypassPermissions": return "shield.slash"
+        case "bypassPermissions", "full-access": return "shield.slash"
         case "acceptEdits": return "checkmark.shield"
         case "plan": return "list.bullet.rectangle"
+        case "auto": return "shield.lefthalf.filled"
+        case "auto-review": return "eye.trianglebadge.exclamationmark"
         default: return "shield"
         }
     }
@@ -1029,3 +1098,40 @@ private struct SubagentRow: View {
     }
 }
 
+// MARK: - Composer context bar
+
+/// Thin inline progress bar that mirrors the toolbar UsageChip but sits
+/// inside the composer for at-a-glance "how full is my context" while
+/// typing. Goes through the same color thresholds (orange at 70%,
+/// red at 90%) so the user learns a single mental model. Tooltip carries
+/// the exact numbers so we don't crowd the bottom row.
+struct ComposerContextBar: View {
+    let used: Int
+    let max: Int
+
+    var body: some View {
+        let ratio = self.max > 0 ? min(1.0, Double(used) / Double(self.max)) : 0
+        HStack(spacing: 4) {
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(Color.secondary.opacity(0.18))
+                    Capsule()
+                        .fill(barColor(ratio))
+                        .frame(width: geo.size.width * ratio)
+                }
+            }
+            .frame(width: 36, height: 4)
+            Text("\(Int(ratio * 100))%")
+                .font(.system(size: 10).monospacedDigit())
+                .foregroundStyle(.tertiary)
+        }
+        .help("Context: \(used.formatted()) / \(self.max.formatted()) tokens (\(Int(ratio * 100))%)")
+    }
+
+    private func barColor(_ ratio: Double) -> Color {
+        if ratio >= 0.9 { return .red }
+        if ratio >= 0.7 { return .orange }
+        return .accentColor
+    }
+}

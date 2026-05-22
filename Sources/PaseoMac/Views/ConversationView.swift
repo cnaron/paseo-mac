@@ -887,7 +887,16 @@ private struct MessageBubble: View {
             Text(group.text)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
-                .foregroundStyle(group.kind == "error" ? Color.red : Color.secondary)
+                .foregroundStyle(sideTextColor)
+                .font(group.kind == "compaction" ? .callout.italic() : .body)
+        }
+    }
+
+    private var sideTextColor: Color {
+        switch group.kind {
+        case "error": return .red
+        case "compaction": return .accentColor
+        default: return .secondary
         }
     }
 
@@ -955,6 +964,7 @@ private struct MessageBubble: View {
         switch group.kind {
         case "error": "exclamationmark.circle"
         case "todo": "checklist"
+        case "compaction": "arrow.up.right.and.arrow.down.left"
         default: "info.circle"
         }
     }

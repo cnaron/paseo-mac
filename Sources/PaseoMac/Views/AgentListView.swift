@@ -62,6 +62,8 @@ struct AgentListView: View {
             Divider()
             NewAgentBar()
                 .environment(app)
+            ImportSessionBar()
+                .environment(app)
             Divider()
             UsagePanel(
                 usage: app.usageData,
@@ -247,11 +249,20 @@ struct ProviderIcon: View {
     let provider: String?
     var body: some View {
         if let nsImage = Self.brandImage(for: provider) {
-            Image(nsImage: nsImage)
+            let img = Image(nsImage: nsImage)
                 .resizable()
                 .interpolation(.high)
                 .aspectRatio(contentMode: .fit)
                 .frame(width: 16, height: 16)
+            // Monochrome glyphs (e.g. Codex's OpenAI logo) need to follow
+            // the foreground color so they stay visible across light and
+            // dark themes. Full-color brand PNGs (Claude orange, Gemini
+            // multi-color) render as-is.
+            if Self.isMonochromeBrand(provider) {
+                img.foregroundStyle(.primary)
+            } else {
+                img
+            }
         } else {
             Image(systemName: Self.symbolName(for: provider))
                 .font(.system(size: 14, weight: .medium))
@@ -265,13 +276,21 @@ struct ProviderIcon: View {
         guard let nsImage = NSImage(named: name)
             ?? (Bundle.main.path(forResource: name, ofType: "png").flatMap { NSImage(contentsOfFile: $0) }) else { return nil }
         nsImage.size = NSSize(width: 16, height: 16)
+        if isMonochromeBrand(provider) {
+            nsImage.isTemplate = true
+        }
         return nsImage
+    }
+
+    private static func isMonochromeBrand(_ provider: String?) -> Bool {
+        provider == "codex"
     }
 
     private static func brandAssetName(for provider: String?) -> String? {
         switch provider {
         case "claude": return "claude"
         case "gemini": return "gemini"
+        case "codex": return "codex"
         default: return nil
         }
     }
@@ -371,6 +390,35 @@ private struct ArchivedToggleRow: View {
 }
 
 // MARK: - New Agent bar
+
+/// Entry point for upstream's "Import existing CLI session" flow. Sits
+/// directly under New Agent so users discover both paths together.
+/// Disabled while disconnected; clicking opens the import sheet whose
+/// content is fetched on demand from the daemon.
+private struct ImportSessionBar: View {
+    @Environment(AppViewModel.self) private var app
+
+    var body: some View {
+        Button {
+            Task { await app.openImportSheet() }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "tray.and.arrow.down")
+                    .foregroundStyle(.secondary)
+                Text("Import session…")
+                    .font(.caption)
+                    .foregroundStyle(.primary)
+                Spacer()
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Import an existing Claude / Codex / OpenCode / Pi session from disk")
+        .disabled(app.connectionState != .connected)
+    }
+}
 
 private struct NewAgentBar: View {
     @Environment(AppViewModel.self) private var app
@@ -563,9 +611,23 @@ private struct ConnectionFooter: View {
             Circle()
                 .fill(badgeColor)
                 .frame(width: 8, height: 8)
-            Text(badgeLabel)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(badgeLabel)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                // Surface daemon version + host so a quick glance at the
+                // bottom-left tells the user which daemon they're on. This
+                // is the first thing to check when something looks wrong —
+                // before going to `paseo status` in a terminal.
+                if app.connectionState == .connected,
+                   let ver = app.daemonVersion {
+                    Text(daemonLine(version: ver, host: app.daemonHostname))
+                        .font(.system(size: 9))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            }
             Spacer()
             Button {
                 showConnect = true
@@ -579,6 +641,13 @@ private struct ConnectionFooter: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
+    }
+
+    private func daemonLine(version: String, host: String?) -> String {
+        if let host, !host.isEmpty {
+            return "\(host) · v\(version)"
+        }
+        return "Daemon v\(version)"
     }
 
     private var badgeColor: Color {
