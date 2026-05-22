@@ -131,6 +131,30 @@ final class AppViewModel {
     var usageData: ClaudeUsageData? = nil
     var statsData: ClaudeStatsData? = nil
 
+    /// Per-session Codex aggregate derived from per-agent `lastUsage`. Nil
+    /// when no codex agents exist; the UI hides the row entirely in that
+    /// case. Recomputed on every read so it always reflects the current
+    /// `agents` array — cheap given the small N (tens of agents at most).
+    var codexSessionStats: CodexSessionStats? {
+        let codex = agents.filter { ($0.provider ?? "") == "codex" }
+        guard !codex.isEmpty else { return nil }
+        var costSum = 0.0
+        var tokenSum = 0
+        for a in codex {
+            costSum += a.lastUsage?.totalCostUsd ?? 0
+            tokenSum += (a.lastUsage?.inputTokens ?? 0)
+                + (a.lastUsage?.outputTokens ?? 0)
+                + (a.lastUsage?.cachedInputTokens ?? 0)
+        }
+        let active = codex.filter { $0.status == "running" }.count
+        return CodexSessionStats(
+            totalCostUsd: costSum,
+            totalTokens: tokenSum,
+            agentCount: codex.count,
+            activeAgentCount: active
+        )
+    }
+
     /// Claude Code CLI version state.
     var claudeCodeCurrentVersion: String? = nil
     var claudeCodeLatestVersion: String? = nil

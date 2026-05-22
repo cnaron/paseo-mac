@@ -22,6 +22,16 @@ struct ClaudeUsageData {
     }
 }
 
+/// Per-session Codex aggregate. ChatGPT/Codex doesn't expose quota %
+/// publicly, so we surface what we actually know: cumulative tokens and
+/// USD across all Codex-backed agents the user has open right now.
+struct CodexSessionStats {
+    let totalCostUsd: Double
+    let totalTokens: Int
+    let agentCount: Int
+    let activeAgentCount: Int
+}
+
 // MARK: - View
 
 struct UsagePanel: View {
@@ -34,6 +44,8 @@ struct UsagePanel: View {
     var onCheckVersion: (() -> Void)? = nil
     var onUpdate: (() -> Void)? = nil
     var hasGemini: Bool = false
+    var hasCodex: Bool = false
+    var codexStats: CodexSessionStats? = nil
 
     private var updateAvailable: Bool {
         guard let current = currentVersion, let latest = latestVersion,
@@ -77,12 +89,16 @@ struct UsagePanel: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 7)
             }
+            if hasCodex {
+                if usage != nil { Divider() }
+                CodexUsageRow(stats: codexStats)
+            }
             if hasGemini {
-                if usage != nil || currentVersion != nil { Divider() }
+                if usage != nil || hasCodex { Divider() }
                 GeminiUsageRow()
             }
             if currentVersion != nil || latestVersion != nil {
-                if usage != nil || hasGemini { Divider() }
+                if usage != nil || hasCodex || hasGemini { Divider() }
                 ClaudeCodeVersionRow(
                     currentVersion: currentVersion,
                     latestVersion: latestVersion,
@@ -94,6 +110,93 @@ struct UsagePanel: View {
                 )
             }
         }
+    }
+}
+
+// MARK: - Codex session row
+
+/// Codex / ChatGPT plans don't expose a public quota endpoint the way
+/// claude.ai does, so we show what we actually have: an aggregate of
+/// the Codex agents in this session. Clicking opens the ChatGPT Codex
+/// settings page so the user can see their real subscription state.
+private struct CodexUsageRow: View {
+    let stats: CodexSessionStats?
+
+    var body: some View {
+        Button {
+            if let url = URL(string: "https://chatgpt.com/codex/settings/usage") {
+                NSWorkspace.shared.open(url)
+            }
+        } label: {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 4) {
+                    Image(systemName: "terminal.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Text("Codex")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Image(systemName: "arrow.up.right")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                if let s = stats, s.agentCount > 0 {
+                    HStack(spacing: 6) {
+                        Text(Self.formatCost(s.totalCostUsd))
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.tertiary)
+                        Text("·")
+                            .font(.caption2)
+                            .foregroundStyle(.quaternary)
+                        Text(Self.formatTokens(s.totalTokens))
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.tertiary)
+                        if s.activeAgentCount > 0 {
+                            Text("·")
+                                .font(.caption2)
+                                .foregroundStyle(.quaternary)
+                            Text("\(s.activeAgentCount) running")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                } else {
+                    Text("ChatGPT plan · click to view usage")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Open ChatGPT Codex usage page")
+    }
+
+    private static func formatCost(_ usd: Double) -> String {
+        if usd >= 1.0 {
+            return String(format: "$%.2f", usd)
+        }
+        if usd >= 0.01 {
+            return String(format: "$%.3f", usd)
+        }
+        if usd > 0 {
+            return String(format: "$%.4f", usd)
+        }
+        return "$0"
+    }
+
+    private static func formatTokens(_ count: Int) -> String {
+        if count >= 1_000_000 {
+            return String(format: "%.1fM tok", Double(count) / 1_000_000)
+        }
+        if count >= 1_000 {
+            return String(format: "%.1fk tok", Double(count) / 1_000)
+        }
+        return "\(count) tok"
     }
 }
 

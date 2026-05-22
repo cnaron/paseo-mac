@@ -72,7 +72,9 @@ struct AgentListView: View {
                 isUpdating: app.isUpdatingClaudeCode,
                 onCheckVersion: { Task { await app.checkClaudeCodeVersion() } },
                 onUpdate: { Task { await app.updateClaudeCode() } },
-                hasGemini: app.providers.contains(where: { $0.provider == "gemini" && $0.status == "ready" })
+                hasGemini: app.providers.contains(where: { $0.provider == "gemini" && $0.status == "ready" }),
+                hasCodex: app.providers.contains(where: { $0.provider == "codex" && $0.status == "ready" }),
+                codexStats: app.codexSessionStats
             )
             Divider()
             ConnectionFooter(showConnect: $showConnect)
