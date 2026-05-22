@@ -6,6 +6,75 @@ enum WSProtocol {
     static let version = 1
 }
 
+// MARK: - JSON helper
+
+/// Tiny dynamic JSON value used when the wire format is loose. Lets us peek
+/// at structured error payloads and extract sensible text without modelling
+/// every variant. Mirrors what upstream's TS callers do with `unknown`.
+indirect enum JSONValue: Decodable, Hashable, Sendable {
+    case null
+    case bool(Bool)
+    case int(Int)
+    case double(Double)
+    case string(String)
+    case array([JSONValue])
+    case object([String: JSONValue])
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        if c.decodeNil() { self = .null; return }
+        if let b = try? c.decode(Bool.self) { self = .bool(b); return }
+        if let i = try? c.decode(Int.self) { self = .int(i); return }
+        if let d = try? c.decode(Double.self) { self = .double(d); return }
+        if let s = try? c.decode(String.self) { self = .string(s); return }
+        if let a = try? c.decode([JSONValue].self) { self = .array(a); return }
+        if let o = try? c.decode([String: JSONValue].self) { self = .object(o); return }
+        throw DecodingError.dataCorruptedError(in: c, debugDescription: "Unsupported JSON value")
+    }
+
+    /// Walk common JSON-RPC and ACP error shapes to find a human-readable
+    /// string. Returns nil if no recognizable field is present, in which
+    /// case the caller should fall back to `compactJSON()`.
+    func errorReason() -> String? {
+        if case .string(let s) = self { return s }
+        guard case .object(let o) = self else { return nil }
+        // Standard JSON-RPC: { code, message, data? }
+        if case .string(let s)? = o["message"] {
+            if case .object(let data)? = o["data"], case .string(let extra)? = data["message"], !extra.isEmpty {
+                return "\(s) — \(extra)"
+            }
+            return s
+        }
+        // ACP-style: { error: { message } } or { reason }
+        if case .object(let err)? = o["error"], case .string(let s)? = err["message"] { return s }
+        if case .string(let s)? = o["error"] { return s }
+        if case .string(let s)? = o["reason"] { return s }
+        return nil
+    }
+
+    /// Compact JSON representation. Used as the last fallback so the user
+    /// at least sees structure rather than "[object Object]".
+    func compactJSON() -> String? {
+        guard let data = try? JSONEncoder().encode(self) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+}
+
+extension JSONValue: Encodable {
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        switch self {
+        case .null: try c.encodeNil()
+        case .bool(let b): try c.encode(b)
+        case .int(let i): try c.encode(i)
+        case .double(let d): try c.encode(d)
+        case .string(let s): try c.encode(s)
+        case .array(let a): try c.encode(a)
+        case .object(let o): try c.encode(o)
+        }
+    }
+}
+
 // MARK: - Outbound (Mac → daemon)
 
 struct HelloMessage: Encodable {
@@ -50,8 +119,12 @@ enum SessionRequest: Encodable {
     case cancelAgent(CancelAgentRequest)
     case createAgent(CreateAgentRequest)
     case archiveAgent(ArchiveAgentRequest)
+    case updateAgent(UpdateAgentRequest)
     case agentPermissionResponse(AgentPermissionResponseRequest)
     case fetchWorkspaces(FetchWorkspacesRequest)
+    case daemonConfigSet(DaemonConfigSetRequest)
+    case fetchRecentProviderSessions(FetchRecentProviderSessionsRequest)
+    case importAgent(ImportAgentRequest)
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.singleValueContainer()
@@ -66,8 +139,12 @@ enum SessionRequest: Encodable {
         case .cancelAgent(let r): try c.encode(r)
         case .createAgent(let r): try c.encode(r)
         case .archiveAgent(let r): try c.encode(r)
+        case .updateAgent(let r): try c.encode(r)
         case .agentPermissionResponse(let r): try c.encode(r)
         case .fetchWorkspaces(let r): try c.encode(r)
+        case .daemonConfigSet(let r): try c.encode(r)
+        case .fetchRecentProviderSessions(let r): try c.encode(r)
+        case .importAgent(let r): try c.encode(r)
         }
     }
 }
@@ -170,9 +247,18 @@ struct CreateAgentRequest: Encodable {
     let requestId: String
     let config: Config
     var initialPrompt: String? = nil
+    /// When true, daemon archives the agent — and prunes its worktree if
+    /// one was created — as soon as it reaches a terminal lifecycle state.
+    /// Requires daemon ≥ 0.1.79. Older daemons ignore the field, which is
+    /// fine: the agent just stays around like any other.
+    var autoArchive: Bool? = nil
+    /// Optional worktree target. When set, daemon ≥ 0.1.79 creates a fresh
+    /// worktree off the configured base before launching the agent. See
+    /// `CreateAgentWorktreeTarget` upstream for the full shape.
+    var worktree: WorktreeTarget? = nil
 
     private enum CodingKeys: String, CodingKey {
-        case type, requestId, config, initialPrompt
+        case type, requestId, config, initialPrompt, autoArchive, worktree
     }
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -180,6 +266,8 @@ struct CreateAgentRequest: Encodable {
         try c.encode(requestId, forKey: .requestId)
         try c.encode(config, forKey: .config)
         try c.encodeIfPresent(initialPrompt, forKey: .initialPrompt)
+        try c.encodeIfPresent(autoArchive, forKey: .autoArchive)
+        try c.encodeIfPresent(worktree, forKey: .worktree)
     }
 
     struct Config: Encodable {
@@ -206,12 +294,147 @@ struct CreateAgentRequest: Encodable {
             try c.encodeIfPresent(thinkingOptionId, forKey: .thinkingOptionId)
         }
     }
+
+    /// Discriminated union matching upstream's `CreateAgentWorktreeTargetSchema`.
+    /// We only support the most common case (`branch-off`) for now; new variants
+    /// can be added when we ship UI for them.
+    enum WorktreeTarget: Encodable {
+        case branchOff(baseBranch: String?)
+
+        private enum Keys: String, CodingKey { case type, baseBranch }
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: Keys.self)
+            switch self {
+            case .branchOff(let baseBranch):
+                try c.encode("branch-off", forKey: .type)
+                try c.encodeIfPresent(baseBranch, forKey: .baseBranch)
+            }
+        }
+    }
 }
 
 struct CancelAgentRequest: Encodable {
     let type = "cancel_agent_request"
     let requestId: String
     let agentId: String
+}
+
+/// Update an agent's user-facing name (rename) and/or labels. Matches
+/// upstream's `update_agent_request`. Daemon ≥ 0.1.79 honors this; older
+/// daemons reject with an unknown-type error, surfaced to the user.
+struct UpdateAgentRequest: Encodable {
+    let type = "update_agent_request"
+    let requestId: String
+    let agentId: String
+    var name: String? = nil
+    var labels: [String: String]? = nil
+
+    private enum CodingKeys: String, CodingKey {
+        case type, requestId, agentId, name, labels
+    }
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(type, forKey: .type)
+        try c.encode(requestId, forKey: .requestId)
+        try c.encode(agentId, forKey: .agentId)
+        try c.encodeIfPresent(name, forKey: .name)
+        try c.encodeIfPresent(labels, forKey: .labels)
+    }
+}
+
+/// Ask the daemon for sessions started outside Paseo (Claude/Codex/
+/// OpenCode/Pi CLI history files) that haven't been imported yet. Daemon
+/// ≥ 0.1.79 honors this; older daemons silently drop the request.
+struct FetchRecentProviderSessionsRequest: Encodable {
+    let type = "fetch_recent_provider_sessions_request"
+    let requestId: String
+    var cwd: String? = nil
+    var providers: [String]? = nil
+
+    private enum CodingKeys: String, CodingKey { case type, requestId, cwd, providers }
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(type, forKey: .type)
+        try c.encode(requestId, forKey: .requestId)
+        try c.encodeIfPresent(cwd, forKey: .cwd)
+        try c.encodeIfPresent(providers, forKey: .providers)
+    }
+}
+
+/// One session that can be imported — same shape as upstream's
+/// `RecentProviderSessionDescriptorPayloadSchema`. `providerHandleId` is
+/// the unique key we send back on `import_agent_request`.
+struct ImportableSession: Decodable, Sendable, Hashable, Identifiable {
+    let providerId: String
+    let providerLabel: String
+    let providerHandleId: String
+    let cwd: String
+    let title: String?
+    let firstPromptPreview: String?
+    let lastPromptPreview: String?
+    let lastActivityAt: String
+
+    var id: String { "\(providerId)/\(providerHandleId)" }
+}
+
+struct FetchRecentProviderSessionsResponse: Decodable, Sendable {
+    let type: String
+    let payload: Payload
+    struct Payload: Decodable, Sendable {
+        let requestId: String
+        let entries: [ImportableSession]
+        let filteredAlreadyImportedCount: Int?
+    }
+}
+
+/// Import a previously discovered session into the daemon. Daemon picks
+/// up where the CLI left off, materializes the timeline, and broadcasts
+/// the agent so the rest of the app sees it via `agents_listed` /
+/// `agent_update` events. Matches `import_agent_request`.
+struct ImportAgentRequest: Encodable {
+    let type = "import_agent_request"
+    let requestId: String
+    var providerId: String? = nil
+    var providerHandleId: String? = nil
+    var cwd: String? = nil
+    var labels: [String: String]? = nil
+
+    private enum CodingKeys: String, CodingKey {
+        case type, requestId, providerId, providerHandleId, cwd, labels
+    }
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(type, forKey: .type)
+        try c.encode(requestId, forKey: .requestId)
+        try c.encodeIfPresent(providerId, forKey: .providerId)
+        try c.encodeIfPresent(providerHandleId, forKey: .providerHandleId)
+        try c.encodeIfPresent(cwd, forKey: .cwd)
+        try c.encodeIfPresent(labels, forKey: .labels)
+    }
+}
+
+/// Patch a subset of the daemon-wide config. Currently only carries the
+/// global `appendSystemPrompt` knob (the field newer daemons accept), but
+/// the schema is intentionally permissive — anything we put in `config`
+/// is forwarded as-is so future settings work without new RPC types.
+struct DaemonConfigSetRequest: Encodable {
+    let type = "set_daemon_config_request"
+    let requestId: String
+    let config: ConfigPatch
+
+    struct ConfigPatch: Encodable {
+        var appendSystemPrompt: String?
+        var autoArchiveAfterMerge: Bool?
+
+        private enum CodingKeys: String, CodingKey {
+            case appendSystemPrompt, autoArchiveAfterMerge
+        }
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encodeIfPresent(appendSystemPrompt, forKey: .appendSystemPrompt)
+            try c.encodeIfPresent(autoArchiveAfterMerge, forKey: .autoArchiveAfterMerge)
+        }
+    }
 }
 
 struct ArchiveAgentRequest: Encodable {
@@ -348,6 +571,7 @@ enum SessionInbound: Decodable, @unchecked Sendable {
     case providersSnapshotUpdate(ProvidersSnapshotUpdatePayload)
     case cancelAgentResponse(CancelAgentResponse)
     case fetchWorkspacesResponse(FetchWorkspacesResponse)
+    case fetchRecentProviderSessionsResponse(FetchRecentProviderSessionsResponse)
     case unknown(type: String, raw: Data)
 
     private enum Keys: String, CodingKey { case type }
@@ -386,6 +610,8 @@ enum SessionInbound: Decodable, @unchecked Sendable {
             self = .cancelAgentResponse(try JSONDecoder.paseo.decode(CancelAgentResponse.self, from: raw))
         case "fetch_workspaces_response":
             self = .fetchWorkspacesResponse(try JSONDecoder.paseo.decode(FetchWorkspacesResponse.self, from: raw))
+        case "fetch_recent_provider_sessions_response":
+            self = .fetchRecentProviderSessionsResponse(try JSONDecoder.paseo.decode(FetchRecentProviderSessionsResponse.self, from: raw))
         default:
             self = .unknown(type: type, raw: raw)
         }
@@ -627,7 +853,12 @@ enum TimelineItem: Decodable, Hashable, Sendable {
             let items = (try? c.decode([TodoItem].self, forKey: .items)) ?? []
             self = .todo(items: items)
         case "error":
-            self = .error(message: (try? c.decode(String.self, forKey: .message)) ?? "")
+            // Older daemons send a plain string; newer daemons (and ACP
+            // providers) send a structured `{ code, message, data }` object.
+            // String("[object Object]") is the JS-side failure mode for the
+            // latter when callers used `String(err)` directly — we'd see
+            // that text on the wire and now prefer the structured shape.
+            self = .error(message: Self.decodeErrorMessage(container: c))
         default:
             self = .other(type: type)
         }
@@ -645,6 +876,23 @@ enum TimelineItem: Decodable, Hashable, Sendable {
         }
     }
 
+    /// Extract a user-facing error string from a `type: "error"` timeline
+    /// item. Handles three on-the-wire shapes:
+    ///   1. `{ "message": "boom" }` — plain string (older daemons).
+    ///   2. `{ "message": { "message": "boom", "code": -32000 } }` — JSON-RPC
+    ///      error nested under `message`, which is what ACP providers ship.
+    ///   3. `{ "message": { ...arbitrary... } }` — fall back to JSON encoding
+    ///      so the user sees structure instead of "[object Object]".
+    private static func decodeErrorMessage(container c: KeyedDecodingContainer<Keys>) -> String {
+        if let s = try? c.decode(String.self, forKey: .message), !s.isEmpty {
+            return s
+        }
+        if let obj = try? c.decode(JSONValue.self, forKey: .message) {
+            return obj.errorReason() ?? obj.compactJSON() ?? ""
+        }
+        return ""
+    }
+
     var displayText: String {
         switch self {
         case .userMessage(let t, _): return t
@@ -654,8 +902,13 @@ enum TimelineItem: Decodable, Hashable, Sendable {
         case .todo(let items):
             return items.map { ($0.completed ? "[x] " : "[ ] ") + $0.text }.joined(separator: "\n")
         case .error(let m):
+            // Pre-0.1.79 daemons can emit "[object Object]" when a JSON-RPC
+            // error escaped without proper serialization. The structured
+            // decoder above already recovers a usable string in many of
+            // those cases; this is the last-resort fallback when even the
+            // structured shape ended up stringified.
             if m.contains("[object Object]") {
-                return "Backend internal error (Quota limit or API failure)"
+                return "Backend internal error (the daemon couldn't serialize the upstream error)"
             }
             return m
         case .other(let t): return "[\(t)]"
@@ -896,10 +1149,22 @@ struct AgentSnapshot: Decodable, Sendable, Identifiable, Hashable {
     let archivedAt: String?
     let requiresAttention: Bool?
     let attentionReason: String?
+    /// Free-form key/value labels the daemon attaches to an agent. Used by
+    /// upstream to track subagent → parent relationships via the
+    /// `parent-agent-id` key. The daemon may omit this entirely for older
+    /// agents, so the field is optional and defaulted so the memberwise
+    /// init that local `with*` helpers rely on stays argument-compatible.
+    let labels: [String: String]? = nil
 
     var displayName: String {
         if let t = title, !t.isEmpty { return t }
         return String(id.prefix(8))
+    }
+
+    /// Agent ID of this agent's parent, if it was spawned as a subagent.
+    /// `nil` for top-level agents (the common case).
+    var parentAgentId: String? {
+        labels?["parent-agent-id"] ?? labels?["paseo:parent-agent-id"]
     }
 }
 

@@ -486,12 +486,211 @@ private struct CodeBlockView: View {
                 .buttonStyle(.plain)
                 .help("Copy code")
             }
-            Text(content)
+            Text(SyntaxHighlighter.highlight(content, language: language))
                 .font(.system(.callout, design: .monospaced))
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(8)
                 .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+        }
+    }
+}
+
+// MARK: - Syntax highlighting
+
+/// Minimal token-coloring highlighter. Not a real parser — covers strings,
+/// comments, numbers, and a per-language keyword set. Built specifically
+/// for chat code blocks where readability matters more than precision; a
+/// real Lezer/TreeSitter port would be overkill here. Returns an
+/// `AttributedString` built by appending colored substrings, which avoids
+/// the index-mismatch pitfalls between NSString and AttributedString.
+enum SyntaxHighlighter {
+    enum TokenKind { case plain, keyword, string, number, comment }
+
+    static func highlight(_ source: String, language: String?) -> AttributedString {
+        let lang = (language ?? "").lowercased()
+        let palette = Palette.dynamic
+        let keywords = keywordSet(for: lang)
+        let lineComment = lineCommentToken(for: lang)
+        let blockDelims = blockCommentDelims(for: lang)
+        let stringDelimiters: Set<Character> = ["\"", "'", "`"]
+
+        let chars = Array(source)
+        let n = chars.count
+        var i = 0
+        var tokens: [(TokenKind, String)] = []
+        var buffer = ""
+
+        func flushPlain() {
+            if !buffer.isEmpty {
+                tokens.append((.plain, buffer))
+                buffer = ""
+            }
+        }
+
+        while i < n {
+            let ch = chars[i]
+
+            // Block comment
+            if let (open, close) = blockDelims, matches(chars, i, open) {
+                flushPlain()
+                let start = i
+                i += open.count
+                while i < n, !matches(chars, i, close) { i += 1 }
+                if i < n { i += close.count }
+                tokens.append((.comment, String(chars[start..<i])))
+                continue
+            }
+            // Line comment
+            if let token = lineComment, matches(chars, i, token) {
+                flushPlain()
+                let start = i
+                while i < n, chars[i] != "\n" { i += 1 }
+                tokens.append((.comment, String(chars[start..<i])))
+                continue
+            }
+            // String literal
+            if stringDelimiters.contains(ch) {
+                flushPlain()
+                let start = i
+                let quote = ch
+                i += 1
+                while i < n {
+                    let c = chars[i]
+                    if c == "\\", i + 1 < n { i += 2; continue }
+                    if c == quote { i += 1; break }
+                    if c == "\n" { break }
+                    i += 1
+                }
+                tokens.append((.string, String(chars[start..<i])))
+                continue
+            }
+            // Number
+            if ch.isASCII && ch.isNumber {
+                flushPlain()
+                let start = i
+                i += 1
+                while i < n {
+                    let c = chars[i]
+                    if c.isNumber || c == "." || c == "_" || c == "x" || c == "X" || (c.isLetter && c.isHexDigit) {
+                        i += 1
+                    } else { break }
+                }
+                tokens.append((.number, String(chars[start..<i])))
+                continue
+            }
+            // Identifier / keyword
+            if ch.isLetter || ch == "_" {
+                let start = i
+                i += 1
+                while i < n {
+                    let c = chars[i]
+                    if c.isLetter || c.isNumber || c == "_" { i += 1 } else { break }
+                }
+                let word = String(chars[start..<i])
+                if keywords.contains(word) {
+                    flushPlain()
+                    tokens.append((.keyword, word))
+                } else {
+                    buffer.append(word)
+                }
+                continue
+            }
+            buffer.append(ch)
+            i += 1
+        }
+        flushPlain()
+
+        var out = AttributedString()
+        for (kind, piece) in tokens {
+            var seg = AttributedString(piece)
+            switch kind {
+            case .plain: break
+            case .keyword: seg.foregroundColor = palette.keyword
+            case .string: seg.foregroundColor = palette.string
+            case .number: seg.foregroundColor = palette.number
+            case .comment: seg.foregroundColor = palette.comment
+            }
+            out += seg
+        }
+        return out
+    }
+
+    private static func matches(_ chars: [Character], _ start: Int, _ token: String) -> Bool {
+        let t = Array(token)
+        guard start + t.count <= chars.count else { return false }
+        for k in 0..<t.count where chars[start + k] != t[k] { return false }
+        return true
+    }
+
+    private struct Palette {
+        let keyword: Color
+        let string: Color
+        let number: Color
+        let comment: Color
+
+        static var dynamic: Palette {
+            Palette(
+                keyword: Color(nsColor: .systemPurple),
+                string: Color(nsColor: .systemRed),
+                number: Color(nsColor: .systemTeal),
+                comment: Color.secondary
+            )
+        }
+    }
+
+    private static func keywordSet(for lang: String) -> Set<String> {
+        switch lang {
+        case "swift":
+            return Set("class struct enum protocol extension func var let return if else for in while do try catch throw throws guard switch case break continue defer where as is import public private fileprivate internal open static final true false nil self Self async await actor".split(separator: " ").map(String.init))
+        case "ts", "tsx", "typescript":
+            return Set("class function const let var return if else for in of while do try catch throw new import export from default async await yield extends implements interface type enum public private protected readonly true false null undefined this super as".split(separator: " ").map(String.init))
+        case "js", "jsx", "javascript":
+            return Set("class function const let var return if else for in of while do try catch throw new import export from default async await yield extends true false null undefined this super".split(separator: " ").map(String.init))
+        case "py", "python":
+            return Set("def class return if elif else for in while try except raise import from as with pass break continue lambda global nonlocal yield True False None and or not is".split(separator: " ").map(String.init))
+        case "go":
+            return Set("func var const type struct interface package import return if else for switch case defer go chan map range break continue fallthrough goto select true false nil".split(separator: " ").map(String.init))
+        case "rust", "rs":
+            return Set("fn let mut const struct enum trait impl pub use mod return if else for in while loop match break continue as where async await self Self true false unsafe move ref dyn".split(separator: " ").map(String.init))
+        case "java", "kotlin", "kt":
+            return Set("class interface enum public private protected static final void return if else for while do try catch throw throws new this super extends implements import package true false null var val fun".split(separator: " ").map(String.init))
+        case "c", "cpp", "c++", "objc", "objective-c":
+            return Set("int char short long float double void if else for while do return struct enum union typedef sizeof const static extern volatile inline class public private protected virtual override new delete try catch throw true false nullptr NULL".split(separator: " ").map(String.init))
+        case "sh", "bash", "zsh":
+            return Set("if then elif else fi for in do done while case esac function return export local readonly true false".split(separator: " ").map(String.init))
+        case "json":
+            return Set(["true", "false", "null"])
+        default:
+            return []
+        }
+    }
+
+    private static func lineCommentToken(for lang: String) -> String? {
+        switch lang {
+        case "py", "python", "sh", "bash", "zsh", "yaml", "yml", "toml", "ruby", "rb":
+            return "#"
+        case "lisp", "clojure", "scheme":
+            return ";"
+        case "sql":
+            return "--"
+        case "":
+            return nil
+        default:
+            return "//"
+        }
+    }
+
+    private static func blockCommentDelims(for lang: String) -> (String, String)? {
+        switch lang {
+        case "py", "python":
+            return (#"""""#, #"""""#)
+        case "html", "xml":
+            return ("<!--", "-->")
+        case "py", "yaml", "yml", "toml", "sh", "bash", "zsh", "":
+            return nil
+        default:
+            return ("/*", "*/")
         }
     }
 }

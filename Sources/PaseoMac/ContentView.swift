@@ -16,6 +16,9 @@ struct ContentView: View {
         .sheet(isPresented: $showConnect) {
             ConnectSheet()
         }
+        .sheet(isPresented: $app.importSheetOpen) {
+            ImportSessionSheet()
+        }
         .task {
             app.autoConnectIfPossible()
             app.startWakeObserver()

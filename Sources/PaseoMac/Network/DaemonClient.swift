@@ -86,6 +86,16 @@ actor DaemonClient {
     /// own death detection) to surface dead sockets. An app-level deadline
     /// is just a way to self-kill on a slow-but-alive RPC.
     private static let requestTimeout: TimeInterval = 15
+    /// How many consecutive unanswered pings we tolerate before declaring the
+    /// connection dead and forcing a reconnect. Mirrors upstream's
+    /// `LIVENESS_FAILURE_RECONNECT_THRESHOLD = 3` from paseo daemon-client.
+    /// With `pingInterval = 15s`, this means ~45s of silence before reconnect.
+    /// Independent from `requestTimeout` — a slow but alive RPC won't trip the
+    /// liveness check because pong arrives separately.
+    private static let livenessThreshold = 3
+    /// Number of pings sent without a matching pong response. Reset to 0 on
+    /// any inbound pong. Checked at the top of each keepalive tick.
+    private var unansweredPings: Int = 0
     private var connectedAt: Date?
 
     /// Fires for every inbound session message we didn't match to a pending request.
@@ -121,6 +131,7 @@ actor DaemonClient {
         )
         try await rawSend(.hello(hello))
         connectedAt = Date()
+        unansweredPings = 0
         startKeepalive()
     }
 
@@ -144,11 +155,21 @@ actor DaemonClient {
 
     /// One keepalive tick: send an app-level ping plus a WebSocket-level
     /// PING (on relay transports). If sending fails, the socket is dead —
-    /// close it so the upper layer reconnects. We do NOT force-close on
-    /// inbound silence: a slow but alive RPC would trip that and kill an
-    /// otherwise healthy socket.
+    /// close it so the upper layer reconnects.
+    ///
+    /// Liveness: count unanswered pings. If `livenessThreshold` ticks pass
+    /// without an inbound pong, treat the connection as dead and force-close
+    /// — even if the socket itself reports no error. This catches stuck
+    /// half-open sockets where TCP keepalive hasn't yet given up. The check
+    /// is intentionally cheap and independent of RPC timing: a slow RPC can
+    /// still complete because pongs travel on a separate code path.
     private func tickKeepalive() async {
         guard transport != nil else { return }
+        if unansweredPings >= DaemonClient.livenessThreshold {
+            debugLog("[keepalive] \(unansweredPings) pings unanswered (threshold \(DaemonClient.livenessThreshold)) — closing transport")
+            await forceCloseDueToKeepalive(reason: "liveness threshold exceeded (\(unansweredPings) pongs missed)")
+            return
+        }
         let pingId = UUID().uuidString
         let now = Date()
         let ping = PingMessage(
@@ -157,6 +178,7 @@ actor DaemonClient {
         )
         do {
             try await rawSend(.ping(ping))
+            unansweredPings += 1
         } catch {
             debugLog("[keepalive] ping send failed: \(error) — closing transport")
             await forceCloseDueToKeepalive(reason: "ping send failed: \(error)")
@@ -400,13 +422,72 @@ actor DaemonClient {
         return resp.payload
     }
 
+    /// Send a user-driven rename for an agent. Daemon ≥ 0.1.79 echoes the
+    /// new name back on the next `agent_update`; older daemons surface an
+    /// unknown-type error which we let propagate so the caller can roll
+    /// back the optimistic UI change.
+    func updateAgent(agentId: String, name: String? = nil, labels: [String: String]? = nil) async throws {
+        let requestId = UUID().uuidString
+        let req = UpdateAgentRequest(requestId: requestId, agentId: agentId, name: name, labels: labels)
+        try await rawSend(.session(.updateAgent(req)))
+    }
+
+    /// Ask the daemon for sessions started outside Paseo (Claude/Codex/
+    /// OpenCode CLI history files) that haven't been imported yet. Daemon
+    /// ≥ 0.1.79 returns the list synchronously; older daemons time out via
+    /// `requestTimeout` and we return an empty list so the caller can
+    /// surface "no sessions found" rather than spinning forever.
+    func fetchImportableSessions(cwd: String? = nil, providers: [String]? = nil) async throws -> [ImportableSession] {
+        let requestId = UUID().uuidString
+        let req = FetchRecentProviderSessionsRequest(requestId: requestId, cwd: cwd, providers: providers)
+        do {
+            let reply = try await requestResponse(requestId: requestId, outbound: .session(.fetchRecentProviderSessions(req)))
+            guard case let .fetchRecentProviderSessionsResponse(resp) = reply else {
+                throw DaemonError.protocolError("Expected fetch_recent_provider_sessions_response, got \(reply)")
+            }
+            return resp.payload.entries
+        } catch DaemonError.rpcTimeout {
+            return []
+        }
+    }
+
+    /// Import a discovered session. Fire-and-forget — the daemon emits an
+    /// `agent_status` event when the import completes, which the live
+    /// stream subscriber already routes into the agent list.
+    func importAgent(providerId: String, providerHandleId: String, cwd: String? = nil) async throws {
+        let requestId = UUID().uuidString
+        let req = ImportAgentRequest(
+            requestId: requestId,
+            providerId: providerId,
+            providerHandleId: providerHandleId,
+            cwd: cwd
+        )
+        try await rawSend(.session(.importAgent(req)))
+    }
+
+    /// Patch the daemon's global config. Currently used for the
+    /// "appendSystemPrompt" knob that gets injected into every new agent.
+    /// Fire-and-forget — daemon broadcasts a `daemon_config_changed`
+    /// status event that the UI subscribes to.
+    func setDaemonConfig(appendSystemPrompt: String?) async throws {
+        let requestId = UUID().uuidString
+        let patch = DaemonConfigSetRequest.ConfigPatch(
+            appendSystemPrompt: appendSystemPrompt,
+            autoArchiveAfterMerge: nil
+        )
+        let req = DaemonConfigSetRequest(requestId: requestId, config: patch)
+        try await rawSend(.session(.daemonConfigSet(req)))
+    }
+
     func createAgent(
         cwd: String,
         provider: String,
         model: String? = nil,
         modeId: String? = nil,
         thinkingOptionId: String? = nil,
-        initialPrompt: String? = nil
+        initialPrompt: String? = nil,
+        autoArchiveWorktree: Bool = false,
+        worktreeBaseBranch: String? = nil
     ) async throws {
         let requestId = UUID().uuidString
         let config = CreateAgentRequest.Config(
@@ -418,6 +499,10 @@ actor DaemonClient {
         )
         var req = CreateAgentRequest(requestId: requestId, config: config)
         req.initialPrompt = initialPrompt
+        if autoArchiveWorktree {
+            req.autoArchive = true
+            req.worktree = .branchOff(baseBranch: worktreeBaseBranch)
+        }
         try await rawSend(.session(.createAgent(req)))
     }
 
@@ -561,11 +646,15 @@ actor DaemonClient {
     private func handle(rawFrame data: Data) throws {
         debugLog("[ws-recv] \(String(decoding: data, as: UTF8.self))")
         let inbound = try JSONDecoder.paseo.decode(WSInbound.self, from: data)
+        // Any inbound frame proves the daemon is alive — reset the liveness
+        // counter even before we route the frame. Pongs are the canonical
+        // signal, but a session reply or status push works equally well and
+        // avoids declaring death during a chatty RPC stream.
+        unansweredPings = 0
         switch inbound {
         case .ping:
             Task { [weak self] in try? await self?.rawSend(.pong(PongMessage())) }
         case .pong:
-            // Already handled by lastInboundAt update above.
             break
         case .session(let session):
             dispatch(session)
@@ -586,6 +675,7 @@ actor DaemonClient {
             case .getProvidersSnapshotResponse(let r): return r.payload.requestId
             case .cancelAgentResponse(let r): return r.payload.requestId
             case .fetchWorkspacesResponse(let r): return r.payload.requestId
+            case .fetchRecentProviderSessionsResponse(let r): return r.payload.requestId
             case .status(let r): return r.payload.requestId  // agent_created response
             default: return nil
             }

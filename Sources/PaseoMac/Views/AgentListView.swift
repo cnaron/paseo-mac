@@ -130,6 +130,9 @@ private struct AgentRow: View {
     let live: AppViewModel.LiveStatus?
     var isActivelyWorking: Bool = false
     var onDelete: (() -> Void)? = nil
+    @Environment(AppViewModel.self) private var app
+    @State private var renaming = false
+    @State private var draftName = ""
 
     var body: some View {
         HStack(spacing: 8) {
@@ -154,11 +157,29 @@ private struct AgentRow: View {
         .padding(.vertical, 2)
         .help(agent.cwd)
         .contextMenu {
+            Button {
+                draftName = agent.title ?? agent.displayName
+                renaming = true
+            } label: {
+                Label("Rename…", systemImage: "pencil")
+            }
+            Divider()
             Button(role: .destructive) {
                 onDelete?()
             } label: {
                 Label("Delete Agent", systemImage: "trash")
             }
+        }
+        .alert("Rename agent", isPresented: $renaming) {
+            TextField("Agent name", text: $draftName)
+            Button("Save") {
+                let trimmed = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { return }
+                Task { await app.renameAgent(agentId: agent.id, name: trimmed) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This sets a user-facing label. Requires daemon ≥ 0.1.79.")
         }
     }
 
@@ -257,6 +278,7 @@ struct ProviderIcon: View {
         switch provider {
         case "claude": return "sparkles"
         case "gemini": return "diamond.fill"
+        case "antigravity": return "diamond.fill"
         case "codex": return "terminal.fill"
         case "opencode": return "chevron.left.forwardslash.chevron.right"
         case "copilot": return "airplane.circle"

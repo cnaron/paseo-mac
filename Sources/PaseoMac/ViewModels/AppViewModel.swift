@@ -53,6 +53,24 @@ final class AppViewModel {
     var pendingNewAgentModel: String? = nil
     var pendingNewAgentModeId: String? = nil
     var pendingNewAgentThinkingOptionId: String? = nil
+    /// When true, the next created agent runs in a fresh `branch-off`
+    /// worktree and is auto-archived (worktree pruned) when it reaches
+    /// a terminal state. Requires daemon ≥ 0.1.79; older daemons ignore
+    /// the field, in which case the agent just runs in `cwd` directly.
+    var pendingNewAgentAutoArchiveWorktree: Bool = false
+    /// Mirror of the daemon-side `appendSystemPrompt` config knob. Refreshed
+    /// from `daemon_config_changed` broadcasts and on the next provider
+    /// snapshot fetch. We don't persist it locally — the daemon is the
+    /// source of truth — but we keep the cached value so the Preferences
+    /// pane can show what's currently active without waiting for a round
+    /// trip on every open.
+    var globalSystemPrompt: String = ""
+    /// Whether the "Import existing CLI session" sheet is up. Toggled via
+    /// `openImportSheet()` from the File menu or the home screen.
+    var importSheetOpen: Bool = false
+    var importSheetLoading: Bool = false
+    var importSheetEntries: [ImportableSession] = []
+    var importSheetError: String? = nil
     /// Set while createAgent is in flight after the user submitted their first
     /// message. Drives the optimistic user bubble + "Starting agent…" spinner
     /// so the new-conversation view never goes blank between submit and the new
@@ -397,7 +415,8 @@ final class AppViewModel {
             try await client.createAgent(
                 cwd: cwd, provider: provider, model: model, modeId: modeId,
                 thinkingOptionId: thinkingOptionId,
-                initialPrompt: images.isEmpty ? text : nil
+                initialPrompt: images.isEmpty ? text : nil,
+                autoArchiveWorktree: pendingNewAgentAutoArchiveWorktree
             )
         } catch {
             EventLogger.shared.log("create_agent", "error", ["err": error.localizedDescription])
@@ -613,6 +632,89 @@ final class AppViewModel {
             }?.id
             let mode = bypassLike ?? snap?.defaultModeId
             return BranchDefaults(model: model, modeId: mode, thinkingOptionId: nil)
+        }
+    }
+
+    /// Send a user-driven rename. Daemon ≥ 0.1.79 broadcasts an
+    /// `agent_update` once it accepts the change; we don't optimistically
+    /// patch local state so a daemon rejection (older version, validation
+    /// failure) simply stays visible in the chat error pane.
+    /// Open the import sheet and kick off a fetch of sessions reachable
+    /// from the daemon. Sessions live on whichever machine runs the
+    /// daemon, not necessarily this Mac — so the daemon's filesystem
+    /// view is what gets scanned. Daemon ≥ 0.1.79 required.
+    func openImportSheet() async {
+        importSheetOpen = true
+        importSheetLoading = true
+        importSheetError = nil
+        importSheetEntries = []
+        guard let client else {
+            importSheetLoading = false
+            importSheetError = "Not connected to a daemon."
+            return
+        }
+        do {
+            let entries = try await client.fetchImportableSessions()
+            importSheetEntries = entries
+            if entries.isEmpty {
+                importSheetError = "No importable sessions found. (Daemon ≥ 0.1.79 required.)"
+            }
+        } catch {
+            importSheetError = error.localizedDescription
+        }
+        importSheetLoading = false
+    }
+
+    func dismissImportSheet() {
+        importSheetOpen = false
+        importSheetEntries = []
+        importSheetError = nil
+    }
+
+    func importSession(_ session: ImportableSession) async {
+        guard let client else { return }
+        importSheetLoading = true
+        do {
+            try await client.importAgent(
+                providerId: session.providerId,
+                providerHandleId: session.providerHandleId,
+                cwd: session.cwd
+            )
+            EventLogger.shared.log("import", "sent", [
+                "providerId": session.providerId,
+                "providerHandleId": session.providerHandleId,
+            ])
+            importSheetOpen = false
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            try? await refreshAgents()
+        } catch {
+            importSheetError = error.localizedDescription
+        }
+        importSheetLoading = false
+    }
+
+    /// Push a new daemon-wide system prompt and remember the value locally
+    /// so the Preferences pane shows the latest. The daemon broadcasts a
+    /// `daemon_config_changed` event we also subscribe to, but updating
+    /// optimistically here avoids a flicker right after Save.
+    func setGlobalSystemPrompt(_ prompt: String) async {
+        guard let client else { return }
+        do {
+            try await client.setDaemonConfig(appendSystemPrompt: prompt)
+            globalSystemPrompt = prompt
+            EventLogger.shared.log("daemon_config", "set_system_prompt", ["len": prompt.count])
+        } catch {
+            EventLogger.shared.log("daemon_config", "set_failed", ["err": error.localizedDescription])
+        }
+    }
+
+    func renameAgent(agentId: String, name: String) async {
+        guard let client else { return }
+        do {
+            try await client.updateAgent(agentId: agentId, name: name)
+            EventLogger.shared.log("agent", "rename_sent", ["agentId": agentId, "name": name])
+        } catch {
+            EventLogger.shared.log("agent", "rename_failed", ["agentId": agentId, "err": error.localizedDescription])
         }
     }
 
@@ -1129,7 +1231,7 @@ final class AppViewModel {
         case .status, .fetchAgentsResponse, .fetchAgentTimelineResponse,
              .sendAgentMessageResponse, .setAgentModeResponse, .setAgentModelResponse,
              .setAgentThinkingResponse, .getProvidersSnapshotResponse, .cancelAgentResponse,
-             .fetchWorkspacesResponse, .unknown:
+             .fetchWorkspacesResponse, .fetchRecentProviderSessionsResponse, .unknown:
             break
         }
     }

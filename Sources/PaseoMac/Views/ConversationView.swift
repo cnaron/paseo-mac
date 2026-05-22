@@ -290,7 +290,7 @@ struct ConversationView: View {
         let isCurrent: Bool
     }
 
-    private static let providerOrder = ["claude", "gemini", "codex", "opencode", "copilot", "pi"]
+    private static let providerOrder = ["claude", "codex", "antigravity", "gemini", "opencode", "copilot", "pi"]
 
     private var branchTargets: [BranchTarget] {
         let current = agent()?.provider
@@ -963,6 +963,7 @@ private struct MessageBubble: View {
         if let m = model, !m.isEmpty { return m }
         switch provider {
         case "gemini": return "Gemini"
+        case "antigravity": return "Antigravity"
         case "claude": return "Claude"
         case "codex": return "Codex"
         case "opencode": return "OpenCode"
@@ -1041,18 +1042,19 @@ private struct ToolRowTimeline: View {
 
             if let target = info.target, !target.isEmpty {
                 if target.hasPrefix("/") {
+                    let loc = FileLocation.parse(target)
                     Button {
-                        let (filePath, _) = parseFilePath(target)
-                        NSWorkspace.shared.open(URL(fileURLWithPath: filePath))
+                        FileLocationOpener.open(loc)
                     } label: {
-                        Text(truncate(target, max: 64))
+                        Text(truncate(loc.display, max: 64))
                             .font(.callout)
                             .foregroundStyle(Color.accentColor.opacity(0.8))
                             .lineLimit(1)
                             .truncationMode(.middle)
                     }
                     .buttonStyle(.plain)
-                    .help("Open file")
+                    .help(loc.lineEnd != nil ? "Open \(loc.path) at lines \(loc.lineStart!)–\(loc.lineEnd!)"
+                          : (loc.lineStart != nil ? "Open \(loc.path) at line \(loc.lineStart!)" : "Open \(loc.path)"))
                 } else {
                     Text(truncate(target, max: 64))
                         .font(.callout)
@@ -1150,12 +1152,88 @@ private struct ToolRowTimeline: View {
     }
 
     private func parseFilePath(_ raw: String) -> (String, Int?) {
-        if let colon = raw.lastIndex(of: ":"),
-           colon > raw.startIndex,
-           let line = Int(raw[raw.index(after: colon)...]) {
-            return (String(raw[..<colon]), line)
+        let location = FileLocation.parse(raw)
+        return (location.path, location.lineStart)
+    }
+}
+
+/// Opens file references in whichever editor the user has set as default.
+/// When a line number is present, falls back to a CLI invocation that the
+/// common editors accept (`code -g`, `cursor -g`, `subl`), since
+/// `NSWorkspace.open(URL)` alone has no way to express "and jump to line N".
+/// Editors that don't honor the CLI just open the file at the top — same
+/// behavior as before, no regression.
+enum FileLocationOpener {
+    static func open(_ loc: FileLocation) {
+        let url = URL(fileURLWithPath: loc.path)
+        guard let line = loc.lineStart else {
+            NSWorkspace.shared.open(url)
+            return
         }
-        return (raw, nil)
+        // Try a few known editor CLIs in order of how common they are on
+        // dev machines. Each one accepts `<path>:<line>:<col>` (subl style)
+        // or `-g <path>:<line>:<col>` (vscode/cursor style).
+        let target = loc.lineEnd != nil ? "\(loc.path):\(line):1" : "\(loc.path):\(line)"
+        for cli in ["cursor", "code", "subl"] {
+            if runCLI(cli, args: cli == "subl" ? [target] : ["-g", target]) { return }
+        }
+        // Final fallback: plain open. The line hint is lost but the file
+        // still opens in whatever the user's "Open With" default is.
+        NSWorkspace.shared.open(url)
+    }
+
+    private static func runCLI(_ command: String, args: [String]) -> Bool {
+        let task = Process()
+        task.launchPath = "/usr/bin/env"
+        task.arguments = [command] + args
+        // Discard both streams so a missing CLI on PATH doesn't spam stderr.
+        task.standardOutput = Pipe()
+        task.standardError = Pipe()
+        do {
+            try task.run()
+            task.waitUntilExit()
+            return task.terminationStatus == 0
+        } catch {
+            return false
+        }
+    }
+}
+
+/// Parsed reference to a file location: `path:line` or `path:start-end`.
+/// Mirrors upstream's `WorkspaceFileLocation` so future editor-integration
+/// hooks can carry range info through to the open call.
+struct FileLocation: Hashable, Sendable {
+    let path: String
+    let lineStart: Int?
+    let lineEnd: Int?
+
+    static func parse(_ raw: String) -> FileLocation {
+        // Strip optional `file://` scheme that some Markdown renderers add.
+        var stripped = raw
+        if stripped.hasPrefix("file://") {
+            stripped = String(stripped.dropFirst("file://".count))
+        }
+        guard let colon = stripped.lastIndex(of: ":"), colon > stripped.startIndex else {
+            return FileLocation(path: stripped, lineStart: nil, lineEnd: nil)
+        }
+        let suffix = stripped[stripped.index(after: colon)...]
+        if let dash = suffix.firstIndex(of: "-"),
+           let start = Int(suffix[..<dash]),
+           let end = Int(suffix[suffix.index(after: dash)...]) {
+            return FileLocation(path: String(stripped[..<colon]), lineStart: start, lineEnd: end)
+        }
+        if let line = Int(suffix) {
+            return FileLocation(path: String(stripped[..<colon]), lineStart: line, lineEnd: nil)
+        }
+        return FileLocation(path: stripped, lineStart: nil, lineEnd: nil)
+    }
+
+    /// `path:line` or `path:start-end` form used by tooltips and the
+    /// "open" button label.
+    var display: String {
+        if let s = lineStart, let e = lineEnd { return "\(path):\(s)-\(e)" }
+        if let s = lineStart { return "\(path):\(s)" }
+        return path
     }
 }
 

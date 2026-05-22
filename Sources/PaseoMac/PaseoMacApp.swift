@@ -29,6 +29,10 @@ struct PaseoMacApp: App {
                     Task { try? await appModel.refreshAgents() }
                 }
                 .keyboardShortcut("r", modifiers: [.command])
+                Button("Import Session…") {
+                    Task { await appModel.openImportSheet() }
+                }
+                .keyboardShortcut("i", modifiers: [.command, .shift])
             }
         }
 

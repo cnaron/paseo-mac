@@ -127,11 +127,77 @@ struct PreferencesView: View {
             .formStyle(.grouped)
             .padding(8)
             .tabItem { Label("Integration", systemImage: "network") }
+            // MARK: Daemon tab
+            DaemonConfigTabView(app: app)
+                .tabItem { Label("Daemon", systemImage: "server.rack") }
             // MARK: Usage tab
             StatsTabView(app: app)
                 .tabItem { Label("Usage", systemImage: "chart.bar") }
         }
         .frame(minWidth: 520, minHeight: 420)
+    }
+}
+
+/// Settings that live on the daemon side (not in local UserDefaults).
+/// Sent via `set_daemon_config_request`; the daemon broadcasts a change
+/// event we pick up to keep the field in sync across clients.
+private struct DaemonConfigTabView: View {
+    let app: AppViewModel
+    @State private var draft: String = ""
+    @State private var saved: Bool = false
+    @State private var saving: Bool = false
+    @State private var lastErr: String? = nil
+
+    var body: some View {
+        Form {
+            Section("Global System Prompt") {
+                Text("Daemon appends this to every new agent's system prompt. Useful for project-wide conventions (\"never use emojis in commits\", \"prefer pytest\", etc.).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                TextEditor(text: $draft)
+                    .font(.system(.body, design: .monospaced))
+                    .frame(minHeight: 120)
+                    .padding(4)
+                    .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+                HStack {
+                    if saving {
+                        ProgressView().controlSize(.small)
+                    } else if let err = lastErr {
+                        Text("Could not save: \(err)")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .lineLimit(2)
+                    } else if saved {
+                        Label("Saved", systemImage: "checkmark.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                    } else if draft != app.globalSystemPrompt {
+                        Text("Unsaved changes").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Save") {
+                        Task {
+                            saving = true
+                            lastErr = nil
+                            await app.setGlobalSystemPrompt(draft)
+                            saving = false
+                            if app.globalSystemPrompt == draft {
+                                saved = true
+                                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                                saved = false
+                            } else {
+                                lastErr = "Daemon did not echo the new prompt — needs version 0.1.79+."
+                            }
+                        }
+                    }
+                    .disabled(saving || draft == app.globalSystemPrompt)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .padding(8)
+        .onAppear { draft = app.globalSystemPrompt }
+        .onChange(of: app.globalSystemPrompt) { _, new in draft = new }
     }
 }
 

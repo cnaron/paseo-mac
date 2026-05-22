@@ -16,6 +16,10 @@ struct ComposerView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // Subagents linked to this parent agent. Surfaces above the
+            // composer so users can pivot between the main agent and its
+            // children without leaving the conversation.
+            SubagentSection(parentAgentId: vm.agentId)
             // Queued messages above the card
             if !vm.queued.isEmpty {
                 queuedStrip
@@ -121,6 +125,7 @@ struct ComposerView: View {
             // Model + thinking + mode pickers (right-aligned text)
             HStack(spacing: 2) {
                 if app.pendingNewAgentCwd != nil {
+                    PendingWorktreeToggle()
                     PendingModePicker()
                     PendingModelPicker()
                     PendingThinkingPicker()
@@ -527,12 +532,42 @@ private struct ThinkingPicker: View {
 
 // MARK: - Pending-agent pickers (used before a new conversation is created)
 
+/// Toggle that requests the daemon spin up a fresh git worktree for the
+/// pending agent and auto-archive it (pruning the worktree) when the run
+/// ends. Only meaningful on daemon ≥ 0.1.79; on older daemons the field
+/// is ignored and the agent runs in `cwd` like any other.
+private struct PendingWorktreeToggle: View {
+    @Environment(AppViewModel.self) private var app
+
+    var body: some View {
+        Button {
+            app.pendingNewAgentAutoArchiveWorktree.toggle()
+        } label: {
+            Image(systemName: app.pendingNewAgentAutoArchiveWorktree
+                  ? "arrow.triangle.branch"
+                  : "arrow.triangle.branch")
+                .foregroundStyle(app.pendingNewAgentAutoArchiveWorktree ? Color.accentColor : .secondary)
+                .font(.callout)
+                .padding(.horizontal, 4)
+        }
+        .buttonStyle(.plain)
+        .help(app.pendingNewAgentAutoArchiveWorktree
+              ? "Create a fresh worktree and auto-archive when the agent finishes (daemon ≥ 0.1.79)"
+              : "Run in current working directory")
+    }
+}
+
 private struct PendingProviderPicker: View {
     @Environment(AppViewModel.self) private var app
 
     var body: some View {
-        let ready = app.providers.filter { $0.status == "ready" }
-        if ready.count > 1 {
+        // Show the picker whenever the daemon has reported any provider at
+        // all. Even with one ready provider, surfacing the picker (with
+        // unavailable entries disabled) tells the user which others exist
+        // and why they're not yet usable — instead of silently hiding them.
+        let allProviders = orderedProviders()
+        let ready = allProviders.filter { $0.status == "ready" }
+        if allProviders.count > 1 || (ready.count == 1 && ready[0].provider != app.pendingNewAgentProvider) {
             Menu {
                 ForEach(ready) { prov in
                     Button {
@@ -543,11 +578,30 @@ private struct PendingProviderPicker: View {
                             app.pendingNewAgentThinkingOptionId = nil
                         }
                     } label: {
-                        Text((prov.label ?? prov.provider) + (prov.provider == app.pendingNewAgentProvider ? "  ✓" : ""))
+                        Text((prov.label ?? prov.provider.capitalized) + (prov.provider == app.pendingNewAgentProvider ? "  ✓" : ""))
+                    }
+                }
+                let notReady = allProviders.filter { $0.status != "ready" }
+                if !notReady.isEmpty {
+                    Divider()
+                    ForEach(notReady) { prov in
+                        Button {
+                            // No-op: disabled providers aren't selectable. SwiftUI's
+                            // Menu has no .disabled per-row, so we render them as
+                            // buttons that toast the reason on click.
+                            EventLogger.shared.log("provider", "unavailable_clicked", [
+                                "provider": prov.provider,
+                                "status": prov.status,
+                                "error": prov.error ?? "<none>",
+                            ])
+                        } label: {
+                            Text("\(prov.label ?? prov.provider.capitalized) — \(prov.status)")
+                        }
+                        .disabled(true)
                     }
                 }
             } label: {
-                Text(currentProviderLabel(ready))
+                Text(currentProviderLabel(allProviders))
                     .foregroundStyle(.secondary)
             }
             .menuStyle(.borderlessButton)
@@ -556,8 +610,23 @@ private struct PendingProviderPicker: View {
         }
     }
 
+    private func orderedProviders() -> [ProviderSnapshot] {
+        // Stable, intentional order. Anything not in the list falls in
+        // alphabetical order at the end so newer ACP catalog entries still
+        // appear without code changes.
+        let priority = ["claude", "codex", "antigravity", "gemini", "opencode", "copilot", "pi"]
+        let known = priority.compactMap { id in
+            app.providers.first(where: { $0.provider == id })
+        }
+        let extras = app.providers
+            .filter { p in !priority.contains(p.provider) }
+            .sorted { ($0.label ?? $0.provider) < ($1.label ?? $1.provider) }
+        return known + extras
+    }
+
     private func currentProviderLabel(_ providers: [ProviderSnapshot]) -> String {
-        providers.first(where: { $0.provider == app.pendingNewAgentProvider })?.label ?? app.pendingNewAgentProvider
+        providers.first(where: { $0.provider == app.pendingNewAgentProvider })?.label
+            ?? app.pendingNewAgentProvider.capitalized
     }
 }
 
@@ -839,6 +908,124 @@ private struct PendingThinkingPicker: View {
     }
     private var currentLabel: String {
         thinkingOptions?.first(where: { $0.id == effectiveId })?.label ?? "Thinking"
+    }
+}
+
+// MARK: - Subagent section
+
+/// Shows the subagents linked to the current parent agent above the
+/// composer. Mirrors upstream `packages/app/src/subagents/section.tsx`:
+/// collapsed pill (`N subagents · M running`) with chevron, expands into
+/// a scrollable list with click-to-focus + archive button per row.
+/// Hides entirely when the agent has no subagents — costs nothing
+/// vertically in the common case.
+private struct SubagentSection: View {
+    let parentAgentId: String
+    @Environment(AppViewModel.self) private var app
+    @State private var expanded = false
+
+    var body: some View {
+        let kids = subagents
+        if !kids.isEmpty {
+            VStack(alignment: .leading, spacing: 0) {
+                header(kids)
+                if expanded { listBody(kids) }
+            }
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
+            .padding(.horizontal, 20)
+            .padding(.bottom, 6)
+        }
+    }
+
+    private var subagents: [AgentSnapshot] {
+        app.agents.filter { $0.parentAgentId == parentAgentId && $0.archivedAt == nil }
+    }
+
+    private func header(_ kids: [AgentSnapshot]) -> some View {
+        let running = kids.filter { $0.status == "running" }.count
+        return Button { withAnimation(.easeInOut(duration: 0.18)) { expanded.toggle() } } label: {
+            HStack(spacing: 8) {
+                Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Text("\(kids.count) subagent\(kids.count == 1 ? "" : "s")")
+                    .font(.callout)
+                    .foregroundStyle(.primary)
+                if running > 0 {
+                    Text("· \(running) running")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func listBody(_ kids: [AgentSnapshot]) -> some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(kids) { kid in
+                    SubagentRow(agent: kid)
+                    if kid.id != kids.last?.id {
+                        Divider().padding(.leading, 12)
+                    }
+                }
+            }
+            .padding(.bottom, 6)
+        }
+        .frame(maxHeight: 200)
+    }
+}
+
+private struct SubagentRow: View {
+    let agent: AgentSnapshot
+    @Environment(AppViewModel.self) private var app
+
+    var body: some View {
+        Button { app.selectedAgentId = agent.id } label: {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(statusColor)
+                    .frame(width: 6, height: 6)
+                Text(agent.displayName)
+                    .font(.callout)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if let mode = agent.currentModeId {
+                    Text(mode)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button {
+                    Task { await app.archiveAgent(agentId: agent.id) }
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Archive subagent")
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var statusColor: Color {
+        switch agent.status {
+        case "running": return .green
+        case "error", "failed": return .red
+        case "idle": return .cyan
+        default: return .gray
+        }
     }
 }
 
