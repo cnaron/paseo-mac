@@ -356,16 +356,35 @@ final class AppViewModel {
     }
 
     func startWakeObserver() {
-        NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didWakeNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
+        // System sleep covers laptop-lid-close style sleeps; display sleep
+        // (lid still open, just no activity for a while) doesn't trigger
+        // didWakeNotification. Observe both so an overnight idle wakeup is
+        // handled the same as a real sleep cycle.
+        let nc = NSWorkspace.shared.notificationCenter
+        let handler: @Sendable (Notification) -> Void = { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self, case .disconnected = self.connectionState,
-                      let raw = self.savedOfferRaw, !raw.isEmpty else { return }
-                await self.connect(withOfferRaw: raw)
+                await self?.forceLivenessRecheck(trigger: "wake")
             }
+        }
+        nc.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main, using: handler)
+        nc.addObserver(forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main, using: handler)
+    }
+
+    /// Drop the current transport (if any) and let the reconnect machinery
+    /// take over. Called from the wake / screens-wake observers — see
+    /// startWakeObserver for the "queue forever" symptom this prevents.
+    private func forceLivenessRecheck(trigger: String) async {
+        guard let raw = self.savedOfferRaw, !raw.isEmpty else { return }
+        if let client = self.client {
+            EventLogger.shared.log("conn", "force_recheck", [
+                "trigger": trigger,
+                "state": String(describing: self.connectionState)
+            ])
+            await client.forceCloseForExternalReason(trigger)
+            return
+        }
+        if case .disconnected = self.connectionState {
+            await self.connect(withOfferRaw: raw)
         }
     }
 

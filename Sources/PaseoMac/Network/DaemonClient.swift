@@ -199,6 +199,15 @@ actor DaemonClient {
         }
     }
 
+    /// Public hook so the app's wake observer can force the transport to
+    /// re-validate after long sleeps. We can't trust a `connected` state
+    /// across sleep because TCP doesn't always tear down half-open sockets
+    /// — the only safe move is to drop and reconnect, regardless of
+    /// whether the keepalive thinks the connection is still good.
+    func forceCloseForExternalReason(_ reason: String) async {
+        await forceCloseDueToKeepalive(reason: reason)
+    }
+
     /// Actively close the WS so the receive loop errors out and the upper
     /// layer (AppViewModel) sees the disconnect promptly. Without this, a
     /// half-open connection would only be detected when the OS finally
