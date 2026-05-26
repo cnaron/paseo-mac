@@ -249,13 +249,37 @@ struct ComposerView: View {
     private var queuedStrip: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
-                Image(systemName: "clock.arrow.circlepath")
+                Image(systemName: vm.turnLooksStuck ? "exclamationmark.triangle.fill" : "clock.arrow.circlepath")
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Text("Queued · click to edit")
+                    .foregroundStyle(vm.turnLooksStuck ? .orange : .secondary)
+                Text(vm.turnLooksStuck
+                     ? "Previous turn looks stuck — daemon hasn't said it's done"
+                     : "Queued · click to edit")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
+                // Always-available escape hatch. Cancels any in-flight
+                // turn, clears the local working flag, and flushes the
+                // whole queue. The "looks stuck" copy above and a
+                // contrastier button color make it discoverable when the
+                // turn has actually gone stale, but the button works
+                // regardless so a user who just changed their mind can
+                // also use it.
+                Button {
+                    Task { await vm.forceSendAnyway() }
+                } label: {
+                    Text("Send anyway")
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(
+                            (vm.turnLooksStuck ? Color.orange : Color.accentColor).opacity(0.85),
+                            in: Capsule()
+                        )
+                        .foregroundStyle(.white)
+                }
+                .buttonStyle(.plain)
+                .help("Cancel any stuck turn, then send everything in the queue")
             }
             ForEach(vm.queued) { q in
                 HStack(spacing: 6) {

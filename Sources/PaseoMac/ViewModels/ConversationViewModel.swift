@@ -422,14 +422,70 @@ final class ConversationViewModel {
 
     // MARK: - Send
 
+    /// How long a turn must have been "working" before we treat it as
+    /// stuck. Codex/Claude turns typically finish in seconds to a few
+    /// minutes; past this the most likely explanation is a lost
+    /// turn_completed event (e.g. the WS was half-open through a Mac
+    /// sleep and the event went to /dev/null). Forcing the next user
+    /// message through then is safer than letting it queue forever.
+    private static let staleTurnSeconds: TimeInterval = 300  // 5 minutes
+
+    /// True when `isAgentWorking` has been set for longer than the stale
+    /// threshold. The composer uses this to decide whether to silently
+    /// queue OR fall through the "send anyway" interrupt path.
+    var turnLooksStuck: Bool {
+        guard isAgentWorking, let started = turnStartedAt else { return false }
+        return Date().timeIntervalSince(started) > Self.staleTurnSeconds
+    }
+
     /// Default send path: if the agent is mid-turn, queue up for later flush.
-    /// Otherwise fire immediately.
+    /// Otherwise fire immediately. If the in-progress turn has been
+    /// "running" for longer than the stale threshold (5 min default) we
+    /// treat it as a missed turn_completed event and dispatch directly,
+    /// resetting the local working flag — the daemon will sort out the
+    /// ordering server-side. This is the auto-fix for the "overnight
+    /// queue" bug; the manual-fix lives on the queue strip's
+    /// `Send anyway` button.
     func sendComposer() async {
         guard let pending = drainComposerForSend() else { return }
-        if isAgentWorking {
+        if isAgentWorking && !turnLooksStuck {
             queued.append(pending)
             saveQueued()
         } else {
+            if isAgentWorking && turnLooksStuck {
+                EventLogger.shared.log("turn", "stale_bypass", [
+                    "agent": agentId,
+                    "ageSec": Int(turnStartedAt.map { Date().timeIntervalSince($0) } ?? 0)
+                ])
+                isAgentWorking = false
+                turnStartedAt = nil
+            }
+            await dispatch(pending)
+        }
+        saveDraft()
+    }
+
+    /// Manual escape hatch surfaced on the queue strip when messages
+    /// stack up. Cancels any in-flight turn (best-effort), clears the
+    /// local working flag, and flushes the queue head + new content.
+    /// Use this when the user knows the agent isn't actually doing
+    /// anything but the UI claims otherwise.
+    func forceSendAnyway() async {
+        EventLogger.shared.log("turn", "force_send_anyway", ["agent": agentId])
+        if let client = getClient() {
+            _ = try? await client.cancelAgent(agentId: agentId)
+        }
+        isAgentWorking = false
+        turnStartedAt = nil
+        // Drain queue front-to-back. Each dispatch is awaited so we
+        // don't pile up parallel sends — daemon ordering matters.
+        while !queued.isEmpty {
+            let next = queued.removeFirst()
+            saveQueued()
+            await dispatch(next)
+        }
+        // If the user typed something while the queue was up, send that too.
+        if let pending = drainComposerForSend() {
             await dispatch(pending)
         }
         saveDraft()
