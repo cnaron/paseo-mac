@@ -479,10 +479,23 @@ final class ConversationViewModel {
         turnStartedAt = nil
         // Drain queue front-to-back. Each dispatch is awaited so we
         // don't pile up parallel sends — daemon ordering matters.
+        // When the daemon WS is dead (common after overnight Mac sleep
+        // leaves a half-open socket), dispatch re-inserts the message
+        // at the head; without breaking on that signal the loop spins
+        // forever hammering NSUserDefaults and freezes the app until
+        // the user force-quits.
         while !queued.isEmpty {
             let next = queued.removeFirst()
             saveQueued()
-            await dispatch(next)
+            let didSend = await dispatch(next)
+            if !didSend {
+                EventLogger.shared.log("turn", "force_send_abort", [
+                    "agent": agentId,
+                    "remainingQueue": queued.count
+                ])
+                saveDraft()
+                return
+            }
         }
         // If the user typed something while the queue was up, send that too.
         if let pending = drainComposerForSend() {
@@ -540,11 +553,19 @@ final class ConversationViewModel {
     }
 
     /// Actually fire the RPC and append an optimistic local bubble.
-    private func dispatch(_ msg: QueuedMessage) async {
+    /// Returns true if the RPC was attempted (even if the daemon then
+    /// errored — the local bubble is up and the user sees the failure
+    /// banner). Returns false only when the daemon connection isn't
+    /// available; in that case the message is put back at the head of
+    /// the queue so callers iterating the queue can break out instead
+    /// of spinning.
+    @discardableResult
+    private func dispatch(_ msg: QueuedMessage) async -> Bool {
         guard let client = getClient() else {
             self.lastError = "Not connected"
             queued.insert(msg, at: 0)   // put it back so the user doesn't lose it
-            return
+            saveQueued()
+            return false
         }
         appendLocalUserRow(text: msg.text, messageId: msg.messageId, images: msg.images)
         EventLogger.shared.log("send", "request", [
@@ -577,6 +598,7 @@ final class ConversationViewModel {
             ])
             self.lastError = "Send failed: \(error.localizedDescription)"
         }
+        return true
     }
 
     /// Called when the VM sees a terminal turn event. Pops and sends the
