@@ -340,7 +340,17 @@ final class AppViewModel {
                 ])
                 try? await Task.sleep(nanoseconds: jittered)
                 guard !Task.isCancelled, let self else { return }
-                guard case .disconnected = connectionState else { return }
+                // .disconnected is the normal "lost socket" path; .failed is
+                // "we tried and the handshake timed out / refused". Either
+                // way we want to keep retrying — without including .failed
+                // here the loop exits after the first connect failure and
+                // the app sits offline indefinitely (observed: 13.5 h gap
+                // between connect_failed and the next reconnect attempt,
+                // recovered only when the user force-quit and relaunched).
+                switch connectionState {
+                case .disconnected, .failed: break
+                case .connecting, .connected: return
+                }
                 await self.connect(withOfferRaw: raw)
                 if case .connected = connectionState { return }
                 delay = min(delay * 3, 30_000_000_000)
@@ -383,8 +393,18 @@ final class AppViewModel {
             await client.forceCloseForExternalReason(trigger)
             return
         }
-        if case .disconnected = self.connectionState {
+        // .failed counts as "needs reconnect" — without it a stuck-after-
+        // failure state survives lid-open and the user has to relaunch.
+        switch self.connectionState {
+        case .disconnected, .failed:
+            EventLogger.shared.log("conn", "force_recheck", [
+                "trigger": trigger,
+                "state": String(describing: self.connectionState),
+                "action": "reconnect"
+            ])
             await self.connect(withOfferRaw: raw)
+        case .connecting, .connected:
+            break
         }
     }
 
