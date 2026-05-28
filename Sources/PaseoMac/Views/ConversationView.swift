@@ -70,7 +70,18 @@ struct ConversationView: View {
                             availableHeight: geo.size.height,
                             searchText: searchText,
                             bottomPadding: max(measuredComposerHeight, 210),
-                            agentProvider: agent()?.provider
+                            agentProvider: agent()?.provider,
+                            agentCapabilities: agent()?.capabilities,
+                            onRewind: { messageId, mode, text in
+                                Task {
+                                    await app.rewindAgent(
+                                        agentId: agentId,
+                                        messageId: messageId,
+                                        mode: mode,
+                                        rewoundText: text
+                                    )
+                                }
+                            }
                         )
                     }
                 }
@@ -362,6 +373,7 @@ private struct BubbleGroup: Identifiable {
     let kind: String
     let text: String
     let timestamp: String?
+    let messageId: String?
     let tool: ConversationViewModel.ToolInfo?
     let toolCluster: [ConversationViewModel.ToolInfo]
     let images: [PendingImageAttachment]
@@ -375,7 +387,7 @@ private struct BubbleGroup: Identifiable {
 
 private func groupRows(_ rows: [ConversationViewModel.Row]) -> [BubbleGroup] {
     var out: [BubbleGroup] = []
-    let mergeable: Set<String> = ["user", "assistant", "reasoning"]
+    let mergeable: Set<String> = ["assistant", "reasoning"]
 
     for row in rows {
         // Coalesce consecutive tool rows into a tight cluster so a run of
@@ -397,6 +409,7 @@ private func groupRows(_ rows: [ConversationViewModel.Row]) -> [BubbleGroup] {
                 kind: "tool_cluster",
                 text: "",
                 timestamp: last.timestamp,
+                messageId: nil,
                 tool: nil,
                 toolCluster: cluster,
                 images: [],
@@ -412,6 +425,7 @@ private func groupRows(_ rows: [ConversationViewModel.Row]) -> [BubbleGroup] {
                 kind: "tool_cluster",
                 text: "",
                 timestamp: row.timestamp,
+                messageId: nil,
                 tool: nil,
                 toolCluster: [info],
                 images: [],
@@ -433,6 +447,7 @@ private func groupRows(_ rows: [ConversationViewModel.Row]) -> [BubbleGroup] {
                 kind: last.kind,
                 text: merged,
                 timestamp: last.timestamp,
+                messageId: last.messageId,
                 tool: nil,
                 toolCluster: [],
                 images: last.images + row.images,
@@ -446,6 +461,7 @@ private func groupRows(_ rows: [ConversationViewModel.Row]) -> [BubbleGroup] {
                 kind: row.kind,
                 text: row.text,
                 timestamp: row.timestamp,
+                messageId: row.messageId,
                 tool: row.tool,
                 toolCluster: [],
                 images: row.images,
@@ -510,6 +526,8 @@ private struct MessageList: View {
     /// last message never gets hidden behind the composer.
     var bottomPadding: CGFloat = 210
     var agentProvider: String? = nil
+    var agentCapabilities: AgentCapabilityFlags? = nil
+    var onRewind: ((String, AgentRewindMode, String) -> Void)? = nil
 
     private var displayedRows: [ConversationViewModel.Row] {
         // AskUserQuestion is fully owned by the permission_request flow's
@@ -575,6 +593,7 @@ private struct MessageList: View {
                                     showConnector: gm.showConnector,
                                     isStreaming: vm.isAgentWorking && gm.id == lastAssistantId,
                                     agentProvider: agentProvider,
+                                    agentCapabilities: agentCapabilities,
                                     pendingPermission: vm.pendingPermission,
                                     isPermissionResolved: gm.group.permissionRequestId
                                         .map { vm.resolvedPermissionIds.contains($0) } ?? false,
@@ -582,6 +601,9 @@ private struct MessageList: View {
                                     onDenyPermission: { Task { await vm.denyPermission() } },
                                     onSubmitQuestionAnswers: { answers in
                                         Task { await vm.submitQuestionAnswers(answers) }
+                                    },
+                                    onRewind: { messageId, mode, text in
+                                        onRewind?(messageId, mode, text)
                                     }
                                 )
                                 .id(gm.id)
@@ -724,13 +746,16 @@ private struct MessageBubble: View {
     let showConnector: Bool
     var isStreaming: Bool = false
     var agentProvider: String? = nil
+    var agentCapabilities: AgentCapabilityFlags? = nil
     var pendingPermission: PermissionRequestPayload? = nil
     var isPermissionResolved: Bool = false
     var onApprovePermission: (() -> Void)? = nil
     var onDenyPermission: (() -> Void)? = nil
     var onSubmitQuestionAnswers: (([String: String]) -> Void)? = nil
+    var onRewind: ((String, AgentRewindMode, String) -> Void)? = nil
     @State private var reasoningExpanded: Bool = false
     @State private var isExpanded: Bool = false
+    @State private var didCopy: Bool = false
 
     private var isLong: Bool { group.text.count > 500 }
 
@@ -804,6 +829,18 @@ private struct MessageBubble: View {
                             NSPasteboard.general.clearContents()
                             NSPasteboard.general.setString(group.text, forType: .string)
                         }
+                        if let messageId = group.messageId,
+                           let onRewind,
+                           !rewindModes.isEmpty {
+                            Divider()
+                            Menu("Rewind") {
+                                ForEach(rewindModes, id: \.self) { mode in
+                                    Button(rewindLabel(mode)) {
+                                        onRewind(messageId, mode, group.text)
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 if let ts = group.timestamp, let label = formatTimestamp(ts) {
@@ -818,6 +855,18 @@ private struct MessageBubble: View {
         .padding(.vertical, 10)
     }
 
+    private var rewindModes: [AgentRewindMode] {
+        agentCapabilities?.rewindModes ?? []
+    }
+
+    private func rewindLabel(_ mode: AgentRewindMode) -> String {
+        switch mode {
+        case .conversation: return "Rewind Conversation"
+        case .files: return "Rewind Files"
+        case .both: return "Rewind Conversation and Files"
+        }
+    }
+
     // MARK: Assistant narrative — clock icon, inline text
 
     private var assistantTimelineItem: some View {
@@ -826,6 +875,32 @@ private struct MessageBubble: View {
                 MarkdownBodyView(text: group.text, isStreaming: isStreaming)
                 if let chipLabel = displayProviderModel(provider: agentProvider, model: group.modelUsed) {
                     TurnMetaChip(model: chipLabel, durationSec: group.durationSec)
+                }
+                if !isStreaming && !group.text.isEmpty {
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(group.text, forType: .string)
+                        didCopy = true
+                        Task {
+                            try? await Task.sleep(nanoseconds: 1_500_000_000)
+                            didCopy = false
+                        }
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: didCopy ? "checkmark" : "doc.on.doc")
+                                .font(.system(size: 10, weight: .medium))
+                            Text(didCopy ? "Copied" : "Copy")
+                                .font(.caption2)
+                        }
+                        .foregroundStyle(.tertiary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 5))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Copy reply to clipboard")
+                    .padding(.top, 2)
+                    .animation(.easeInOut(duration: 0.15), value: didCopy)
                 }
             }
             .contextMenu {
@@ -1258,6 +1333,11 @@ private struct UsageChip: View {
     var body: some View {
         if let u = agent.lastUsage, hasAnything(u) {
             HStack(spacing: 6) {
+                if let cost = u.totalCostUsd, cost > 0 {
+                    Text(formatCost(cost))
+                        .font(.caption2)
+                        .monospacedDigit()
+                }
                 if let used = u.contextWindowUsedTokens,
                    let max = u.contextWindowMaxTokens, max > 0 {
                     contextBar(used: used, max: max)
@@ -1269,7 +1349,7 @@ private struct UsageChip: View {
     }
 
     private func hasAnything(_ u: AgentUsage) -> Bool {
-        u.contextWindowUsedTokens != nil
+        u.contextWindowUsedTokens != nil || (u.totalCostUsd ?? 0) > 0
     }
 
     private func contextBar(used: Int, max: Int) -> some View {
@@ -2041,4 +2121,3 @@ private struct FlowLayout: Layout {
         }
     }
 }
-

@@ -90,8 +90,15 @@ struct HelloMessage: Encodable {
     }
 
     struct Capabilities: Encodable {
-        var voice: Bool?
-        var pushNotifications: Bool?
+        var voice: Bool? = nil
+        var pushNotifications: Bool? = nil
+        var customModeIcons: Bool? = nil
+
+        private enum CodingKeys: String, CodingKey {
+            case voice
+            case pushNotifications
+            case customModeIcons = "custom_mode_icons"
+        }
     }
 }
 
@@ -115,6 +122,8 @@ enum SessionRequest: Encodable {
     case setAgentMode(SetAgentModeRequest)
     case setAgentModel(SetAgentModelRequest)
     case setAgentThinking(SetAgentThinkingRequest)
+    case setAgentFeature(SetAgentFeatureRequest)
+    case rewindAgent(AgentRewindRequest)
     case getProvidersSnapshot(GetProvidersSnapshotRequest)
     case cancelAgent(CancelAgentRequest)
     case createAgent(CreateAgentRequest)
@@ -135,6 +144,8 @@ enum SessionRequest: Encodable {
         case .setAgentMode(let r): try c.encode(r)
         case .setAgentModel(let r): try c.encode(r)
         case .setAgentThinking(let r): try c.encode(r)
+        case .setAgentFeature(let r): try c.encode(r)
+        case .rewindAgent(let r): try c.encode(r)
         case .getProvidersSnapshot(let r): try c.encode(r)
         case .cancelAgent(let r): try c.encode(r)
         case .createAgent(let r): try c.encode(r)
@@ -281,9 +292,10 @@ struct CreateAgentRequest: Encodable {
         /// daemon-side race that fails the turn with
         /// "Cannot read properties of null (reading 'push')".
         let thinkingOptionId: String?
+        let featureValues: [String: JSONValue]?
 
         private enum CodingKeys: String, CodingKey {
-            case provider, cwd, model, modeId, thinkingOptionId
+            case provider, cwd, model, modeId, thinkingOptionId, featureValues
         }
         func encode(to encoder: Encoder) throws {
             var c = encoder.container(keyedBy: CodingKeys.self)
@@ -292,6 +304,7 @@ struct CreateAgentRequest: Encodable {
             try c.encodeIfPresent(model, forKey: .model)
             try c.encodeIfPresent(modeId, forKey: .modeId)
             try c.encodeIfPresent(thinkingOptionId, forKey: .thinkingOptionId)
+            try c.encodeIfPresent(featureValues, forKey: .featureValues)
         }
     }
 
@@ -299,13 +312,20 @@ struct CreateAgentRequest: Encodable {
     /// We only support the most common case (`branch-off`) for now; new variants
     /// can be added when we ship UI for them.
     enum WorktreeTarget: Encodable {
-        case branchOff(baseBranch: String?)
+        case branchOff(newBranch: String, baseBranch: String?)
 
-        private enum Keys: String, CodingKey { case type, baseBranch }
+        private enum Keys: String, CodingKey { case mode, newBranch, base, type, baseBranch }
         func encode(to encoder: Encoder) throws {
             var c = encoder.container(keyedBy: Keys.self)
             switch self {
-            case .branchOff(let baseBranch):
+            case .branchOff(let newBranch, let baseBranch):
+                // New daemon schema (>=0.1.79 current upstream): {mode,newBranch,base}.
+                try c.encode("branch-off", forKey: .mode)
+                try c.encode(newBranch, forKey: .newBranch)
+                try c.encodeIfPresent(baseBranch, forKey: .base)
+                // Legacy Mac client schema: {type,baseBranch}. Keeping both lets
+                // older daemons ignore the new fields while current daemons ignore
+                // the legacy ones.
                 try c.encode("branch-off", forKey: .type)
                 try c.encodeIfPresent(baseBranch, forKey: .baseBranch)
             }
@@ -464,6 +484,28 @@ struct SetAgentThinkingRequest: Encodable {
     let thinkingOptionId: String?
 }
 
+struct SetAgentFeatureRequest: Encodable {
+    let type = "set_agent_feature_request"
+    let requestId: String
+    let agentId: String
+    let featureId: String
+    let value: JSONValue
+}
+
+enum AgentRewindMode: String, Encodable, Sendable, Hashable {
+    case conversation
+    case files
+    case both
+}
+
+struct AgentRewindRequest: Encodable {
+    let type = "agent.rewind.request"
+    let requestId: String
+    let agentId: String
+    let messageId: String
+    let mode: AgentRewindMode
+}
+
 struct GetProvidersSnapshotRequest: Encodable {
     let type = "get_providers_snapshot_request"
     let requestId: String
@@ -567,6 +609,8 @@ enum SessionInbound: Decodable, @unchecked Sendable {
     case setAgentModeResponse(SetAgentModeResponse)
     case setAgentModelResponse(SetAgentModelResponse)
     case setAgentThinkingResponse(SetAgentThinkingResponse)
+    case setAgentFeatureResponse(SetAgentFeatureResponse)
+    case agentRewindResponse(AgentRewindResponse)
     case getProvidersSnapshotResponse(GetProvidersSnapshotResponse)
     case providersSnapshotUpdate(ProvidersSnapshotUpdatePayload)
     case cancelAgentResponse(CancelAgentResponse)
@@ -602,6 +646,10 @@ enum SessionInbound: Decodable, @unchecked Sendable {
             self = .setAgentModelResponse(try JSONDecoder.paseo.decode(SetAgentModelResponse.self, from: raw))
         case "set_agent_thinking_response":
             self = .setAgentThinkingResponse(try JSONDecoder.paseo.decode(SetAgentThinkingResponse.self, from: raw))
+        case "set_agent_feature_response":
+            self = .setAgentFeatureResponse(try JSONDecoder.paseo.decode(SetAgentFeatureResponse.self, from: raw))
+        case "agent.rewind.response":
+            self = .agentRewindResponse(try JSONDecoder.paseo.decode(AgentRewindResponse.self, from: raw))
         case "get_providers_snapshot_response":
             self = .getProvidersSnapshotResponse(try JSONDecoder.paseo.decode(GetProvidersSnapshotResponse.self, from: raw))
         case "providers_snapshot_update":
@@ -727,6 +775,23 @@ struct SetAgentThinkingResponse: Decodable, Sendable {
     let payload: AckResponsePayload
 }
 
+struct SetAgentFeatureResponse: Decodable, Sendable {
+    let type: String
+    let payload: AckResponsePayload
+}
+
+struct AgentRewindResponse: Decodable, Sendable {
+    let type: String
+    let payload: Payload
+
+    struct Payload: Decodable, Sendable {
+        let requestId: String
+        let agentId: String
+        let ok: Bool
+        let error: String?
+    }
+}
+
 /// Lazily pushed status updates for a single agent. Handy for keeping the
 /// sidebar's little status dot in sync without a full `fetch_agents`.
 struct AgentStatusMessage: Decodable, Sendable {
@@ -805,6 +870,103 @@ struct SelectOption: Decodable, Sendable, Hashable, Identifiable {
     let label: String
     let description: String?
     let isDefault: Bool?
+}
+
+enum AgentFeature: Decodable, Sendable, Hashable, Identifiable {
+    case toggle(Toggle)
+    case select(Select)
+    case unknown(Unknown)
+
+    var id: String {
+        switch self {
+        case .toggle(let f): return f.id
+        case .select(let f): return f.id
+        case .unknown(let f): return f.id
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .toggle(let f): return f.label
+        case .select(let f): return f.label
+        case .unknown(let f): return f.label
+        }
+    }
+
+    var tooltip: String? {
+        switch self {
+        case .toggle(let f): return f.tooltip ?? f.description
+        case .select(let f): return f.tooltip ?? f.description
+        case .unknown(let f): return f.tooltip ?? f.description
+        }
+    }
+
+    var icon: String? {
+        switch self {
+        case .toggle(let f): return f.icon
+        case .select(let f): return f.icon
+        case .unknown(let f): return f.icon
+        }
+    }
+
+    struct Toggle: Decodable, Sendable, Hashable {
+        let type: String
+        let id: String
+        let label: String
+        let description: String?
+        let tooltip: String?
+        let icon: String?
+        let value: Bool
+    }
+
+    struct Select: Decodable, Sendable, Hashable {
+        let type: String
+        let id: String
+        let label: String
+        let description: String?
+        let tooltip: String?
+        let icon: String?
+        let value: String?
+        let options: [SelectOption]
+    }
+
+    struct Unknown: Decodable, Sendable, Hashable {
+        let type: String
+        let id: String
+        let label: String
+        let description: String?
+        let tooltip: String?
+        let icon: String?
+    }
+
+    private enum Keys: String, CodingKey { case type }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Keys.self)
+        let type = (try? c.decode(String.self, forKey: .type)) ?? ""
+        switch type {
+        case "toggle":
+            self = .toggle(try Toggle(from: decoder))
+        case "select":
+            self = .select(try Select(from: decoder))
+        default:
+            self = .unknown(try Unknown(from: decoder))
+        }
+    }
+}
+
+struct AgentCapabilityFlags: Decodable, Sendable, Hashable {
+    let supportsRewindConversation: Bool?
+    let supportsRewindFiles: Bool?
+    let supportsRewindBoth: Bool?
+
+    var rewindModes: [AgentRewindMode] {
+        var modes: [AgentRewindMode] = []
+        if supportsRewindConversation == true { modes.append(.conversation) }
+        if supportsRewindFiles == true { modes.append(.files) }
+        if supportsRewindBoth == true { modes.append(.both) }
+        return modes
+    }
 }
 
 // MARK: - Timeline
@@ -1161,10 +1323,12 @@ struct AgentSnapshot: Decodable, Sendable, Identifiable, Hashable {
     let updatedAt: String
     let lastUserMessageAt: String?
     let model: String?
+    let features: [AgentFeature]?
     let thinkingOptionId: String?
     let effectiveThinkingOptionId: String?
     let currentModeId: String?
     let availableModes: [AgentMode]?
+    let capabilities: AgentCapabilityFlags?
     let lastUsage: AgentUsage?
     let archivedAt: String?
     let requiresAttention: Bool?

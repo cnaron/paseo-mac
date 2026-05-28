@@ -135,12 +135,14 @@ struct ComposerView: View {
             // Model + thinking + mode pickers (right-aligned text)
             HStack(spacing: 2) {
                 if app.pendingNewAgentCwd != nil {
+                    PendingFeatureControls()
                     PendingWorktreeToggle()
                     PendingModePicker()
                     PendingModelPicker()
                     PendingThinkingPicker()
                     PendingProviderPicker()
                 } else if let agent = app.agents.first(where: { $0.id == vm.agentId }) {
+                    AgentFeatureControls(agent: agent)
                     ModePicker(agent: agent)
                     ModelPicker(agent: agent)
                     ThinkingPicker(agent: agent)
@@ -425,6 +427,119 @@ struct ComposerView: View {
 
 // MARK: - Pickers
 
+private struct AgentFeatureControls: View {
+    let agent: AgentSnapshot
+    @Environment(AppViewModel.self) private var app
+
+    var body: some View {
+        if let features = agent.features, !features.isEmpty {
+            ForEach(features) { feature in
+                AgentFeatureControl(
+                    feature: feature,
+                    onSet: { value in
+                        Task {
+                            await app.setAgentFeature(
+                                agentId: agent.id,
+                                featureId: feature.id,
+                                value: value
+                            )
+                        }
+                    }
+                )
+            }
+        }
+    }
+}
+
+private struct AgentFeatureControl: View {
+    let feature: AgentFeature
+    let onSet: (JSONValue) -> Void
+
+    var body: some View {
+        switch feature {
+        case .toggle(let f):
+            Button {
+                onSet(.bool(!f.value))
+            } label: {
+                Image(systemName: featureIconName(feature.icon, fallback: "switch.2"))
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(f.value ? enabledColor(feature.id) : Color.secondary)
+                    .padding(.horizontal, 4)
+            }
+            .buttonStyle(.plain)
+            .help(feature.tooltip ?? feature.label)
+        case .select(let f):
+            Menu {
+                ForEach(f.options) { option in
+                    Button {
+                        onSet(.string(option.id))
+                    } label: {
+                        Text(option.label + (option.id == f.value ? "  ✓" : ""))
+                    }
+                }
+            } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: featureIconName(feature.icon, fallback: "slider.horizontal.3"))
+                        .font(.system(size: 12, weight: .semibold))
+                    Text(f.options.first(where: { $0.id == f.value })?.label ?? f.label)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help(feature.tooltip ?? feature.label)
+        case .unknown:
+            EmptyView()
+        }
+    }
+
+    private func enabledColor(_ id: String) -> Color {
+        switch id {
+        case "auto_accept": return .green
+        case "fast_mode": return .yellow
+        case "plan_mode": return .blue
+        default: return .accentColor
+        }
+    }
+}
+
+private struct PendingFeatureControls: View {
+    @Environment(AppViewModel.self) private var app
+
+    var body: some View {
+        if app.pendingNewAgentProvider == "opencode" {
+            Button {
+                app.setPendingNewAgentFeature(featureId: "auto_accept", value: .bool(!autoAcceptEnabled))
+            } label: {
+                Image(systemName: "checkmark.shield")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(autoAcceptEnabled ? Color.green : Color.secondary)
+                    .padding(.horizontal, 4)
+            }
+            .buttonStyle(.plain)
+            .help(autoAcceptEnabled
+                  ? "Auto Accept is on: OpenCode tool permission prompts are approved automatically"
+                  : "Auto Accept is off")
+        }
+    }
+
+    private var autoAcceptEnabled: Bool {
+        if case .bool(let enabled)? = app.pendingNewAgentFeatureValues["auto_accept"] {
+            return enabled
+        }
+        return false
+    }
+}
+
+private func featureIconName(_ icon: String?, fallback: String) -> String {
+    switch icon {
+    case "shield-check": return "checkmark.shield"
+    case "zap": return "bolt.fill"
+    case "list-todo": return "checklist"
+    default: return fallback
+    }
+}
+
 private struct ModePicker: View {
     let agent: AgentSnapshot
     @Environment(AppViewModel.self) private var app
@@ -469,6 +584,9 @@ private struct ModePicker: View {
         }
     }
     private func iconFor(mode: AgentMode?) -> String {
+        if let icon = mode?.icon, let mapped = modeIconName(icon) {
+            return mapped
+        }
         switch mode?.id {
         case "bypassPermissions", "full-access": return "shield.slash"
         case "acceptEdits": return "checkmark.shield"
@@ -613,6 +731,7 @@ private struct PendingProviderPicker: View {
                             app.pendingNewAgentModel = nil
                             app.pendingNewAgentModeId = nil
                             app.pendingNewAgentThinkingOptionId = nil
+                            app.pendingNewAgentFeatureValues = [:]
                         }
                     } label: {
                         Text((prov.label ?? prov.provider.capitalized) + (prov.provider == app.pendingNewAgentProvider ? "  ✓" : ""))
@@ -766,7 +885,12 @@ private struct PendingModePicker: View {
             Menu {
                 ForEach(modes) { mode in
                     Button {
-                        app.pendingNewAgentModeId = mode.id
+                        if app.pendingNewAgentProvider == "opencode", mode.id == "full-access" {
+                            app.pendingNewAgentModeId = "build"
+                            app.setPendingNewAgentFeature(featureId: "auto_accept", value: .bool(true))
+                        } else {
+                            app.pendingNewAgentModeId = mode.id
+                        }
                     } label: {
                         Label(
                             mode.label + (mode.id == effectiveModeId ? "  ✓" : ""),
@@ -809,6 +933,9 @@ private struct PendingModePicker: View {
         }
     }
     private func iconFor(mode: AgentMode?) -> String {
+        if let icon = mode?.icon, let mapped = modeIconName(icon) {
+            return mapped
+        }
         switch mode?.id {
         case "bypassPermissions", "full-access": return "shield.slash"
         case "acceptEdits": return "checkmark.shield"
@@ -817,6 +944,17 @@ private struct PendingModePicker: View {
         case "auto-review": return "eye.trianglebadge.exclamationmark"
         default: return "shield"
         }
+    }
+}
+
+private func modeIconName(_ icon: String) -> String? {
+    switch icon {
+    case "Bot": return "cpu"
+    case "ShieldCheck": return "checkmark.shield"
+    case "ShieldAlert": return "exclamationmark.shield"
+    case "ShieldOff": return "shield.slash"
+    case "ShieldQuestionMark": return "questionmark.shield"
+    default: return nil
     }
 }
 

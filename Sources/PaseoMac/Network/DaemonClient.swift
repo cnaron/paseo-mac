@@ -127,7 +127,7 @@ actor DaemonClient {
             clientType: .cli,
             protocolVersion: WSProtocol.version,
             appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.48",
-            capabilities: nil
+            capabilities: .init(customModeIcons: true)
         )
         try await rawSend(.hello(hello))
         connectedAt = Date()
@@ -421,6 +421,42 @@ actor DaemonClient {
     }
 
     @discardableResult
+    func setAgentFeature(agentId: String, featureId: String, value: JSONValue) async throws -> AckResponsePayload {
+        let requestId = UUID().uuidString
+        let req = SetAgentFeatureRequest(
+            requestId: requestId,
+            agentId: agentId,
+            featureId: featureId,
+            value: value
+        )
+        let reply = try await requestResponse(requestId: requestId, outbound: .session(.setAgentFeature(req)))
+        guard case let .setAgentFeatureResponse(resp) = reply else {
+            throw DaemonError.protocolError("Expected set_agent_feature_response, got \(reply)")
+        }
+        if let err = resp.payload.error, !err.isEmpty { throw DaemonError.rpcFailed(err) }
+        return resp.payload
+    }
+
+    @discardableResult
+    func rewindAgent(agentId: String, messageId: String, mode: AgentRewindMode) async throws -> AgentRewindResponse.Payload {
+        let requestId = UUID().uuidString
+        let req = AgentRewindRequest(
+            requestId: requestId,
+            agentId: agentId,
+            messageId: messageId,
+            mode: mode
+        )
+        let reply = try await requestResponse(requestId: requestId, outbound: .session(.rewindAgent(req)))
+        guard case let .agentRewindResponse(resp) = reply else {
+            throw DaemonError.protocolError("Expected agent.rewind.response, got \(reply)")
+        }
+        if !resp.payload.ok {
+            throw DaemonError.rpcFailed(resp.payload.error ?? "Agent rewind failed")
+        }
+        return resp.payload
+    }
+
+    @discardableResult
     func cancelAgent(agentId: String) async throws -> CancelAgentResponse.Payload {
         let requestId = UUID().uuidString
         let req = CancelAgentRequest(requestId: requestId, agentId: agentId)
@@ -494,6 +530,7 @@ actor DaemonClient {
         model: String? = nil,
         modeId: String? = nil,
         thinkingOptionId: String? = nil,
+        featureValues: [String: JSONValue]? = nil,
         initialPrompt: String? = nil,
         autoArchiveWorktree: Bool = false,
         worktreeBaseBranch: String? = nil
@@ -504,13 +541,17 @@ actor DaemonClient {
             cwd: cwd,
             model: model,
             modeId: modeId,
-            thinkingOptionId: thinkingOptionId
+            thinkingOptionId: thinkingOptionId,
+            featureValues: featureValues
         )
         var req = CreateAgentRequest(requestId: requestId, config: config)
         req.initialPrompt = initialPrompt
         if autoArchiveWorktree {
             req.autoArchive = true
-            req.worktree = .branchOff(baseBranch: worktreeBaseBranch)
+            req.worktree = .branchOff(
+                newBranch: "paseo-\(UUID().uuidString.prefix(8))",
+                baseBranch: worktreeBaseBranch
+            )
         }
         try await rawSend(.session(.createAgent(req)))
     }
@@ -681,6 +722,8 @@ actor DaemonClient {
             case .setAgentModeResponse(let r): return r.payload.requestId
             case .setAgentModelResponse(let r): return r.payload.requestId
             case .setAgentThinkingResponse(let r): return r.payload.requestId
+            case .setAgentFeatureResponse(let r): return r.payload.requestId
+            case .agentRewindResponse(let r): return r.payload.requestId
             case .getProvidersSnapshotResponse(let r): return r.payload.requestId
             case .cancelAgentResponse(let r): return r.payload.requestId
             case .fetchWorkspacesResponse(let r): return r.payload.requestId

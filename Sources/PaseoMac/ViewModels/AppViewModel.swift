@@ -53,6 +53,7 @@ final class AppViewModel {
     var pendingNewAgentModel: String? = nil
     var pendingNewAgentModeId: String? = nil
     var pendingNewAgentThinkingOptionId: String? = nil
+    var pendingNewAgentFeatureValues: [String: JSONValue] = [:]
     /// When true, the next created agent runs in a fresh `branch-off`
     /// worktree and is auto-archived (worktree pruned) when it reaches
     /// a terminal state. Requires daemon ≥ 0.1.79; older daemons ignore
@@ -304,6 +305,7 @@ final class AppViewModel {
         claudeCodeCurrentVersion = nil
         pendingNewAgentCwd = nil
         pendingNewAgentThinkingOptionId = nil
+        pendingNewAgentFeatureValues = [:]
         creatingAgentText = nil
         creatingAgentImages = []
         creatingAgentError = nil
@@ -416,6 +418,7 @@ final class AppViewModel {
         pendingNewAgentModel = agent?.model
         pendingNewAgentModeId = agent?.currentModeId
         pendingNewAgentThinkingOptionId = agent?.effectiveThinkingOptionId
+        pendingNewAgentFeatureValues = Self.featureValues(from: agent?.features)
         pendingNewAgentCwd = cwd
         selectedAgentId = AppViewModel.pendingAgentId
     }
@@ -423,6 +426,7 @@ final class AppViewModel {
     func cancelPendingAgent() {
         pendingNewAgentCwd = nil
         pendingNewAgentThinkingOptionId = nil
+        pendingNewAgentFeatureValues = [:]
         creatingAgentError = nil
         if selectedAgentId == AppViewModel.pendingAgentId {
             selectedAgentId = agents.first?.id
@@ -435,6 +439,7 @@ final class AppViewModel {
         let model = pendingNewAgentModel
         let modeId = pendingNewAgentModeId
         let thinkingOptionId = pendingNewAgentThinkingOptionId
+        let featureValues = pendingNewAgentFeatureValues.isEmpty ? nil : pendingNewAgentFeatureValues
         // Snapshot so we can restore composer + pending picker state if the
         // create flow fails partway. Without this the user loses their typed
         // message + attached images and has to retype everything.
@@ -444,6 +449,7 @@ final class AppViewModel {
         let restoreModel = model
         let restoreModeId = modeId
         let restoreThinking = thinkingOptionId
+        let restoreFeatures = pendingNewAgentFeatureValues
         let failAndRestore: (String) -> Void = { [weak self] reason in
             guard let self else { return }
             self.creatingAgentError = reason
@@ -453,6 +459,7 @@ final class AppViewModel {
             self.pendingNewAgentModel = restoreModel
             self.pendingNewAgentModeId = restoreModeId
             self.pendingNewAgentThinkingOptionId = restoreThinking
+            self.pendingNewAgentFeatureValues = restoreFeatures
             let vm = self.conversation(for: AppViewModel.pendingAgentId)
             vm.composerText = restoreText
             vm.pendingImages = restoreImages
@@ -478,6 +485,7 @@ final class AppViewModel {
             try await client.createAgent(
                 cwd: cwd, provider: provider, model: model, modeId: modeId,
                 thinkingOptionId: thinkingOptionId,
+                featureValues: featureValues,
                 initialPrompt: images.isEmpty ? text : nil,
                 autoArchiveWorktree: pendingNewAgentAutoArchiveWorktree
             )
@@ -528,6 +536,7 @@ final class AppViewModel {
         pendingNewAgentModel = nil
         pendingNewAgentModeId = nil
         pendingNewAgentThinkingOptionId = nil
+        pendingNewAgentFeatureValues = [:]
 
         // Image-only path: pre-populate optimistic user row and sendMessage.
         if !images.isEmpty {
@@ -960,7 +969,14 @@ final class AppViewModel {
         guard let client else { return }
         do {
             _ = try await client.setAgentMode(agentId: agentId, modeId: modeId)
-            patchAgent(id: agentId) { $0.withMode(modeId) }
+            patchAgent(id: agentId) { agent in
+                if agent.provider == "opencode", modeId == "full-access" {
+                    return agent
+                        .withMode("build")
+                        .withFeature(featureId: "auto_accept", value: .bool(true))
+                }
+                return agent.withMode(modeId)
+            }
         } catch { }
     }
 
@@ -978,6 +994,58 @@ final class AppViewModel {
             _ = try await client.setAgentThinking(agentId: agentId, thinkingOptionId: thinkingOptionId)
             patchAgent(id: agentId) { $0.withThinking(thinkingOptionId) }
         } catch { }
+    }
+
+    func setAgentFeature(agentId: String, featureId: String, value: JSONValue) async {
+        guard let client else { return }
+        do {
+            _ = try await client.setAgentFeature(agentId: agentId, featureId: featureId, value: value)
+            patchAgent(id: agentId) { $0.withFeature(featureId: featureId, value: value) }
+        } catch {
+            conversations[agentId]?.lastError = "Feature update failed: \(error.localizedDescription)"
+        }
+    }
+
+    func setPendingNewAgentFeature(featureId: String, value: JSONValue) {
+        pendingNewAgentFeatureValues[featureId] = value
+    }
+
+    private static func featureValues(from features: [AgentFeature]?) -> [String: JSONValue] {
+        var values: [String: JSONValue] = [:]
+        for feature in features ?? [] {
+            switch feature {
+            case .toggle(let f):
+                values[f.id] = .bool(f.value)
+            case .select(let f):
+                values[f.id] = f.value.map(JSONValue.string) ?? .null
+            case .unknown:
+                break
+            }
+        }
+        return values
+    }
+
+    func rewindAgent(
+        agentId: String,
+        messageId: String,
+        mode: AgentRewindMode,
+        rewoundText: String
+    ) async {
+        guard let client else { return }
+        let vm = conversation(for: agentId)
+        do {
+            _ = try await client.rewindAgent(agentId: agentId, messageId: messageId, mode: mode)
+            if mode != .files {
+                await vm.loadInitial()
+                if vm.composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    vm.composerText = rewoundText
+                    vm.composerForceUpdate &+= 1
+                }
+            }
+            try? await refreshAgents()
+        } catch {
+            vm.lastError = "Rewind failed: \(error.localizedDescription)"
+        }
     }
 
     private func patchAgent(id: String, _ body: (AgentSnapshot) -> AgentSnapshot) {
@@ -1293,7 +1361,8 @@ final class AppViewModel {
             providers = msg.payload.entries
         case .status, .fetchAgentsResponse, .fetchAgentTimelineResponse,
              .sendAgentMessageResponse, .setAgentModeResponse, .setAgentModelResponse,
-             .setAgentThinkingResponse, .getProvidersSnapshotResponse, .cancelAgentResponse,
+             .setAgentThinkingResponse, .setAgentFeatureResponse, .agentRewindResponse,
+             .getProvidersSnapshotResponse, .cancelAgentResponse,
              .fetchWorkspacesResponse, .fetchRecentProviderSessionsResponse, .unknown:
             break
         }
@@ -1335,36 +1404,90 @@ private extension AgentSnapshot {
         AgentSnapshot(
             id: id, provider: provider, cwd: cwd, status: status, title: title,
             createdAt: createdAt, updatedAt: updatedAt, lastUserMessageAt: lastUserMessageAt,
-            model: model, thinkingOptionId: thinkingOptionId,
+            model: model, features: features, thinkingOptionId: thinkingOptionId,
             effectiveThinkingOptionId: effectiveThinkingOptionId,
             currentModeId: modeId, availableModes: availableModes,
-            lastUsage: lastUsage,
+            capabilities: capabilities, lastUsage: lastUsage,
             archivedAt: archivedAt, requiresAttention: requiresAttention,
-            attentionReason: attentionReason
+            attentionReason: attentionReason, labels: labels
         )
     }
     func withModel(_ modelId: String?) -> AgentSnapshot {
         AgentSnapshot(
             id: id, provider: provider, cwd: cwd, status: status, title: title,
             createdAt: createdAt, updatedAt: updatedAt, lastUserMessageAt: lastUserMessageAt,
-            model: modelId, thinkingOptionId: thinkingOptionId,
+            model: modelId, features: features, thinkingOptionId: thinkingOptionId,
             effectiveThinkingOptionId: effectiveThinkingOptionId,
             currentModeId: currentModeId, availableModes: availableModes,
-            lastUsage: lastUsage,
+            capabilities: capabilities, lastUsage: lastUsage,
             archivedAt: archivedAt, requiresAttention: requiresAttention,
-            attentionReason: attentionReason
+            attentionReason: attentionReason, labels: labels
         )
     }
     func withThinking(_ optId: String?) -> AgentSnapshot {
         AgentSnapshot(
             id: id, provider: provider, cwd: cwd, status: status, title: title,
             createdAt: createdAt, updatedAt: updatedAt, lastUserMessageAt: lastUserMessageAt,
-            model: model, thinkingOptionId: optId,
+            model: model, features: features, thinkingOptionId: optId,
             effectiveThinkingOptionId: optId,
             currentModeId: currentModeId, availableModes: availableModes,
-            lastUsage: lastUsage,
+            capabilities: capabilities, lastUsage: lastUsage,
             archivedAt: archivedAt, requiresAttention: requiresAttention,
-            attentionReason: attentionReason
+            attentionReason: attentionReason, labels: labels
+        )
+    }
+    func withFeature(featureId: String, value: JSONValue) -> AgentSnapshot {
+        var found = false
+        var nextFeatures = (features ?? []).map { feature -> AgentFeature in
+            switch feature {
+            case .toggle(let f) where f.id == featureId:
+                found = true
+                if case .bool(let b) = value {
+                    return .toggle(.init(
+                        type: f.type, id: f.id, label: f.label,
+                        description: f.description, tooltip: f.tooltip,
+                        icon: f.icon, value: b
+                    ))
+                }
+                return feature
+            case .select(let f) where f.id == featureId:
+                found = true
+                let nextValue: String?
+                switch value {
+                case .string(let s): nextValue = s
+                case .null: nextValue = nil
+                default: return feature
+                }
+                return .select(.init(
+                    type: f.type, id: f.id, label: f.label,
+                    description: f.description, tooltip: f.tooltip,
+                    icon: f.icon, value: nextValue, options: f.options
+                ))
+            default:
+                return feature
+            }
+        }
+        if !found, featureId == "auto_accept", case .bool(let enabled) = value {
+            nextFeatures.append(.toggle(.init(
+                type: "toggle",
+                id: "auto_accept",
+                label: "Auto Accept",
+                description: "Automatically approves OpenCode tool permission prompts.",
+                tooltip: "Auto accept permission prompts",
+                icon: "shield-check",
+                value: enabled
+            )))
+        }
+        return AgentSnapshot(
+            id: id, provider: provider, cwd: cwd, status: status, title: title,
+            createdAt: createdAt, updatedAt: updatedAt, lastUserMessageAt: lastUserMessageAt,
+            model: model, features: nextFeatures.isEmpty ? features : nextFeatures,
+            thinkingOptionId: thinkingOptionId,
+            effectiveThinkingOptionId: effectiveThinkingOptionId,
+            currentModeId: currentModeId, availableModes: availableModes,
+            capabilities: capabilities, lastUsage: lastUsage,
+            archivedAt: archivedAt, requiresAttention: requiresAttention,
+            attentionReason: attentionReason, labels: labels
         )
     }
 
@@ -1385,14 +1508,17 @@ private extension AgentSnapshot {
             updatedAt: other.updatedAt.isEmpty ? updatedAt : other.updatedAt,
             lastUserMessageAt: other.lastUserMessageAt ?? lastUserMessageAt,
             model: other.model ?? model,
+            features: other.features ?? features,
             thinkingOptionId: other.thinkingOptionId ?? thinkingOptionId,
             effectiveThinkingOptionId: other.effectiveThinkingOptionId ?? effectiveThinkingOptionId,
             currentModeId: other.currentModeId ?? currentModeId,
             availableModes: other.availableModes ?? availableModes,
+            capabilities: other.capabilities ?? capabilities,
             lastUsage: other.lastUsage ?? lastUsage,
             archivedAt: other.archivedAt ?? archivedAt,
             requiresAttention: other.requiresAttention ?? requiresAttention,
-            attentionReason: other.attentionReason ?? attentionReason
+            attentionReason: other.attentionReason ?? attentionReason,
+            labels: other.labels ?? labels
         )
     }
 }

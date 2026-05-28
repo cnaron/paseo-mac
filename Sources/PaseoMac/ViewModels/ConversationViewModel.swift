@@ -18,6 +18,7 @@ final class ConversationViewModel {
         let kind: String          // "user", "assistant", "reasoning", "tool", "todo", "error", "other"
         let text: String
         let timestamp: String?
+        let messageId: String?
         /// Populated only when `kind == "tool"`. Carries the structured name,
         /// target, status, and an optional long-form detail that the tool row
         /// in the UI can expand on click.
@@ -45,6 +46,7 @@ final class ConversationViewModel {
             kind: String,
             text: String,
             timestamp: String?,
+            messageId: String? = nil,
             tool: ToolInfo? = nil,
             images: [PendingImageAttachment] = [],
             modelUsed: String? = nil,
@@ -55,6 +57,7 @@ final class ConversationViewModel {
             self.kind = kind
             self.text = text
             self.timestamp = timestamp
+            self.messageId = messageId
             self.tool = tool
             self.images = images
             self.modelUsed = modelUsed
@@ -684,7 +687,8 @@ final class ConversationViewModel {
                 if rows[idx].modelUsed == nil, let m = lastTurnModel {
                     rows[idx] = Row(
                         id: rows[idx].id, kind: rows[idx].kind, text: rows[idx].text,
-                        timestamp: rows[idx].timestamp, tool: rows[idx].tool,
+                        timestamp: rows[idx].timestamp, messageId: rows[idx].messageId,
+                        tool: rows[idx].tool,
                         images: rows[idx].images, modelUsed: m, durationSec: dur
                     )
                 }
@@ -737,6 +741,7 @@ final class ConversationViewModel {
             kind: entry.item.displayKind,
             text: entry.item.displayText,
             timestamp: entry.timestamp,
+            messageId: messageId(from: entry.item),
             tool: toolInfo(from: entry.item),
             modelUsed: meta?.model,
             durationSec: meta?.duration
@@ -768,9 +773,17 @@ final class ConversationViewModel {
                     kind: "user",
                     text: text,
                     timestamp: timestamp,
+                    messageId: msgId,
                     tool: nil,
                     images: rows[idx].images
                 )
+                return
+            }
+            // Also dedup against rows already loaded from fetchTimeline
+            // (which carry entry-xxx ids but the same messageId). Without
+            // this check, text-only new conversations show the user message
+            // twice: once from loadInitial() and once from the stream echo.
+            if rows.contains(where: { $0.messageId == msgId }) {
                 return
             }
         }
@@ -791,6 +804,7 @@ final class ConversationViewModel {
             kind: item.displayKind,
             text: item.displayText,
             timestamp: timestamp,
+            messageId: messageId(from: item),
             tool: toolInfo(from: item),
             modelUsed: tagged
         )
@@ -807,6 +821,13 @@ final class ConversationViewModel {
     private func toolInfo(from item: TimelineItem) -> ToolInfo? {
         if case let .toolCall(name, status, _, detail) = item {
             return ToolInfo.from(name: name, status: status, detail: detail)
+        }
+        return nil
+    }
+
+    private func messageId(from item: TimelineItem) -> String? {
+        if case let .userMessage(_, messageId) = item {
+            return messageId
         }
         return nil
     }
@@ -876,7 +897,8 @@ final class ConversationViewModel {
                 if rows[idx].modelUsed == nil {
                     rows[idx] = Row(
                         id: rows[idx].id, kind: rows[idx].kind, text: rows[idx].text,
-                        timestamp: rows[idx].timestamp, tool: rows[idx].tool,
+                        timestamp: rows[idx].timestamp, messageId: rows[idx].messageId,
+                        tool: rows[idx].tool,
                         images: rows[idx].images, modelUsed: model, durationSec: dur
                     )
                 }
@@ -902,6 +924,7 @@ final class ConversationViewModel {
             kind: "user",
             text: text,
             timestamp: ISO8601DateFormatter().string(from: Date()),
+            messageId: messageId,
             tool: nil,
             images: images
         ))
@@ -914,6 +937,7 @@ final class ConversationViewModel {
             kind: "system",
             text: text,
             timestamp: timestamp,
+            messageId: nil,
             tool: nil
         ))
     }
@@ -925,6 +949,7 @@ final class ConversationViewModel {
             kind: "permission",
             text: "",
             timestamp: timestamp,
+            messageId: nil,
             tool: nil,
             permissionRequestId: requestId
         ))
@@ -937,6 +962,7 @@ final class ConversationViewModel {
             kind: "attention",
             text: reason,
             timestamp: timestamp,
+            messageId: nil,
             tool: nil,
             permissionRequestId: requestId
         ))

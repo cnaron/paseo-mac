@@ -9,7 +9,7 @@ enum Markdown {
         case table(headers: [String], rows: [[String]])
         case paragraph(String)
         case bulletList([String])
-        case orderedList([String])
+        case orderedList(start: Int, items: [String])
         case blockquote(String)
         case horizontalRule
     }
@@ -95,21 +95,26 @@ enum Markdown {
                     else if l == ">" { quoteLines.append(""); i += 1 }
                     else { break }
                 }
-                out.append(.blockquote(quoteLines.joined(separator: "\n")))
+                out.append(.blockquote(normalizeBlockquoteText(quoteLines.joined(separator: "\n"))))
                 continue
             }
 
-            // Bullet list: - / * / +
+            // Bullet list: - / * / +. Keep lazy continuation lines inside the
+            // item so "title + URL + description" renders as one list entry.
             if let item = parseBulletItem(trimmed) {
                 flushParagraph()
                 var items: [String] = [item]
                 i += 1
                 while i < lines.count {
                     let l = lines[i].trimmingCharacters(in: .whitespaces)
-                    if let next = parseBulletItem(l) { items.append(next); i += 1 }
-                    else if l.isEmpty, i + 1 < lines.count,
-                            parseBulletItem(lines[i + 1].trimmingCharacters(in: .whitespaces)) != nil {
-                        i += 1  // skip blank line inside loose list
+                    if let next = parseBulletItem(l) {
+                        items.append(next)
+                        i += 1
+                    } else if l.isEmpty, i + 1 < lines.count,
+                              parseBulletItem(lines[i + 1].trimmingCharacters(in: .whitespaces)) != nil {
+                        i += 1  // skip blank line between loose-list items
+                    } else if appendListContinuation(lines, index: &i, items: &items, marker: parseBulletItem) {
+                        continue
                     } else { break }
                 }
                 out.append(.bulletList(items))
@@ -119,17 +124,20 @@ enum Markdown {
             // Ordered list: 1. / 1)
             if let item = parseOrderedItem(trimmed) {
                 flushParagraph()
-                var items: [String] = [item]
+                let start = item.number
+                var items: [String] = [item.text]
                 i += 1
                 while i < lines.count {
                     let l = lines[i].trimmingCharacters(in: .whitespaces)
-                    if let next = parseOrderedItem(l) { items.append(next); i += 1 }
+                    if let next = parseOrderedItem(l) { items.append(next.text); i += 1 }
                     else if l.isEmpty, i + 1 < lines.count,
                             parseOrderedItem(lines[i + 1].trimmingCharacters(in: .whitespaces)) != nil {
                         i += 1
+                    } else if appendListContinuation(lines, index: &i, items: &items, marker: { parseOrderedItem($0)?.text }) {
+                        continue
                     } else { break }
                 }
-                out.append(.orderedList(items))
+                out.append(.orderedList(start: start, items: items))
                 continue
             }
 
@@ -145,6 +153,29 @@ enum Markdown {
         }
         flushParagraph()
         return out
+    }
+
+    static func normalizeBlockquoteText(_ text: String) -> String {
+        var normalized: [String] = []
+        var previousWasBlank = false
+
+        for rawLine in text.components(separatedBy: "\n") {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.isEmpty {
+                if !normalized.isEmpty && !previousWasBlank {
+                    normalized.append("")
+                }
+                previousWasBlank = true
+                continue
+            }
+            normalized.append(line)
+            previousWasBlank = false
+        }
+
+        while normalized.last?.isEmpty == true {
+            normalized.removeLast()
+        }
+        return normalized.joined(separator: "\n")
     }
 
     // MARK: - Line classifiers
@@ -163,7 +194,43 @@ enum Markdown {
         return nil
     }
 
-    private static func parseOrderedItem(_ trimmed: String) -> String? {
+    private static func appendListContinuation(
+        _ lines: [String],
+        index i: inout Int,
+        items: inout [String],
+        marker: (String) -> String?
+    ) -> Bool {
+        guard !items.isEmpty, i < lines.count else { return false }
+        let trimmed = lines[i].trimmingCharacters(in: .whitespaces)
+
+        if trimmed.isEmpty { return false }
+
+        guard marker(trimmed) == nil,
+              parseBulletItem(trimmed) == nil,
+              parseOrderedItem(trimmed) == nil,
+              !startsStandaloneBlock(lines, at: i) else {
+            return false
+        }
+
+        items[items.count - 1] += "\n" + trimmed
+        i += 1
+        return true
+    }
+
+    private static func startsStandaloneBlock(_ lines: [String], at index: Int) -> Bool {
+        let line = lines[index]
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        if trimmed.hasPrefix("```") { return true }
+        if parseAtxHeading(line) != nil { return true }
+        if isHorizontalRule(trimmed) { return true }
+        if trimmed.hasPrefix("> ") || trimmed == ">" { return true }
+        if trimmed.hasPrefix("|"), index + 1 < lines.count, isTableSeparator(lines[index + 1]) {
+            return true
+        }
+        return false
+    }
+
+    private static func parseOrderedItem(_ trimmed: String) -> (number: Int, text: String)? {
         var idx = trimmed.startIndex
         while idx < trimmed.endIndex && trimmed[idx].isNumber { idx = trimmed.index(after: idx) }
         guard idx > trimmed.startIndex, idx < trimmed.endIndex else { return nil }
@@ -171,7 +238,8 @@ enum Markdown {
         guard sep == "." || sep == ")" else { return nil }
         let after = trimmed.index(after: idx)
         guard after < trimmed.endIndex, trimmed[after] == " " else { return nil }
-        return String(trimmed[trimmed.index(after: after)...])
+        let number = Int(trimmed[..<idx]) ?? 1
+        return (number, String(trimmed[trimmed.index(after: after)...]))
     }
 
     private static func isTableSeparator(_ line: String) -> Bool {
@@ -344,11 +412,11 @@ struct MarkdownBodyView: View {
                         }
                     }
 
-                case .orderedList(let items):
+                case .orderedList(let start, let items):
                     VStack(alignment: .leading, spacing: 3) {
                         ForEach(Array(items.enumerated()), id: \.offset) { idx, item in
                             HStack(alignment: .top, spacing: 6) {
-                                Text("\(idx + 1).")
+                                Text("\(start + idx).")
                                     .font(.system(size: settings.scaled(13)))
                                     .foregroundStyle(.secondary)
                                     .frame(minWidth: 20, alignment: .trailing)
@@ -362,19 +430,7 @@ struct MarkdownBodyView: View {
                     }
 
                 case .blockquote(let text):
-                    HStack(alignment: .top, spacing: 10) {
-                        Rectangle()
-                            .fill(Color.secondary.opacity(0.35))
-                            .frame(width: 3)
-                            .clipShape(Capsule())
-                        Text(Markdown.renderInline(text))
-                            .font(.system(size: settings.scaled(13)))
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .lineSpacing(CGFloat(settings.paragraphLineSpacing))
-                    }
-                    .padding(.leading, 2)
+                    QuoteBlockView(text: text)
 
                 case .horizontalRule:
                     Divider().padding(.vertical, 2)
@@ -383,6 +439,7 @@ struct MarkdownBodyView: View {
                 .offset(y: i < shownBlockCount ? 0 : 6)
             }
         }
+        .textSelection(.enabled)
         .onAppear { shownBlockCount = blocks.count }
         .onChange(of: blocks.count) { _, newCount in
             if newCount > shownBlockCount {
@@ -397,6 +454,39 @@ struct MarkdownBodyView: View {
         case 2: return 19
         case 3: return 16
         default: return 14
+        }
+    }
+}
+
+private struct QuoteBlockView: View {
+    let text: String
+    @Environment(SettingsStore.self) private var settings
+
+    private var normalizedText: String {
+        Markdown.normalizeBlockquoteText(text)
+    }
+
+    var body: some View {
+        if !normalizedText.isEmpty {
+            Text(Markdown.renderInline(normalizedText))
+                .font(.system(size: settings.scaled(13)))
+                .foregroundStyle(.primary.opacity(0.82))
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .lineSpacing(CGFloat(settings.paragraphLineSpacing))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 9)
+                .padding(.leading, 18)
+                .padding(.trailing, 12)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.secondary.opacity(0.08))
+                )
+                .overlay(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                        .fill(Color.primary.opacity(0.82))
+                        .frame(width: 4)
+                }
         }
     }
 }
