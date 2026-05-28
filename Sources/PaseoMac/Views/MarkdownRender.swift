@@ -369,11 +369,16 @@ struct MarkdownBodyView: View {
     var body: some View {
         let displayText = isStreaming ? Markdown.cleanForStreaming(text) : text
         let blocks = Markdown.parse(displayText)
-        VStack(alignment: .leading, spacing: 16) {
+        // Spacing values mirror the original Paseo web client
+        // (packages/app/src/styles/markdown-styles.ts). Their `spacing` scale:
+        // 1=4, 2=8, 3=12, 4=16, 6=24. SwiftUI VStack spacing doesn't merge
+        // adjacent margins like CSS, so heading padding.top is set to
+        // (original marginTop − VStack spacing) to land at the same total.
+        VStack(alignment: .leading, spacing: 12) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { i, block in
                 Group { switch block {
                 case .heading(let level, let text):
-                    VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 8) {
                         Text(Markdown.renderInline(text))
                             .font(.system(size: settings.scaled(headingPoints(level: level)), weight: .semibold))
                             .textSelection(.enabled)
@@ -381,7 +386,7 @@ struct MarkdownBodyView: View {
                             Divider()
                         }
                     }
-                    .padding(.top, level <= 2 ? 18 : 10)
+                    .padding(.top, level <= 2 ? 12 : 4)
 
                 case .code(let lang, let content):
                     CodeBlockView(language: lang, content: content)
@@ -397,9 +402,9 @@ struct MarkdownBodyView: View {
                         .lineSpacing(CGFloat(settings.paragraphLineSpacing))
 
                 case .bulletList(let items):
-                    VStack(alignment: .leading, spacing: 7) {
+                    VStack(alignment: .leading, spacing: 4) {
                         ForEach(Array(items.enumerated()), id: \.offset) { _, item in
-                            HStack(alignment: .top, spacing: 8) {
+                            HStack(alignment: .top, spacing: 4) {
                                 Text("•")
                                     .font(.system(size: settings.scaled(13)))
                                     .foregroundStyle(.secondary)
@@ -413,9 +418,9 @@ struct MarkdownBodyView: View {
                     }
 
                 case .orderedList(let start, let items):
-                    VStack(alignment: .leading, spacing: 7) {
+                    VStack(alignment: .leading, spacing: 4) {
                         ForEach(Array(items.enumerated()), id: \.offset) { idx, item in
-                            HStack(alignment: .top, spacing: 8) {
+                            HStack(alignment: .top, spacing: 4) {
                                 Text("\(start + idx).")
                                     .font(.system(size: settings.scaled(13)))
                                     .foregroundStyle(.secondary)
@@ -433,7 +438,7 @@ struct MarkdownBodyView: View {
                     QuoteBlockView(text: text)
 
                 case .horizontalRule:
-                    Divider().padding(.vertical, 2)
+                    Divider().padding(.vertical, 12)
                 } }
                 .opacity(i < shownBlockCount ? 1 : 0)
                 .offset(y: i < shownBlockCount ? 0 : 6)
