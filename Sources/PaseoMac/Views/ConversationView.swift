@@ -549,7 +549,7 @@ private struct MessageList: View {
                     ZStack(alignment: .bottom) {
                         Color.clear
                             .frame(maxWidth: .infinity, minHeight: availableHeight)
-                        LazyVStack(alignment: .leading, spacing: 0) {
+                        LazyVStack(alignment: .leading, spacing: CGFloat(settings.bubbleGap)) {
                             Color.clear.frame(height: 0).task {
                                 // Defer so LazyVStack finishes layout before scrollTo
                                 guard !vm.rows.isEmpty else { return }
