@@ -905,7 +905,8 @@ private struct MessageBubble: View {
         FlowStep(iconName: "clock", showLine: showConnector) {
             VStack(alignment: .leading, spacing: 4) {
                 MarkdownBodyView(text: group.text, isStreaming: isStreaming)
-                if let chipLabel = displayProviderModel(provider: agentProvider, model: group.modelUsed) {
+                if let chipLabel = displayProviderModel(provider: agentProvider, model: group.modelUsed),
+                   turnCopyText != nil {
                     TurnMetaChip(model: chipLabel, durationSec: group.durationSec)
                 }
                 if !isStreaming, let copyText = turnCopyText {
