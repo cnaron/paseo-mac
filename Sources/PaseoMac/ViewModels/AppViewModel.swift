@@ -1409,7 +1409,7 @@ private extension AgentSnapshot {
             currentModeId: modeId, availableModes: availableModes,
             capabilities: capabilities, lastUsage: lastUsage,
             archivedAt: archivedAt, requiresAttention: requiresAttention,
-            attentionReason: attentionReason, labels: labels
+            attentionReason: attentionReason
         )
     }
     func withModel(_ modelId: String?) -> AgentSnapshot {
@@ -1421,7 +1421,7 @@ private extension AgentSnapshot {
             currentModeId: currentModeId, availableModes: availableModes,
             capabilities: capabilities, lastUsage: lastUsage,
             archivedAt: archivedAt, requiresAttention: requiresAttention,
-            attentionReason: attentionReason, labels: labels
+            attentionReason: attentionReason
         )
     }
     func withThinking(_ optId: String?) -> AgentSnapshot {
@@ -1433,7 +1433,7 @@ private extension AgentSnapshot {
             currentModeId: currentModeId, availableModes: availableModes,
             capabilities: capabilities, lastUsage: lastUsage,
             archivedAt: archivedAt, requiresAttention: requiresAttention,
-            attentionReason: attentionReason, labels: labels
+            attentionReason: attentionReason
         )
     }
     func withFeature(featureId: String, value: JSONValue) -> AgentSnapshot {
@@ -1487,7 +1487,7 @@ private extension AgentSnapshot {
             currentModeId: currentModeId, availableModes: availableModes,
             capabilities: capabilities, lastUsage: lastUsage,
             archivedAt: archivedAt, requiresAttention: requiresAttention,
-            attentionReason: attentionReason, labels: labels
+            attentionReason: attentionReason
         )
     }
 
@@ -1517,8 +1517,7 @@ private extension AgentSnapshot {
             lastUsage: other.lastUsage ?? lastUsage,
             archivedAt: other.archivedAt ?? archivedAt,
             requiresAttention: other.requiresAttention ?? requiresAttention,
-            attentionReason: other.attentionReason ?? attentionReason,
-            labels: other.labels ?? labels
+            attentionReason: other.attentionReason ?? attentionReason
         )
     }
 }
