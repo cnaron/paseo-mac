@@ -369,11 +369,11 @@ struct MarkdownBodyView: View {
     var body: some View {
         let displayText = isStreaming ? Markdown.cleanForStreaming(text) : text
         let blocks = Markdown.parse(displayText)
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 16) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { i, block in
                 Group { switch block {
                 case .heading(let level, let text):
-                    VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 10) {
                         Text(Markdown.renderInline(text))
                             .font(.system(size: settings.scaled(headingPoints(level: level)), weight: .semibold))
                             .textSelection(.enabled)
@@ -381,7 +381,7 @@ struct MarkdownBodyView: View {
                             Divider()
                         }
                     }
-                    .padding(.top, level <= 2 ? 8 : 4)
+                    .padding(.top, level <= 2 ? 18 : 10)
 
                 case .code(let lang, let content):
                     CodeBlockView(language: lang, content: content)
@@ -397,9 +397,9 @@ struct MarkdownBodyView: View {
                         .lineSpacing(CGFloat(settings.paragraphLineSpacing))
 
                 case .bulletList(let items):
-                    VStack(alignment: .leading, spacing: 3) {
+                    VStack(alignment: .leading, spacing: 7) {
                         ForEach(Array(items.enumerated()), id: \.offset) { _, item in
-                            HStack(alignment: .top, spacing: 6) {
+                            HStack(alignment: .top, spacing: 8) {
                                 Text("•")
                                     .font(.system(size: settings.scaled(13)))
                                     .foregroundStyle(.secondary)
@@ -413,9 +413,9 @@ struct MarkdownBodyView: View {
                     }
 
                 case .orderedList(let start, let items):
-                    VStack(alignment: .leading, spacing: 3) {
+                    VStack(alignment: .leading, spacing: 7) {
                         ForEach(Array(items.enumerated()), id: \.offset) { idx, item in
-                            HStack(alignment: .top, spacing: 6) {
+                            HStack(alignment: .top, spacing: 8) {
                                 Text("\(start + idx).")
                                     .font(.system(size: settings.scaled(13)))
                                     .foregroundStyle(.secondary)
