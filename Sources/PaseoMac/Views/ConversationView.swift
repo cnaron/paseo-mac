@@ -587,6 +587,7 @@ private struct MessageList: View {
                             }
                             let lastAssistantId = grouped
                                 .last(where: { $0.group.kind == "assistant" })?.id
+                            let segmentCopyTexts = Self.computeSegmentCopyTexts(grouped)
                             ForEach(grouped) { gm in
                                 MessageBubble(
                                     group: gm.group,
@@ -597,6 +598,7 @@ private struct MessageList: View {
                                     pendingPermission: vm.pendingPermission,
                                     isPermissionResolved: gm.group.permissionRequestId
                                         .map { vm.resolvedPermissionIds.contains($0) } ?? false,
+                                    turnCopyText: segmentCopyTexts[gm.id],
                                     onApprovePermission: { Task { await vm.approvePermission() } },
                                     onDenyPermission: { Task { await vm.denyPermission() } },
                                     onSubmitQuestionAnswers: { answers in
@@ -713,6 +715,32 @@ private struct MessageList: View {
 
 
 
+    /// For each response segment (content between user messages), collect all
+    /// assistant bubble texts and store the combined string keyed to the LAST
+    /// assistant bubble's id. All other assistant bubbles map to nothing, so
+    /// only the final bubble in a segment shows the Copy button.
+    private static func computeSegmentCopyTexts(_ groups: [GroupedMessage]) -> [String: String] {
+        var result: [String: String] = [:]
+        var segmentBubbles: [(id: String, text: String)] = []
+
+        func flush() {
+            guard !segmentBubbles.isEmpty else { return }
+            let combined = segmentBubbles.map(\.text).joined(separator: "\n\n")
+            result[segmentBubbles[segmentBubbles.count - 1].id] = combined
+            segmentBubbles.removeAll()
+        }
+
+        for gm in groups {
+            switch gm.group.kind {
+            case "user": flush()
+            case "assistant": segmentBubbles.append((id: gm.id, text: gm.group.text))
+            default: break
+            }
+        }
+        flush()
+        return result
+    }
+
     private func jumpToBottomButton(proxy: ScrollViewProxy) -> some View {
         Button {
             withAnimation(.easeOut(duration: 0.18)) {
@@ -749,6 +777,10 @@ private struct MessageBubble: View {
     var agentCapabilities: AgentCapabilityFlags? = nil
     var pendingPermission: PermissionRequestPayload? = nil
     var isPermissionResolved: Bool = false
+    /// Combined text of all assistant bubbles in the same response segment.
+    /// Non-nil only on the LAST assistant bubble of a segment — that's the
+    /// only one that shows the Copy button.
+    var turnCopyText: String? = nil
     var onApprovePermission: (() -> Void)? = nil
     var onDenyPermission: (() -> Void)? = nil
     var onSubmitQuestionAnswers: (([String: String]) -> Void)? = nil
@@ -876,10 +908,10 @@ private struct MessageBubble: View {
                 if let chipLabel = displayProviderModel(provider: agentProvider, model: group.modelUsed) {
                     TurnMetaChip(model: chipLabel, durationSec: group.durationSec)
                 }
-                if !isStreaming && !group.text.isEmpty {
+                if !isStreaming, let copyText = turnCopyText {
                     Button {
                         NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(group.text, forType: .string)
+                        NSPasteboard.general.setString(copyText, forType: .string)
                         didCopy = true
                         Task {
                             try? await Task.sleep(nanoseconds: 1_500_000_000)
@@ -898,7 +930,7 @@ private struct MessageBubble: View {
                         .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 5))
                     }
                     .buttonStyle(.plain)
-                    .help("Copy reply to clipboard")
+                    .help("Copy full reply to clipboard")
                     .padding(.top, 2)
                     .animation(.easeInOut(duration: 0.15), value: didCopy)
                 }
