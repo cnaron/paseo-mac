@@ -283,26 +283,27 @@ enum Markdown {
     }
 
 
-    /// Strips an unclosed fenced code block at the end so streaming partial text parses cleanly.
+    /// Closes a dangling fenced code block at the end so streaming partial
+    /// text parses as a (still-growing) code block instead of being hidden.
+    ///
+    /// Previous behaviour stripped everything from the opening ``` to the
+    /// end — visually the surrounding paragraphs would stream normally,
+    /// then the entire code block popped into view at once when the closing
+    /// fence finally arrived. For a long block (ASCII art, big diff) this
+    /// looked like the message had stalled mid-stream. Synthesizing a
+    /// closing fence lets the partial content render in real time; the
+    /// fake fence is naturally replaced when the real one arrives in a
+    /// later chunk.
     static func cleanForStreaming(_ text: String) -> String {
-        var fenceCount = 0
         var inFence = false
         for line in text.components(separatedBy: "\n") {
-            let t = line.trimmingCharacters(in: .whitespaces)
-            if t.hasPrefix("```") {
-                inFence = !inFence
-                fenceCount += inFence ? 1 : 0
+            if line.trimmingCharacters(in: .whitespaces).hasPrefix("```") {
+                inFence.toggle()
             }
         }
-        if inFence {
-            if let r = text.range(of: "\n```", options: .backwards) {
-                return String(text[..<r.lowerBound])
-            }
-            if let r = text.range(of: "```", options: .backwards) {
-                return String(text[..<r.lowerBound])
-            }
-        }
-        return text
+        guard inFence else { return text }
+        let suffix = text.hasSuffix("\n") ? "```" : "\n```"
+        return text + suffix
     }
 
     /// Renders inline markdown. Converts GFM ~~strikethrough~~ to Apple ~strikethrough~
