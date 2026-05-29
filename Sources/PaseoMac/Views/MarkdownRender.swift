@@ -447,7 +447,17 @@ struct MarkdownBodyView: View {
         .textSelection(.enabled)
         .onAppear { shownBlockCount = blocks.count }
         .onChange(of: blocks.count) { _, newCount in
-            if newCount > shownBlockCount {
+            guard newCount > shownBlockCount else { return }
+            // During streaming, sync immediately — the spring animation
+            // delays each new block by 0.32s, which is fine for a final
+            // reveal but stutters badly when chunks arrive faster than
+            // the animation completes. A 1-char paragraph (e.g. just
+            // arrived "现") would stay near-invisible for 300ms while
+            // the next chunk has already updated its text, producing
+            // the "disconnected single character" the user reported.
+            if isStreaming {
+                shownBlockCount = newCount
+            } else {
                 withAnimation(.spring(response: 0.32, dampingFraction: 0.78)) { shownBlockCount = newCount }
             }
         }
@@ -584,6 +594,7 @@ private struct CodeBlockView: View {
             Text(SyntaxHighlighter.highlight(content, language: language))
                 .font(.system(.callout, design: .monospaced))
                 .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(8)
                 .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
