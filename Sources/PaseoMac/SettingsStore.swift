@@ -42,7 +42,7 @@ final class SettingsStore {
     init() {
         let d = UserDefaults.standard
         self.fontScale = d.object(forKey: kFontScale) as? Double ?? 1.0
-        self.paragraphLineSpacing = d.object(forKey: kLineSpacing) as? Double ?? 3.0
+        self.paragraphLineSpacing = d.object(forKey: kLineSpacing) as? Double ?? 5.0
         self.bubbleGap = d.object(forKey: kBubbleGap) as? Double ?? 14.0
         let storedH = d.object(forKey: kComposerHeight) as? Double
         // Reset any prior fixed-height default (72, 52) to 44 for auto-grow
@@ -53,7 +53,7 @@ final class SettingsStore {
 
     func resetToDefaults() {
         fontScale = 1.0
-        paragraphLineSpacing = 3.0
+        paragraphLineSpacing = 5.0
         bubbleGap = 14.0
         composerHeight = 44.0
     }

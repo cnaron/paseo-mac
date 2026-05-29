@@ -127,7 +127,11 @@ struct ComposerView: View {
             if let agent = app.agents.first(where: { $0.id == vm.agentId }),
                let used = agent.lastUsage?.contextWindowUsedTokens,
                let max = agent.lastUsage?.contextWindowMaxTokens, max > 0 {
-                ComposerContextBar(used: used, max: max)
+                ComposerContextBar(
+                    used: used,
+                    max: max,
+                    totalCostUsd: agent.lastUsage?.totalCostUsd
+                )
             }
 
             Spacer()
@@ -1270,6 +1274,7 @@ private struct SubagentRow: View {
 struct ComposerContextBar: View {
     let used: Int
     let max: Int
+    var totalCostUsd: Double? = nil
 
     var body: some View {
         let ratio = self.max > 0 ? min(1.0, Double(used) / Double(self.max)) : 0
@@ -1287,8 +1292,26 @@ struct ComposerContextBar: View {
             Text("\(Int(ratio * 100))%")
                 .font(.system(size: 10).monospacedDigit())
                 .foregroundStyle(.tertiary)
+            if let cost = formattedCost {
+                Text(cost)
+                    .font(.system(size: 10).monospacedDigit())
+                    .foregroundStyle(.tertiary)
+            }
         }
-        .help("Context: \(used.formatted()) / \(self.max.formatted()) tokens (\(Int(ratio * 100))%)")
+        .help(tooltip(ratio: ratio))
+    }
+
+    private var formattedCost: String? {
+        guard let cost = totalCostUsd, cost > 0 else { return nil }
+        return cost < 0.01 ? String(format: "$%.4f", cost) : String(format: "$%.2f", cost)
+    }
+
+    private func tooltip(ratio: Double) -> String {
+        var parts = ["Context: \(used.formatted()) / \(self.max.formatted()) tokens (\(Int(ratio * 100))%)"]
+        if let cost = totalCostUsd, cost > 0 {
+            parts.append("Session cost: \(String(format: "$%.4f", cost))")
+        }
+        return parts.joined(separator: "\n")
     }
 
     private func barColor(_ ratio: Double) -> Color {

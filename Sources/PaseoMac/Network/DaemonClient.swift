@@ -69,11 +69,11 @@ actor DaemonClient {
     private var pending: [String: CheckedContinuation<SessionInbound, Error>] = [:]
     private var receiveTask: Task<Void, Never>?
     private var keepaliveTask: Task<Void, Never>?
-    /// Send an app-level `{"type":"ping"}` every 15s. Mirrors the official
-    /// Paseo CLI's keepalive interval. WebSocket control PINGs aren't always
-    /// preserved by relays/CDNs, so app-level traffic is what keeps the
-    /// connection from being declared idle.
-    private static let pingInterval: TimeInterval = 15
+    /// Send an app-level `{"type":"ping"}` every 10s. Matches the post-0.1.79
+    /// upstream Paseo cadence (`PROBE_STEADY_MS = 10_000`). WebSocket control
+    /// PINGs aren't always preserved by relays/CDNs, so app-level traffic is
+    /// what keeps the connection from being declared idle.
+    private static let pingInterval: TimeInterval = 10
     /// Per-RPC ceiling for `requestResponse`. Matches the upper bound used
     /// by the official Paseo client (writes 15s, reads 10s — we pick the
     /// write bound as a safe single value). A slow RPC fails individually
@@ -87,12 +87,12 @@ actor DaemonClient {
     /// is just a way to self-kill on a slow-but-alive RPC.
     private static let requestTimeout: TimeInterval = 15
     /// How many consecutive unanswered pings we tolerate before declaring the
-    /// connection dead and forcing a reconnect. Mirrors upstream's
-    /// `LIVENESS_FAILURE_RECONNECT_THRESHOLD = 3` from paseo daemon-client.
-    /// With `pingInterval = 15s`, this means ~45s of silence before reconnect.
-    /// Independent from `requestTimeout` — a slow but alive RPC won't trip the
-    /// liveness check because pong arrives separately.
-    private static let livenessThreshold = 3
+    /// connection dead and forcing a reconnect. Matches upstream's post-0.1.79
+    /// `LIVENESS_FAILURE_RECONNECT_THRESHOLD = 2`. With `pingInterval = 10s`
+    /// this means ~20s of silence before reconnect (was 45s). Independent
+    /// from `requestTimeout` — a slow but alive RPC won't trip the liveness
+    /// check because pong arrives separately.
+    private static let livenessThreshold = 2
     /// Number of pings sent without a matching pong response. Reset to 0 on
     /// any inbound pong. Checked at the top of each keepalive tick.
     private var unansweredPings: Int = 0
