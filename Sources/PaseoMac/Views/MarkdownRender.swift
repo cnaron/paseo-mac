@@ -403,7 +403,10 @@ struct MarkdownBodyView: View {
                         .lineSpacing(CGFloat(settings.paragraphLineSpacing))
 
                 case .bulletList(let items):
-                    VStack(alignment: .leading, spacing: 4) {
+                    // Paseo web's list_item marginBottom is spacing[1]=4, but
+                    // that reads too dense for CJK multi-line items on a Mac
+                    // desktop; bumped to 10 by visual feedback.
+                    VStack(alignment: .leading, spacing: 10) {
                         ForEach(Array(items.enumerated()), id: \.offset) { _, item in
                             HStack(alignment: .top, spacing: 4) {
                                 Text("•")
@@ -419,7 +422,7 @@ struct MarkdownBodyView: View {
                     }
 
                 case .orderedList(let start, let items):
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: 10) {
                         ForEach(Array(items.enumerated()), id: \.offset) { idx, item in
                             HStack(alignment: .top, spacing: 4) {
                                 Text("\(start + idx).")
