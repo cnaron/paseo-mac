@@ -13,13 +13,14 @@ struct RootView: View {
     @Environment(SettingsStore.self) private var settings
     @State private var notif = NotificationStore()
     @State private var showConnect = false
+    @State private var settingsOpen = false
 
     var body: some View {
         @Bindable var app = app
         ZStack {
             HStack(spacing: 0) {
                 SidebarView(
-                    onOpenSettings: { openMacSettings() },
+                    onOpenSettings: { settingsOpen = true },
                     onOpenConnect: { showConnect = true }
                 )
                 ConversationPane(notif: notif)
@@ -34,6 +35,13 @@ struct RootView: View {
         .ignoresSafeArea()
         .sheet(isPresented: $showConnect) { ConnectSheet() }
         .sheet(isPresented: $app.importSheetOpen) { ImportSessionSheet() }
+        .sheet(isPresented: $settingsOpen) {
+            SettingsView(
+                onOpenConnect: { settingsOpen = false; showConnect = true },
+                onClose: { settingsOpen = false }
+            )
+            .environment(\.accent, settings.accentPalette)
+        }
         .task {
             app.autoConnectIfPossible()
             app.startWakeObserver()
@@ -41,10 +49,6 @@ struct RootView: View {
         .onChange(of: app.connectionState) { _, s in
             if case .disconnected = s, (app.savedOfferRaw ?? "").isEmpty { showConnect = true }
         }
-    }
-
-    private func openMacSettings() {
-        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
     }
 }
 
