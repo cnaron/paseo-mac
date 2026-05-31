@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ConversationView: View {
     @Environment(AppViewModel.self) private var app
+    @Environment(\.openWindow) private var openWindow
     let agentId: String
     @State private var searchText: String = ""
     @State private var isSearchVisible: Bool = false
@@ -70,6 +71,7 @@ struct ConversationView: View {
                             availableHeight: geo.size.height,
                             searchText: searchText,
                             bottomPadding: max(measuredComposerHeight, 210),
+                            workspaceCwd: agent()?.cwd,
                             agentProvider: agent()?.provider,
                             agentCapabilities: agent()?.capabilities,
                             onRewind: { messageId, mode, text in
@@ -192,6 +194,15 @@ struct ConversationView: View {
                     Image(systemName: isSearchVisible ? "magnifyingglass.circle.fill" : "magnifyingglass")
                 }
                 .help(isSearchVisible ? "Close search" : "Search messages (⌘F)")
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    openWorkspaceFiles()
+                } label: {
+                    Image(systemName: "folder")
+                }
+                .help("Open file preview window")
+                .disabled(agent()?.cwd == nil)
             }
             if let urlStr = gitHubUrl, let url = URL(string: urlStr) {
                 ToolbarItem(placement: .primaryAction) {
@@ -321,6 +332,11 @@ struct ConversationView: View {
         let hasContent = !vm.rows.isEmpty
         let hasOtherReady = branchTargets.contains { !$0.isCurrent && $0.status == "ready" }
         return !hasContent || !hasOtherReady
+    }
+
+    private func openWorkspaceFiles() {
+        guard let cwd = agent()?.cwd else { return }
+        openWindow(value: WorkspaceFilePreviewRoute(cwd: cwd, path: "."))
     }
 }
 
@@ -525,6 +541,7 @@ private struct MessageList: View {
     /// Driven by the parent view from a measured composer height so the
     /// last message never gets hidden behind the composer.
     var bottomPadding: CGFloat = 210
+    var workspaceCwd: String? = nil
     var agentProvider: String? = nil
     var agentCapabilities: AgentCapabilityFlags? = nil
     var onRewind: ((String, AgentRewindMode, String) -> Void)? = nil
@@ -593,6 +610,7 @@ private struct MessageList: View {
                                     group: gm.group,
                                     showConnector: gm.showConnector,
                                     isStreaming: vm.isAgentWorking && gm.id == lastAssistantId,
+                                    workspaceCwd: workspaceCwd,
                                     agentProvider: agentProvider,
                                     agentCapabilities: agentCapabilities,
                                     pendingPermission: vm.pendingPermission,
@@ -773,6 +791,7 @@ private struct MessageBubble: View {
     let group: BubbleGroup
     let showConnector: Bool
     var isStreaming: Bool = false
+    var workspaceCwd: String? = nil
     var agentProvider: String? = nil
     var agentCapabilities: AgentCapabilityFlags? = nil
     var pendingPermission: PermissionRequestPayload? = nil
@@ -826,7 +845,7 @@ private struct MessageBubble: View {
                     VStack(alignment: .trailing, spacing: 6) {
                         Group {
                             if isLong && !isExpanded {
-                                MarkdownBodyView(text: group.text)
+                                MarkdownBodyView(text: group.text, workspaceCwd: workspaceCwd)
                                     .frame(maxHeight: 160)
                                     .clipped()
                                     .mask(
@@ -841,7 +860,7 @@ private struct MessageBubble: View {
                                         }
                                     )
                             } else {
-                                MarkdownBodyView(text: group.text)
+                                MarkdownBodyView(text: group.text, workspaceCwd: workspaceCwd)
                             }
                         }
                         if isLong {
@@ -904,7 +923,7 @@ private struct MessageBubble: View {
     private var assistantTimelineItem: some View {
         FlowStep(iconName: "clock", showLine: showConnector) {
             VStack(alignment: .leading, spacing: 4) {
-                MarkdownBodyView(text: group.text, isStreaming: isStreaming)
+                MarkdownBodyView(text: group.text, isStreaming: isStreaming, workspaceCwd: workspaceCwd)
                 if let chipLabel = displayProviderModel(provider: agentProvider, model: group.modelUsed),
                    turnCopyText != nil {
                     TurnMetaChip(model: chipLabel, durationSec: group.durationSec)
@@ -967,7 +986,7 @@ private struct MessageBubble: View {
                 .buttonStyle(.plain)
 
                 if reasoningExpanded {
-                    MarkdownBodyView(text: group.text)
+                    MarkdownBodyView(text: group.text, workspaceCwd: workspaceCwd)
                         .foregroundStyle(.secondary)
                         .italic()
                         .transition(.opacity)
@@ -982,7 +1001,7 @@ private struct MessageBubble: View {
         FlowStep(iconName: "bolt", showLine: showConnector) {
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(Array(group.toolCluster.enumerated()), id: \.offset) { _, info in
-                    ToolRowTimeline(info: info)
+                    ToolRowTimeline(info: info, workspaceCwd: workspaceCwd)
                 }
             }
         }
@@ -1137,6 +1156,8 @@ private struct FlowStep<Content: View>: View {
 /// Tap to expand the detail payload (script output, diff, etc.).
 private struct ToolRowTimeline: View {
     let info: ConversationViewModel.ToolInfo
+    var workspaceCwd: String? = nil
+    @Environment(\.openWindow) private var openWindow
     @State private var expanded: Bool = false
 
     var body: some View {
@@ -1162,11 +1183,17 @@ private struct ToolRowTimeline: View {
                 if target.hasPrefix("/") {
                     let loc = FileLocation.parse(target)
                     Button {
-                        FileLocationOpener.open(loc)
+                        if let cwd = workspaceCwd, !cwd.isEmpty {
+                            let target = loc.display
+                            let route = WorkspaceFilePreviewRouting.forceRoute(cwd: cwd, rawLocation: target)
+                            openWindow(value: route)
+                        } else {
+                            FileLocationOpener.open(loc)
+                        }
                     } label: {
                         Text(truncate(loc.display, max: 64))
                             .font(.callout)
-                            .foregroundStyle(Color.accentColor.opacity(0.8))
+                            .foregroundStyle(Markdown.fileLinkColor)
                             .lineLimit(1)
                             .truncationMode(.middle)
                     }
@@ -1326,24 +1353,8 @@ struct FileLocation: Hashable, Sendable {
     let lineEnd: Int?
 
     static func parse(_ raw: String) -> FileLocation {
-        // Strip optional `file://` scheme that some Markdown renderers add.
-        var stripped = raw
-        if stripped.hasPrefix("file://") {
-            stripped = String(stripped.dropFirst("file://".count))
-        }
-        guard let colon = stripped.lastIndex(of: ":"), colon > stripped.startIndex else {
-            return FileLocation(path: stripped, lineStart: nil, lineEnd: nil)
-        }
-        let suffix = stripped[stripped.index(after: colon)...]
-        if let dash = suffix.firstIndex(of: "-"),
-           let start = Int(suffix[..<dash]),
-           let end = Int(suffix[suffix.index(after: dash)...]) {
-            return FileLocation(path: String(stripped[..<colon]), lineStart: start, lineEnd: end)
-        }
-        if let line = Int(suffix) {
-            return FileLocation(path: String(stripped[..<colon]), lineStart: line, lineEnd: nil)
-        }
-        return FileLocation(path: stripped, lineStart: nil, lineEnd: nil)
+        let parsed = WorkspaceFilePreviewRouting.parseLocation(raw)
+        return FileLocation(path: parsed.path, lineStart: parsed.lineStart, lineEnd: parsed.lineEnd)
     }
 
     /// `path:line` or `path:start-end` form used by tooltips and the
