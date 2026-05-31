@@ -843,11 +843,12 @@ enum SyntaxHighlighter {
         let comment: Color
 
         static var dynamic: Palette {
+            // Design v1 code palette (prototype .tok-* tokens).
             Palette(
-                keyword: Color.primary.opacity(0.88),
-                string: Color.primary.opacity(0.82),
-                number: Color.primary.opacity(0.86),
-                comment: Color.secondary.opacity(0.9)
+                keyword: DS.tokKey,
+                string: DS.tokStr,
+                number: DS.tokNum,
+                comment: DS.tokCom
             )
         }
     }
