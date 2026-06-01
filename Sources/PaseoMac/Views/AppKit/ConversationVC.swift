@@ -16,7 +16,6 @@ final class ConversationVC: NSViewController {
     let panelModel: WorkspacePanelModel
 
     private var headerHost: NSHostingView<AnyView>!
-    private var statusHost: NSHostingView<AnyView>!
     private var composerHost: NSHostingView<AnyView>!
     let transcriptVC: TranscriptVC
     private var lastAccentHex: String = ""
@@ -37,18 +36,16 @@ final class ConversationVC: NSViewController {
         root.layer?.backgroundColor = NSColor.white.cgColor
 
         headerHost = NSHostingView(rootView: header())
-        statusHost = NSHostingView(rootView: AnyView(TurnStatusBar(vm: nil)))
         composerHost = NSHostingView(rootView: composer())
         let table = transcriptVC.view
         addChild(transcriptVC)
 
-        for v in [headerHost, table, statusHost, composerHost] as [NSView] {
+        for v in [headerHost, table, composerHost] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(v)
         }
-        // header / composer hug their intrinsic height; status bar is fixed 36pt.
+        // header / composer content-hugging so they stay at intrinsic height.
         headerHost.setContentHuggingPriority(.required, for: .vertical)
-        statusHost.setContentHuggingPriority(.required, for: .vertical)
         composerHost.setContentHuggingPriority(.required, for: .vertical)
 
         NSLayoutConstraint.activate([
@@ -59,12 +56,7 @@ final class ConversationVC: NSViewController {
             table.topAnchor.constraint(equalTo: headerHost.bottomAnchor),
             table.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             table.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            table.bottomAnchor.constraint(equalTo: statusHost.topAnchor),
-
-            statusHost.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            statusHost.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            statusHost.heightAnchor.constraint(equalToConstant: 36),
-            statusHost.bottomAnchor.constraint(equalTo: composerHost.topAnchor),
+            table.bottomAnchor.constraint(equalTo: composerHost.topAnchor),
 
             composerHost.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             composerHost.trailingAnchor.constraint(equalTo: root.trailingAnchor),
@@ -96,15 +88,6 @@ final class ConversationVC: NSViewController {
         let vm = (id != nil && !isPending) ? app.conversation(for: id!) : nil
         transcriptVC.bind(vm: vm, agentProvider: agent?.provider, workspaceCwd: agent?.cwd,
                           pending: isPending)
-        syncStatus(vm: vm)
-    }
-
-    private func syncStatus(vm: ConversationViewModel?) {
-        statusHost.rootView = AnyView(
-            TurnStatusBar(vm: vm)
-                .environment(settings)
-                .environment(\.accent, settings.accentPalette)
-        )
     }
 
     // Only replace rootViews when the accent color changes. The islands
@@ -229,43 +212,3 @@ private struct ConversationComposerIsland: View {
     }
 }
 
-// MARK: - Turn status bar (36pt fixed, between transcript and composer)
-//
-// Shows a real-time elapsed timer while the agent is working (visible even
-// before the first assistant row appears), and a completion pill after the
-// turn finishes. Fixed height avoids any table layout reflows.
-
-private struct TurnStatusBar: View {
-    let vm: ConversationViewModel?
-    @Environment(SettingsStore.self) private var settings
-
-    var body: some View {
-        ZStack {
-            // Hairline divider is always present.
-            Rectangle().fill(DS.divider).frame(height: 1).frame(maxWidth: .infinity).padding(.top, 0)
-            if let vm {
-                if vm.isAgentWorking {
-                    TimelineView(.periodic(from: .now, by: 0.5)) { ctx in
-                        TurnPill(working: true, elapsed: elapsedStr(vm: vm, now: ctx.date))
-                    }
-                    .padding(.horizontal, 12)
-                    .background(DS.contentBG)
-                } else if let d = vm.lastTurnDuration {
-                    TurnPill(working: false, duration: fmt(d))
-                        .padding(.horizontal, 12)
-                        .background(DS.contentBG)
-                }
-            }
-        }
-        .frame(height: 36)
-        .background(DS.contentBG)
-    }
-
-    private func elapsedStr(vm: ConversationViewModel, now: Date) -> String? {
-        vm.turnStartedAt.map { fmt(now.timeIntervalSince($0)) }
-    }
-
-    private func fmt(_ t: TimeInterval) -> String {
-        t < 60 ? String(format: "%.0fs", t) : String(format: "%dm %ds", Int(t) / 60, Int(t) % 60)
-    }
-}

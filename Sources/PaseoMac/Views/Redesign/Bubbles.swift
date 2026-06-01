@@ -206,7 +206,9 @@ struct AssistantTurnView: View {
                     Text(profileLine).font(.system(size: 12)).foregroundStyle(DS.text3)
                 }
                 ForEach(group.blocks) { block in blockView(block) }
-                if !group.isActive, let dur = group.durationSec {
+                if group.isActive {
+                    activePill
+                } else if let dur = group.durationSec {
                     TurnPill(working: false, duration: formatDurBubble(dur))
                 }
                 if !(isStreaming || group.isActive), !group.copyText.isEmpty { copyButton }
@@ -251,6 +253,16 @@ struct AssistantTurnView: View {
             )
         } else {
             EmptyView()
+        }
+    }
+
+    @ViewBuilder private var activePill: some View {
+        if let start = group.turnStartedAt {
+            TimelineView(.periodic(from: .now, by: 0.5)) { ctx in
+                TurnPill(working: true, elapsed: formatDurBubble(ctx.date.timeIntervalSince(start)))
+            }
+        } else {
+            TurnPill(working: true)
         }
     }
 

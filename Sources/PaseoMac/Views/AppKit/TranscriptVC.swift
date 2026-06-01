@@ -238,10 +238,15 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
         return visible.maxY >= docHeight - 120
     }
     private func scrollToBottom() {
-        guard let docView = scrollView.documentView else { return }
-        let maxY = max(0, docView.bounds.height - scrollView.contentView.bounds.height)
-        scrollView.contentView.scroll(to: NSPoint(x: 0, y: maxY))
-        scrollView.reflectScrolledClipView(scrollView.contentView)
+        // Defer one runloop cycle so noteHeightOfRows layout settles before we
+        // compute the new document bottom. Calling synchronously can scroll to
+        // a stale height, causing a one-frame jump on the next update.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let docView = self.scrollView.documentView else { return }
+            let maxY = max(0, docView.bounds.height - self.scrollView.contentView.bounds.height)
+            self.scrollView.contentView.scroll(to: NSPoint(x: 0, y: maxY))
+            self.scrollView.reflectScrolledClipView(self.scrollView.contentView)
+        }
     }
 }
 
