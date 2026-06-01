@@ -55,20 +55,24 @@ struct HeaderBar: View {
                 .help("在 GitHub 打开")
             }
 
+            // "变更" button opens the changes tab in the workspace panel.
+            // It also acts as the panel toggle — no separate sidebar icon needed.
             Button(action: onOpenChanges) {
                 HStack(spacing: 6) {
-                    DSIcon(name: "diffstat", size: 16).foregroundStyle(DS.text3)
+                    DSIcon(name: "diffstat", size: 16).foregroundStyle(panelOpen ? DS.text : DS.text3)
                     if changes.count > 0 {
                         Text("+\(changes.add)").font(.system(size: 13.5, weight: .semibold)).monospacedDigit().foregroundStyle(DS.greenSoftTX)
                         Text("−\(changes.del)").font(.system(size: 13.5, weight: .semibold)).monospacedDigit().foregroundStyle(DS.red)
                     } else {
-                        Text("变更").font(.system(size: 13.5, weight: .medium)).foregroundStyle(DS.text)
+                        Text("变更").font(.system(size: 13.5, weight: .medium)).foregroundStyle(panelOpen ? DS.text : DS.text2)
                     }
                 }
                 .pillSurface(radius: 8, height: 30, hpad: 12)
+                .background(panelOpen ? DS.hover : .clear, in: RoundedRectangle(cornerRadius: 8))
+                .overlay { if panelOpen { RoundedRectangle(cornerRadius: 8).strokeBorder(DS.dividerStrong, lineWidth: 1) } }
             }
             .buttonStyle(.plain)
-            .help(changes.count > 0 ? "\(changes.count) 个文件改动 · 点击查看" : "工作区改动")
+            .help(changes.count > 0 ? "\(changes.count) 个文件改动 · 点击查看" : "工作区变更")
 
             NotifBell(store: notifStore, onOpen: onOpenNotif)
 
@@ -90,17 +94,6 @@ struct HeaderBar: View {
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
-
-            Button(action: onTogglePanel) {
-                DSIcon(name: "sidebar-toggle", size: 18)
-                    .foregroundStyle(panelOpen ? DS.text : DS.text2)
-                    .frame(width: 28, height: 28)
-                    .background(panelOpen || panelHover ? DS.hover : .clear, in: RoundedRectangle(cornerRadius: 7))
-                    .overlay { if panelOpen { RoundedRectangle(cornerRadius: 7).strokeBorder(DS.dividerStrong, lineWidth: 1) } }
-            }
-            .buttonStyle(.plain)
-            .onHover { panelHover = $0 }
-            .help("工作区面板")
         }
         .padding(.leading, 22).padding(.trailing, 12)
         .frame(height: 52)

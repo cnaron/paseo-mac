@@ -163,6 +163,14 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
         let id = NSUserInterfaceItemIdentifier("turn")
         let cell = (tableView.makeView(withIdentifier: id, owner: self) as? TurnCellView) ?? TurnCellView(reuseID: id)
         cell.configure(group: displayGroup(row), env: makeEnv())
+        // When the cell's SwiftUI content changes height (e.g. disclosure toggle),
+        // ask NSTableView to re-measure just that row.
+        cell.onHeightInvalidated = { [weak self, weak cell, weak tableView] in
+            guard let self, let cell, let tableView else { return }
+            let r = tableView.row(for: cell)
+            guard r >= 0 else { return }
+            tableView.noteHeightOfRows(withIndexesChanged: IndexSet(integer: r))
+        }
         return cell
     }
 
@@ -252,13 +260,29 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
 
 // MARK: - Hosted turn cell
 
+/// NSHostingView subclass that fires `onSizeInvalidated` whenever SwiftUI
+/// signals that the hosted content wants a different size. This lets
+/// NSTableView re-measure the row height after user interactions like
+/// disclosure toggles that change content height inside the cell.
+final class SizingHostingView: NSHostingView<AnyView> {
+    var onSizeInvalidated: (() -> Void)?
+
+    override func invalidateIntrinsicContentSize() {
+        super.invalidateIntrinsicContentSize()
+        // Defer out of any active layout pass to avoid re-entrant table updates.
+        DispatchQueue.main.async { [weak self] in self?.onSizeInvalidated?() }
+    }
+}
+
 final class TurnCellView: NSTableCellView {
-    private var hosting: NSHostingView<AnyView>!
+    private let hosting: SizingHostingView
+    /// Set by TranscriptVC; called when SwiftUI content height changes.
+    var onHeightInvalidated: (() -> Void)?
 
     init(reuseID: NSUserInterfaceItemIdentifier) {
+        hosting = SizingHostingView(rootView: AnyView(EmptyView()))
         super.init(frame: .zero)
         self.identifier = reuseID
-        hosting = NSHostingView(rootView: AnyView(EmptyView()))
         hosting.translatesAutoresizingMaskIntoConstraints = false
         if #available(macOS 13.0, *) { hosting.sizingOptions = [.intrinsicContentSize] }
         addSubview(hosting)
@@ -268,6 +292,7 @@ final class TurnCellView: NSTableCellView {
             hosting.leadingAnchor.constraint(equalTo: leadingAnchor),
             hosting.trailingAnchor.constraint(equalTo: trailingAnchor),
         ])
+        hosting.onSizeInvalidated = { [weak self] in self?.onHeightInvalidated?() }
     }
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
 
