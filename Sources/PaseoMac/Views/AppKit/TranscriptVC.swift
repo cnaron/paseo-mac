@@ -35,6 +35,9 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
     private var agentProvider: String?
     private var workspaceCwd: String?
     private var pending = false
+    /// Off-screen hosting view used only to measure row heights at the column width.
+    private lazy var measuringHost = NSHostingView(rootView: AnyView(EmptyView()))
+    private var lastWidth: CGFloat = 0
 
     init(app: AppViewModel, settings: SettingsStore, onOpenFile: @escaping (String) -> Void) {
         self.app = app
@@ -48,7 +51,7 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
         tableView.headerView = nil
         tableView.backgroundColor = .white
         tableView.selectionHighlightStyle = .none
-        tableView.usesAutomaticRowHeights = true
+        tableView.usesAutomaticRowHeights = false  // we measure explicitly (heightOfRow)
         tableView.rowHeight = 80
         tableView.intercellSpacing = NSSize(width: 0, height: CGFloat(settings.bubbleGapPt))
         tableView.dataSource = self
@@ -166,6 +169,25 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
     func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool { false }
     func selectionShouldChange(in tableView: NSTableView) -> Bool { false }
 
+    /// Measure the row's hosted SwiftUI content at the current column width. This
+    /// replaces `usesAutomaticRowHeights` (which mis-sized NSHostingView cells and
+    /// caused rows to overlap).
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        guard row >= 0, row < groups.count else { return 1 }
+        let w = max(tableView.bounds.width, 1)
+        measuringHost.rootView = AnyView(makeTurnBubble(displayGroup(row), makeEnv()).frame(width: w))
+        return max(measuringHost.fittingSize.height, 1)
+    }
+
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        let w = tableView.bounds.width
+        if abs(w - lastWidth) > 0.5, groups.count > 0 {
+            lastWidth = w
+            tableView.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0..<groups.count))
+        }
+    }
+
     // MARK: helpers
 
     /// Mark the last markdown block of the in-progress turn as streaming so
@@ -240,11 +262,15 @@ final class TurnCellView: NSTableCellView {
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
 
     func configure(group: TurnGroup, env: TurnEnv) {
-        hosting.rootView = AnyView(bubble(group, env))
+        hosting.rootView = makeTurnBubble(group, env)
     }
+}
 
-    @ViewBuilder
-    private func bubble(_ g: TurnGroup, _ env: TurnEnv) -> some View {
+// MARK: - shared bubble builder (cell render + height measurement use one tree)
+
+@MainActor
+func makeTurnBubble(_ g: TurnGroup, _ env: TurnEnv) -> AnyView {
+    AnyView(
         Group {
             if g.isUser {
                 UserTurnView(group: g, onOpenFile: env.onOpenFile)
@@ -260,7 +286,7 @@ final class TurnCellView: NSTableCellView {
         .frame(maxWidth: .infinity, alignment: .center)
         .environment(env.settings)
         .environment(\.accent, env.accent)
-    }
+    )
 }
 
 // MARK: - Empty / pending overlay
