@@ -131,6 +131,7 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
         placeholder.isActive = true
         placeholder.turnStartedAt = vm.turnStartedAt
         placeholder.modelUsed = vm.currentDisplayModel
+        placeholder.timestamp = vm.turnStartedAt.map { ISO8601DateFormatter().string(from: $0) }
         return base + [placeholder]
     }
 
