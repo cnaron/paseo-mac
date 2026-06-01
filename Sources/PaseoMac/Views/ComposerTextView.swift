@@ -55,6 +55,9 @@ struct ComposerTextView: NSViewRepresentable {
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        // Refresh the coordinator's binding closures so textDidChange always
+        // writes to the current vm, not the one captured at makeCoordinator time.
+        context.coordinator.parent = self
         guard let textView = scrollView.documentView as? DropInterceptingTextView else { return }
 
         // Never touch content or font while the IME has marked text (中文/日文 输入法).
@@ -100,7 +103,11 @@ struct ComposerTextView: NSViewRepresentable {
     // MARK: - Coordinator
 
     final class Coordinator: NSObject, NSTextViewDelegate {
-        let parent: ComposerTextView
+        // Must be `var` so updateNSView can refresh the binding closures when
+        // the parent struct is recreated (e.g. on VM switch). If this stays
+        // `let`, textDidChange writes to a stale vm and composerText is never
+        // updated → send button stays gray + typed characters get overwritten.
+        var parent: ComposerTextView
         weak var textView: NSTextView?
         var sentHistory: [String] = []
         var historyIndex: Int = -1

@@ -129,14 +129,18 @@ private struct ConversationHeaderIsland: View {
     let notif: NotificationStore
     var onTogglePanel: () -> Void
     var onOpenChanges: () -> Void
-    @State private var tabs: [String] = []
     @State private var repoUrl: String? = nil
+    // Tracks tabs the user explicitly closed (so they stay hidden until the
+    // agent is re-selected). Scoped to this island instance; resets when the
+    // island is rebuilt (e.g. theme change) — acceptable for this lightweight state.
+    @State private var closedTabs: Set<String> = []
 
     private var agentId: String? { app.selectedAgentId }
     private var currentAgent: AgentSnapshot? {
         guard let id = agentId else { return nil }
         return app.agents.first { $0.id == id } ?? app.archivedAgents.first { $0.id == id }
     }
+    private var currentCwd: String? { currentAgent?.cwd }
     private var working: Bool {
         guard let id = agentId, id != AppViewModel.pendingAgentId else { return false }
         return app.conversation(for: id).isAgentWorking
@@ -152,27 +156,42 @@ private struct ConversationHeaderIsland: View {
             )
             TabStripView(
                 tabs: tabItems, activeId: agentId,
-                onSelect: { app.selectedAgentId = $0 },
+                onSelect: { id in closedTabs.remove(id); app.selectedAgentId = id },
                 onClose: closeTab,
-                onNew: { if let cwd = currentAgent?.cwd { Task { await app.createAgent(cwd: cwd) } } }
+                onNew: { if let cwd = currentCwd { Task { await app.createAgent(cwd: cwd) } } }
             )
         }
         .background(DS.contentBG)
-        .onAppear { if let id = agentId, !tabs.contains(id) { tabs.append(id) } }
-        .onChange(of: agentId) { _, id in if let id, !tabs.contains(id) { tabs.append(id) } }
-        .task(id: currentAgent?.cwd ?? "") { repoUrl = await app.fetchGitHubUrl(for: currentAgent?.cwd ?? "") }
+        .task(id: currentCwd ?? "") { repoUrl = await app.fetchGitHubUrl(for: currentCwd ?? "") }
     }
 
+    // Only show tabs for agents in the same working directory. Clicking an
+    // agent with a different cwd switches to it but doesn't add cross-project
+    // tabs — each project directory has its own tab group.
     private var tabItems: [TabItem] {
-        tabs.compactMap { id in
-            if id == AppViewModel.pendingAgentId { return TabItem(id: id, title: "新对话", provider: app.pendingNewAgentProvider) }
-            guard let a = app.agents.first(where: { $0.id == id }) ?? app.archivedAgents.first(where: { $0.id == id }) else { return nil }
-            return TabItem(id: id, title: a.displayName, provider: a.provider)
+        if agentId == AppViewModel.pendingAgentId {
+            return [TabItem(id: AppViewModel.pendingAgentId, title: "新对话", provider: app.pendingNewAgentProvider)]
         }
+        guard let cwd = currentCwd else { return [] }
+
+        var items = app.agents
+            .filter { $0.cwd == cwd && !closedTabs.contains($0.id) }
+            .map { TabItem(id: $0.id, title: $0.displayName, provider: $0.provider) }
+
+        // Always include the current agent even if somehow filtered out.
+        if let id = agentId, !items.contains(where: { $0.id == id }),
+           let a = app.agents.first(where: { $0.id == id }) ?? app.archivedAgents.first(where: { $0.id == id }) {
+            items.append(TabItem(id: id, title: a.displayName, provider: a.provider))
+        }
+        return items
     }
+
     private func closeTab(_ id: String) {
-        tabs.removeAll { $0 == id }
-        if app.selectedAgentId == id { app.selectedAgentId = tabs.last }
+        closedTabs.insert(id)
+        if app.selectedAgentId == id {
+            let next = tabItems.first { $0.id != id }
+            app.selectedAgentId = next?.id
+        }
     }
 }
 
