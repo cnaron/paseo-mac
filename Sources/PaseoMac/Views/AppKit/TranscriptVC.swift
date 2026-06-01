@@ -161,7 +161,12 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
         guard row >= 0, row < groups.count else { return }
         if let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? TurnCellView {
             cell.configure(group: displayGroup(row), env: makeEnv())
-            tableView.noteHeightOfRows(withIndexesChanged: IndexSet(integer: row))
+            // Do NOT call noteHeightOfRows here. SizingHostingView fires
+            // invalidateIntrinsicContentSize() once SwiftUI layout settles,
+            // then onHeightInvalidated calls noteHeightOfRows with the real
+            // height. Calling it synchronously now would use a stale
+            // measuringHost result — wrong height → immediate correction →
+            // two-frame jump on every streaming token.
         } else {
             tableView.reloadData(forRowIndexes: IndexSet(integer: row), columnIndexes: IndexSet(integer: 0))
         }
