@@ -36,6 +36,8 @@ struct TurnGroup: Identifiable {
     var blocks: [TurnBlock] = []
     var modelUsed: String? = nil
     var durationSec: TimeInterval? = nil
+    var isActive: Bool = false       // true while this is the live-streaming last turn
+    var turnStartedAt: Date? = nil   // elapsed timer origin; set only when isActive
 
     var copyText: String {
         blocks.compactMap { if case .markdown(_, let t, _) = $0 { return t } else { return nil } }
@@ -204,7 +206,12 @@ struct AssistantTurnView: View {
                     Text(profileLine).font(.system(size: 12)).foregroundStyle(DS.text3)
                 }
                 ForEach(group.blocks) { block in blockView(block) }
-                if !isStreaming, !group.copyText.isEmpty { copyButton }
+                if group.isActive {
+                    activePill
+                } else if let dur = group.durationSec {
+                    TurnPill(working: false, duration: formatDurBubble(dur))
+                }
+                if !(isStreaming || group.isActive), !group.copyText.isEmpty { copyButton }
             }
             Spacer(minLength: 0)
         }
@@ -247,6 +254,20 @@ struct AssistantTurnView: View {
         } else {
             EmptyView()
         }
+    }
+
+    @ViewBuilder private var activePill: some View {
+        if let start = group.turnStartedAt {
+            TimelineView(.periodic(from: .now, by: 0.25)) { ctx in
+                TurnPill(working: true, elapsed: formatDurBubble(ctx.date.timeIntervalSince(start)))
+            }
+        } else {
+            TurnPill(working: true)
+        }
+    }
+
+    private func formatDurBubble(_ t: TimeInterval) -> String {
+        t < 60 ? String(format: "%.0fs", t) : String(format: "%dm %ds", Int(t) / 60, Int(t) % 60)
     }
 
     private var copyButton: some View {

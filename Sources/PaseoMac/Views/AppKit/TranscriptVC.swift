@@ -190,14 +190,17 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
 
     // MARK: helpers
 
-    /// Mark the last markdown block of the in-progress turn as streaming so
-    /// `MDView` closes dangling code fences live.
+    /// Mark the last in-progress turn as active (shows elapsed TurnPill + closes
+    /// dangling code fences live in MDView).
     private func displayGroup(_ row: Int) -> TurnGroup {
         var g = groups[row]
         let isLast = row == groups.count - 1
-        if isLast, !g.isUser, boundVM?.isAgentWorking == true, !g.blocks.isEmpty,
-           case .markdown(let id, let t, _) = g.blocks[g.blocks.count - 1] {
-            g.blocks[g.blocks.count - 1] = .markdown(id, text: t, streaming: true)
+        if isLast, !g.isUser, boundVM?.isAgentWorking == true {
+            g.isActive = true
+            g.turnStartedAt = boundVM?.turnStartedAt
+            if !g.blocks.isEmpty, case .markdown(let id, let t, _) = g.blocks[g.blocks.count - 1] {
+                g.blocks[g.blocks.count - 1] = .markdown(id, text: t, streaming: true)
+            }
         }
         return g
     }

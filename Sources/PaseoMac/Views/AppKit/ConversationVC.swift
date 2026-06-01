@@ -17,8 +17,11 @@ final class ConversationVC: NSViewController {
 
     private var headerHost: NSHostingView<AnyView>!
     private var composerHost: NSHostingView<AnyView>!
+    private var panelHost: NSHostingView<AnyView>!
     let transcriptVC: TranscriptVC
     private var lastAccentHex: String = ""
+    private var tableTrailingClosed: NSLayoutConstraint!
+    private var tableTrailingOpen: NSLayoutConstraint!
 
     init(app: AppViewModel, settings: SettingsStore, notif: NotificationStore, panelModel: WorkspacePanelModel) {
         self.app = app
@@ -37,16 +40,25 @@ final class ConversationVC: NSViewController {
 
         headerHost = NSHostingView(rootView: header())
         composerHost = NSHostingView(rootView: composer())
+        panelHost = NSHostingView(rootView: panelView())
         let table = transcriptVC.view
         addChild(transcriptVC)
 
-        for v in [headerHost, table, composerHost] as [NSView] {
+        for v in [headerHost, table, panelHost, composerHost] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(v)
         }
-        // header content-hugging so it stays at its intrinsic height; composer too.
+        // header / composer content-hugging so they stay at intrinsic height.
         headerHost.setContentHuggingPriority(.required, for: .vertical)
         composerHost.setContentHuggingPriority(.required, for: .vertical)
+
+        // Dynamic table trailing: closed → full width; open → stop at panel leading.
+        tableTrailingClosed = table.trailingAnchor.constraint(equalTo: root.trailingAnchor)
+        tableTrailingOpen   = table.trailingAnchor.constraint(equalTo: panelHost.leadingAnchor)
+        let panelOpen = panelModel.isOpen
+        tableTrailingClosed.isActive = !panelOpen
+        tableTrailingOpen.isActive   = panelOpen
+        panelHost.isHidden = !panelOpen
 
         NSLayoutConstraint.activate([
             headerHost.topAnchor.constraint(equalTo: root.topAnchor),
@@ -55,8 +67,12 @@ final class ConversationVC: NSViewController {
 
             table.topAnchor.constraint(equalTo: headerHost.bottomAnchor),
             table.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            table.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             table.bottomAnchor.constraint(equalTo: composerHost.topAnchor),
+
+            panelHost.topAnchor.constraint(equalTo: headerHost.bottomAnchor),
+            panelHost.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            panelHost.bottomAnchor.constraint(equalTo: composerHost.topAnchor),
+            panelHost.widthAnchor.constraint(equalToConstant: 300),
 
             composerHost.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             composerHost.trailingAnchor.constraint(equalTo: root.trailingAnchor),
@@ -68,7 +84,29 @@ final class ConversationVC: NSViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         observeSelection()
+        observePanelModel()
         syncAgent()
+    }
+
+    private func observePanelModel() {
+        withObservationTracking {
+            _ = panelModel.isOpen
+        } onChange: { [weak self] in
+            DispatchQueue.main.async { self?.syncPanel(); self?.observePanelModel() }
+        }
+    }
+
+    private func syncPanel() {
+        let open = panelModel.isOpen
+        panelHost.isHidden = !open
+        if open {
+            tableTrailingClosed.isActive = false
+            tableTrailingOpen.isActive   = true
+        } else {
+            tableTrailingOpen.isActive   = false
+            tableTrailingClosed.isActive = true
+        }
+        view.layoutSubtreeIfNeeded()
     }
 
     // The header/composer islands auto-update via Observation; we only re-bind
@@ -102,11 +140,20 @@ final class ConversationVC: NSViewController {
         lastAccentHex = accent
         headerHost.rootView = header()
         composerHost.rootView = composer()
+        panelHost.rootView = panelView()
+    }
+
+    private func panelView() -> AnyView {
+        AnyView(
+            WorkspacePanelView(model: panelModel)
+                .environment(app).environment(settings).environment(\.accent, settings.accentPalette)
+        )
     }
 
     private func header() -> AnyView {
         AnyView(
             ConversationHeaderIsland(
+                panelModel: panelModel,
                 notif: notif,
                 onTogglePanel: { [panelModel] in panelModel.toggle() },
                 onOpenChanges: { [panelModel] in panelModel.openChanges() }
@@ -126,6 +173,7 @@ final class ConversationVC: NSViewController {
 
 private struct ConversationHeaderIsland: View {
     @Environment(AppViewModel.self) private var app
+    let panelModel: WorkspacePanelModel
     let notif: NotificationStore
     var onTogglePanel: () -> Void
     var onOpenChanges: () -> Void
@@ -149,7 +197,7 @@ private struct ConversationHeaderIsland: View {
     var body: some View {
         VStack(spacing: 0) {
             HeaderBar(
-                agent: currentAgent, working: working, repoUrl: repoUrl, panelOpen: false,
+                agent: currentAgent, working: working, repoUrl: repoUrl, panelOpen: panelModel.isOpen,
                 notifStore: notif,
                 onTogglePanel: onTogglePanel, onOpenChanges: onOpenChanges,
                 onOpenNotif: { n in app.selectedAgentId = n.chatId; notif.markRead(n.id) }

@@ -35,8 +35,6 @@ final class RootSplitController: NSSplitViewController {
     let panelModel: WorkspacePanelModel
     private let sidebarVC: HostingVC
     private let conversationVC: ConversationVC
-    private let panelVC: HostingVC
-    private var panelItem: NSSplitViewItem?
 
     init(app: AppViewModel, settings: SettingsStore, notif: NotificationStore, panelModel: WorkspacePanelModel,
          onOpenSettings: @escaping () -> Void, onOpenConnect: @escaping () -> Void) {
@@ -51,12 +49,6 @@ final class RootSplitController: NSSplitViewController {
             )
         }
         self.conversationVC = ConversationVC(app: app, settings: settings, notif: notif, panelModel: panelModel)
-        self.panelVC = HostingVC {
-            AnyView(
-                WorkspacePanelView(model: panelModel)
-                    .environment(app).environment(settings).environment(\.accent, settings.accentPalette)
-            )
-        }
         super.init(nibName: nil, bundle: nil)
     }
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
@@ -74,32 +66,8 @@ final class RootSplitController: NSSplitViewController {
         contentItem.minimumThickness = 420
         contentItem.holdingPriority = .init(240)
 
-        let panel = NSSplitViewItem(viewController: panelVC)
-        panel.canCollapse = true
-        panel.minimumThickness = 300
-        panel.maximumThickness = 760
-        panel.isCollapsed = !panelModel.isOpen
-        panel.holdingPriority = .init(260)
-        self.panelItem = panel
-
         addSplitViewItem(sidebarItem)
         addSplitViewItem(contentItem)
-        addSplitViewItem(panel)
-
-        observePanel()
-    }
-
-    private func observePanel() {
-        withObservationTracking {
-            _ = panelModel.isOpen
-        } onChange: { [weak self] in
-            DispatchQueue.main.async { self?.syncPanel(); self?.observePanel() }
-        }
-    }
-    private func syncPanel() {
-        guard let panelItem else { return }
-        let collapse = !panelModel.isOpen
-        if panelItem.isCollapsed != collapse { panelItem.animator().isCollapsed = collapse }
     }
 
     func refreshAppearance() {
