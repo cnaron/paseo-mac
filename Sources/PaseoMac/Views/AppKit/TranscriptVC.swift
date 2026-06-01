@@ -267,7 +267,11 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
             // use .frame(maxWidth: .infinity) — it can under-report the height
             // and cause the row to shrink below its actual content size,
             // clipping the completion pill and last lines of text.
-            let w = max(tableView.bounds.width, 1)
+            let w = tableView.bounds.width
+            // Skip if the table hasn't been laid out yet: sizeThatFits(width: ~0)
+            // wraps every line to almost nothing and returns a multi-thousand-point
+            // height, which inflates the row and leaves a giant blank space.
+            guard w > 100 else { return }
             self.measuringController.rootView = AnyView(makeTurnBubble(self.displayGroup(r), self.makeEnv()))
             let h = max(self.measuringController.sizeThatFits(in: NSSize(width: w, height: 100_000)).height, 1)
             let cached = self.rowHeightCache[self.groups[r].id]
@@ -292,12 +296,13 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
         guard row >= 0, row < groups.count else { return 1 }
         let key = groups[row].id
         if let cached = rowHeightCache[key] { return cached }
-        if isLiveScrolling {
-            // Don't cache — onHeightInvalidated will supply the real value once
-            // the hosted SwiftUI view has rendered.
+        let w = tableView.bounds.width
+        if isLiveScrolling || w <= 100 {
+            // During live scroll or before the table has its real width, return a
+            // cheap estimate. Caching a sizeThatFits(width≈0) value would produce
+            // multi-thousand-point row heights and a giant blank space.
             return groups[row].isUser ? 90 : 140
         }
-        let w = max(tableView.bounds.width, 1)
         measuringController.rootView = AnyView(makeTurnBubble(displayGroup(row), makeEnv()))
         let size = measuringController.sizeThatFits(in: NSSize(width: w, height: 100_000))
         let h = max(size.height, 1)
@@ -393,7 +398,8 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
         isLiveScrolling = false
         let range = tableView.rows(in: tableView.visibleRect)
         guard range.length > 0 else { return }
-        let w = max(tableView.bounds.width, 1)
+        let w = tableView.bounds.width
+        guard w > 100 else { return }
         var stale = IndexSet()
         for r in range.location ..< (range.location + range.length) {
             guard r >= 0, r < groups.count, rowHeightCache[groups[r].id] == nil else { continue }
