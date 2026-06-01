@@ -50,6 +50,10 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
     private var pendingReconfigRow: Int?
     /// Keeps the scroll pinned to the bottom during streaming.
     private var autoScroll = true
+    /// True while the user is in the middle of a trackpad/mouse scroll gesture.
+    /// During this window we skip synchronous sizeThatFits so the main thread
+    /// stays free; liveScrollEnded re-measures any rows that got placeholder heights.
+    private var isLiveScrolling = false
     /// Observable state shared with the scroll-to-bottom button overlay.
     let scrollState = TranscriptScrollState()
 
@@ -86,10 +90,15 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
         scrollView.backgroundColor = .white
         scrollView.automaticallyAdjustsContentInsets = false
         scrollView.contentInsets = NSEdgeInsets(top: 26, left: 0, bottom: 20, right: 0)
-        // Track user-initiated live scroll to stop auto-scrolling while reading.
+        // Track user-initiated live scroll: start → stop auto-scroll + skip measurement;
+        // end → re-measure any visible rows that got placeholder heights.
         NotificationCenter.default.addObserver(
             self, selector: #selector(userDidLiveScroll),
             name: NSScrollView.willStartLiveScrollNotification, object: scrollView
+        )
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(liveScrollEnded),
+            name: NSScrollView.didEndLiveScrollNotification, object: scrollView
         )
 
         emptyHost = NSHostingView(rootView: AnyView(EmptyView()))
@@ -269,13 +278,20 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
     func selectionShouldChange(in tableView: NSTableView) -> Bool { false }
 
     /// Height comes from the per-group cache (key = group.id), populated by
-    /// SizingHostingView after SwiftUI layout. For first-render rows, measure
-    /// via NSHostingController.sizeThatFits(in:) — the only reliable way to
-    /// size SwiftUI content that's not in a window tree.
+    /// SizingHostingView after SwiftUI layout. For first-render rows outside
+    /// a live-scroll gesture, measure via NSHostingController.sizeThatFits —
+    /// the only reliable way to size SwiftUI content not in a window tree.
+    /// During live scroll we return a cheap estimate so the main thread stays
+    /// free; liveScrollEnded corrects any placeholder heights.
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
         guard row >= 0, row < groups.count else { return 1 }
         let key = groups[row].id
         if let cached = rowHeightCache[key] { return cached }
+        if isLiveScrolling {
+            // Don't cache — onHeightInvalidated will supply the real value once
+            // the hosted SwiftUI view has rendered.
+            return groups[row].isUser ? 90 : 140
+        }
         let w = max(tableView.bounds.width, 1)
         measuringController.rootView = AnyView(makeTurnBubble(displayGroup(row), makeEnv()))
         let size = measuringController.sizeThatFits(in: NSSize(width: w, height: 100_000))
@@ -360,10 +376,28 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
         scrollToBottom()
     }
 
-    /// User started a live scroll — stop auto-scrolling if they scroll away from bottom.
+    /// User started a live scroll — pause measurement and stop auto-scroll if scrolling up.
     @objc private func userDidLiveScroll() {
+        isLiveScrolling = true
         autoScroll = isAtBottom()
         scrollState.isAtBottom = autoScroll
+    }
+
+    /// Scroll gesture ended — measure any visible rows that got placeholder heights.
+    @objc private func liveScrollEnded() {
+        isLiveScrolling = false
+        let range = tableView.rows(in: tableView.visibleRect)
+        guard range.length > 0 else { return }
+        let w = max(tableView.bounds.width, 1)
+        var stale = IndexSet()
+        for r in range.location ..< (range.location + range.length) {
+            guard r >= 0, r < groups.count, rowHeightCache[groups[r].id] == nil else { continue }
+            measuringController.rootView = AnyView(makeTurnBubble(displayGroup(r), makeEnv()))
+            let h = max(measuringController.sizeThatFits(in: NSSize(width: w, height: 100_000)).height, 1)
+            rowHeightCache[groups[r].id] = h
+            stale.insert(r)
+        }
+        if !stale.isEmpty { tableView.noteHeightOfRows(withIndexesChanged: stale) }
     }
 }
 
