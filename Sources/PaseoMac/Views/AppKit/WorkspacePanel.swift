@@ -52,7 +52,6 @@ struct WorkspacePanelView: View {
             Rectangle().fill(DS.divider).frame(height: 1)
             content
         }
-        .frame(minWidth: 300)
         .background(DS.contentBG)
         .overlay(alignment: .leading) { Rectangle().fill(DS.divider).frame(width: 1) }
     }
@@ -84,11 +83,18 @@ struct WorkspacePanelView: View {
     @ViewBuilder private var content: some View {
         if model.tab == "changes" {
             ChangesTab(changes: deriveChanges(vm), onOpen: { model.openListed($0) })
-        } else if let path = model.filePath {
-            FileContentTab(cwd: cwd, path: path, lineStart: model.lineStart, lineEnd: model.lineEnd,
-                           nonce: model.nonce, onBack: { model.back() })
         } else {
-            FilesTab(cwd: cwd, onOpen: { model.openListed($0) })
+            // Keep FilesTab mounted as the base layer so it never flashes
+            // when a file is selected. FileContentTab slides in on top.
+            ZStack(alignment: .top) {
+                FilesTab(cwd: cwd, onOpen: { model.openListed($0) })
+                if let path = model.filePath {
+                    FileContentTab(cwd: cwd, path: path, lineStart: model.lineStart, lineEnd: model.lineEnd,
+                                   nonce: model.nonce, onBack: { model.back() })
+                    .background(DS.contentBG)
+                    .transition(.opacity)
+                }
+            }
         }
     }
 }

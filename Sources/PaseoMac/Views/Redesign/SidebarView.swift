@@ -16,7 +16,6 @@ struct SidebarView: View {
         VStack(spacing: 0) {
             // top — clears the window traffic lights (44pt)
             VStack(spacing: 4) {
-                WorkspaceSwitcher(onOpenConnect: onOpenConnect)
                 NewConversationButton()
             }
             .padding(.horizontal, 10)
@@ -28,9 +27,7 @@ struct SidebarView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     ChatsSection()
                     SecondarySection()
-                    if app.usageData != nil
-                        || app.codexSessionStats != nil
-                        || app.claudeCodeCurrentVersion != nil {
+                    if app.connectionState == .connected {
                         UsagePanelView(onOpenSettings: onOpenSettings)
                     }
                 }
@@ -46,50 +43,6 @@ struct SidebarView: View {
         .overlay(alignment: .trailing) {
             Rectangle().fill(DS.divider).frame(width: 1)
         }
-    }
-}
-
-// MARK: - Workspace switcher
-
-private struct WorkspaceSwitcher: View {
-    @Environment(AppViewModel.self) private var app
-    var onOpenConnect: () -> Void
-
-    var body: some View {
-        Menu {
-            Section("已连接守护进程") {
-                if let host = app.daemonHostname {
-                    Text(host + (app.daemonVersion.map { " · v\($0)" } ?? ""))
-                }
-            }
-            Button { onOpenConnect() } label: { Label("切换 / 重新配对守护进程…", systemImage: "arrow.clockwise") }
-            Button { onOpenConnect() } label: { Label("连接设置…", systemImage: "gearshape") }
-        } label: {
-            HStack(spacing: 9) {
-                RoundedRectangle(cornerRadius: 7)
-                    .fill(LinearGradient(colors: [Color(hex: 0x7D8DF0), Color(hex: 0x5566D6)],
-                                         startPoint: .topLeading, endPoint: .bottomTrailing))
-                    .frame(width: 26, height: 26)
-                    .overlay(DSIcon(name: "person", size: 15, weight: .medium).foregroundStyle(.white))
-                Text(workspaceName)
-                    .font(.system(size: 14.5, weight: .semibold))
-                    .foregroundStyle(DS.text)
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-                DSIcon(name: "chevron-down", size: 15).foregroundStyle(DS.text3)
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 7)
-            .contentShape(Rectangle())
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .buttonStyle(.plain)
-    }
-
-    private var workspaceName: String {
-        if let host = app.daemonHostname, !host.isEmpty { return "\(host) workspace" }
-        return "cnaron's workspace"
     }
 }
 
@@ -184,6 +137,10 @@ private struct ChatsSection: View {
             HStack {
                 Text("Chats").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(DS.text3)
                 Spacer()
+                IconButton(icon: "refresh", box: 22, glyph: 13, help: "刷新会话列表") {
+                    Task { try? await app.refreshAgents() }
+                }
+                .disabled(app.connectionState != .connected)
             }
             .padding(.horizontal, 9).padding(.top, 14).padding(.bottom, 6)
 

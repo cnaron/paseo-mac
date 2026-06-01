@@ -18,6 +18,7 @@ final class ConversationVC: NSViewController {
     private var headerHost: NSHostingView<AnyView>!
     private var composerHost: NSHostingView<AnyView>!
     let transcriptVC: TranscriptVC
+    private var lastAccentHex: String = ""
 
     init(app: AppViewModel, settings: SettingsStore, notif: NotificationStore, panelModel: WorkspacePanelModel) {
         self.app = app
@@ -89,8 +90,16 @@ final class ConversationVC: NSViewController {
                           pending: isPending)
     }
 
+    // Only replace rootViews when the accent color changes. The islands
+    // self-update via @Observable observation for everything else. Calling
+    // this on every app property mutation (agent list updates, streaming)
+    // rebuilds the NSHostingView tree, causes NSTextView to lose focus,
+    // and wipes partially-typed composer text.
     func refreshIslands() {
         guard isViewLoaded else { return }
+        let accent = settings.accentHex
+        guard accent != lastAccentHex else { return }
+        lastAccentHex = accent
         headerHost.rootView = header()
         composerHost.rootView = composer()
     }
