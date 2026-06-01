@@ -251,7 +251,7 @@ struct WorkspaceFilePreviewWindow: View {
     }
 }
 
-private struct WorkspaceCodePreview: NSViewRepresentable {
+struct WorkspaceCodePreview: NSViewRepresentable {
     let content: String
     let filePath: String
     let revisionToken: String

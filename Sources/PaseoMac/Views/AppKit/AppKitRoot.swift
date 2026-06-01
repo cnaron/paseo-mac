@@ -4,25 +4,21 @@ import AppKit
 // MARK: - AppKit shell entry
 //
 // The redesigned UI runs on an AppKit foundation (NSSplitViewController +
-// NSTableView transcript) so scrolling, row lifecycle and reconnects are stable
-// — the SwiftUI List/ScrollView re-evaluation that caused the instability is
-// gone. The design itself is reused as SwiftUI `NSHostingView` islands inside
-// the AppKit cells/panes (brief §9). SwiftUI is kept only for the thin modal
-// layer (Connect / Import / Settings sheets + toasts) in `ContentView`.
+// NSTableView transcript) so scrolling / row lifecycle / reconnects are stable.
+// The design is reused as SwiftUI NSHostingView islands. Three columns:
+// sidebar | conversation | workspace panel (the last collapsible, design-docked).
 
 struct AppKitRoot: NSViewControllerRepresentable {
     let app: AppViewModel
     let settings: SettingsStore
+    let panelModel: WorkspacePanelModel
     var onOpenSettings: () -> Void = {}
     var onOpenConnect: () -> Void = {}
-    var onOpenFile: (String) -> Void = { _ in }
-    var onOpenWorkspace: () -> Void = {}
     let notif: NotificationStore
 
     func makeNSViewController(context: Context) -> RootSplitController {
-        RootSplitController(app: app, settings: settings, notif: notif,
-                            onOpenSettings: onOpenSettings, onOpenConnect: onOpenConnect,
-                            onOpenFile: onOpenFile, onOpenWorkspace: onOpenWorkspace)
+        RootSplitController(app: app, settings: settings, notif: notif, panelModel: panelModel,
+                            onOpenSettings: onOpenSettings, onOpenConnect: onOpenConnect)
     }
 
     func updateNSViewController(_ controller: RootSplitController, context: Context) {
@@ -30,38 +26,39 @@ struct AppKitRoot: NSViewControllerRepresentable {
     }
 }
 
-// MARK: - Root split (sidebar | conversation)
+// MARK: - Root split (sidebar | conversation | workspace panel)
 
 final class RootSplitController: NSSplitViewController {
     let app: AppViewModel
     let settings: SettingsStore
     let notif: NotificationStore
+    let panelModel: WorkspacePanelModel
     private let sidebarVC: HostingVC
     private let conversationVC: ConversationVC
+    private let panelVC: HostingVC
+    private var panelItem: NSSplitViewItem?
 
-    init(app: AppViewModel, settings: SettingsStore, notif: NotificationStore,
-         onOpenSettings: @escaping () -> Void, onOpenConnect: @escaping () -> Void,
-         onOpenFile: @escaping (String) -> Void, onOpenWorkspace: @escaping () -> Void) {
+    init(app: AppViewModel, settings: SettingsStore, notif: NotificationStore, panelModel: WorkspacePanelModel,
+         onOpenSettings: @escaping () -> Void, onOpenConnect: @escaping () -> Void) {
         self.app = app
         self.settings = settings
         self.notif = notif
-        // Sidebar: the existing SwiftUI SidebarView as a hosted island (stable;
-        // it isn't the source of the transcript instability).
+        self.panelModel = panelModel
         self.sidebarVC = HostingVC {
             AnyView(
                 SidebarView(onOpenSettings: onOpenSettings, onOpenConnect: onOpenConnect)
-                    .environment(app)
-                    .environment(settings)
-                    .environment(\.accent, settings.accentPalette)
+                    .environment(app).environment(settings).environment(\.accent, settings.accentPalette)
             )
         }
-        self.conversationVC = ConversationVC(
-            app: app, settings: settings, notif: notif,
-            onOpenFile: onOpenFile, onOpenWorkspace: onOpenWorkspace
-        )
+        self.conversationVC = ConversationVC(app: app, settings: settings, notif: notif, panelModel: panelModel)
+        self.panelVC = HostingVC {
+            AnyView(
+                WorkspacePanelView(model: panelModel)
+                    .environment(app).environment(settings).environment(\.accent, settings.accentPalette)
+            )
+        }
         super.init(nibName: nil, bundle: nil)
     }
-
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
 
     override func viewDidLoad() {
@@ -72,13 +69,37 @@ final class RootSplitController: NSSplitViewController {
         sidebarItem.minimumThickness = DS.sidebarW
         sidebarItem.maximumThickness = DS.sidebarW
         sidebarItem.canCollapse = false
-        sidebarItem.holdingPriority = .init(260)
 
         let contentItem = NSSplitViewItem(viewController: conversationVC)
-        contentItem.minimumThickness = 480
+        contentItem.minimumThickness = 420
+        contentItem.holdingPriority = .init(240)
+
+        let panel = NSSplitViewItem(viewController: panelVC)
+        panel.canCollapse = true
+        panel.minimumThickness = 300
+        panel.maximumThickness = 760
+        panel.isCollapsed = !panelModel.isOpen
+        panel.holdingPriority = .init(260)
+        self.panelItem = panel
 
         addSplitViewItem(sidebarItem)
         addSplitViewItem(contentItem)
+        addSplitViewItem(panel)
+
+        observePanel()
+    }
+
+    private func observePanel() {
+        withObservationTracking {
+            _ = panelModel.isOpen
+        } onChange: { [weak self] in
+            DispatchQueue.main.async { self?.syncPanel(); self?.observePanel() }
+        }
+    }
+    private func syncPanel() {
+        guard let panelItem else { return }
+        let collapse = !panelModel.isOpen
+        if panelItem.isCollapsed != collapse { panelItem.animator().isCollapsed = collapse }
     }
 
     func refreshAppearance() {
@@ -106,7 +127,6 @@ final class HostingVC: NSViewController {
         view = hosting
     }
 
-    /// Replace the hosted SwiftUI tree (e.g. when the active agent or accent changes).
     func update(_ newMake: @escaping () -> AnyView) {
         self.make = newMake
         if isViewLoaded { hosting.rootView = make() }

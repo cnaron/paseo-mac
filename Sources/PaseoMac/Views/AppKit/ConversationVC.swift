@@ -13,21 +13,18 @@ final class ConversationVC: NSViewController {
     let app: AppViewModel
     let settings: SettingsStore
     let notif: NotificationStore
-    let onOpenFile: (String) -> Void
-    let onOpenWorkspace: () -> Void
+    let panelModel: WorkspacePanelModel
 
     private var headerHost: NSHostingView<AnyView>!
     private var composerHost: NSHostingView<AnyView>!
     let transcriptVC: TranscriptVC
 
-    init(app: AppViewModel, settings: SettingsStore, notif: NotificationStore,
-         onOpenFile: @escaping (String) -> Void, onOpenWorkspace: @escaping () -> Void) {
+    init(app: AppViewModel, settings: SettingsStore, notif: NotificationStore, panelModel: WorkspacePanelModel) {
         self.app = app
         self.settings = settings
         self.notif = notif
-        self.onOpenFile = onOpenFile
-        self.onOpenWorkspace = onOpenWorkspace
-        self.transcriptVC = TranscriptVC(app: app, settings: settings, onOpenFile: onOpenFile)
+        self.panelModel = panelModel
+        self.transcriptVC = TranscriptVC(app: app, settings: settings, onOpenFile: { panelModel.openFile($0) })
         super.init(nibName: nil, bundle: nil)
     }
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
@@ -100,8 +97,12 @@ final class ConversationVC: NSViewController {
 
     private func header() -> AnyView {
         AnyView(
-            ConversationHeaderIsland(notif: notif, onTogglePanel: onOpenWorkspace, onOpenChanges: onOpenWorkspace)
-                .environment(app).environment(settings).environment(\.accent, settings.accentPalette)
+            ConversationHeaderIsland(
+                notif: notif,
+                onTogglePanel: { [panelModel] in panelModel.toggle() },
+                onOpenChanges: { [panelModel] in panelModel.openChanges() }
+            )
+            .environment(app).environment(settings).environment(\.accent, settings.accentPalette)
         )
     }
     private func composer() -> AnyView {
