@@ -16,12 +16,10 @@ final class ConversationVC: NSViewController {
     let panelModel: WorkspacePanelModel
 
     private var headerHost: NSHostingView<AnyView>!
+    private var statusHost: NSHostingView<AnyView>!
     private var composerHost: NSHostingView<AnyView>!
-    private var panelHost: NSHostingView<AnyView>!
     let transcriptVC: TranscriptVC
     private var lastAccentHex: String = ""
-    private var tableTrailingClosed: NSLayoutConstraint!
-    private var tableTrailingOpen: NSLayoutConstraint!
 
     init(app: AppViewModel, settings: SettingsStore, notif: NotificationStore, panelModel: WorkspacePanelModel) {
         self.app = app
@@ -39,26 +37,19 @@ final class ConversationVC: NSViewController {
         root.layer?.backgroundColor = NSColor.white.cgColor
 
         headerHost = NSHostingView(rootView: header())
+        statusHost = NSHostingView(rootView: AnyView(TurnStatusBar(vm: nil)))
         composerHost = NSHostingView(rootView: composer())
-        panelHost = NSHostingView(rootView: panelView())
         let table = transcriptVC.view
         addChild(transcriptVC)
 
-        for v in [headerHost, table, panelHost, composerHost] as [NSView] {
+        for v in [headerHost, table, statusHost, composerHost] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(v)
         }
-        // header / composer content-hugging so they stay at intrinsic height.
+        // header / composer hug their intrinsic height; status bar is fixed 36pt.
         headerHost.setContentHuggingPriority(.required, for: .vertical)
+        statusHost.setContentHuggingPriority(.required, for: .vertical)
         composerHost.setContentHuggingPriority(.required, for: .vertical)
-
-        // Dynamic table trailing: closed → full width; open → stop at panel leading.
-        tableTrailingClosed = table.trailingAnchor.constraint(equalTo: root.trailingAnchor)
-        tableTrailingOpen   = table.trailingAnchor.constraint(equalTo: panelHost.leadingAnchor)
-        let panelOpen = panelModel.isOpen
-        tableTrailingClosed.isActive = !panelOpen
-        tableTrailingOpen.isActive   = panelOpen
-        panelHost.isHidden = !panelOpen
 
         NSLayoutConstraint.activate([
             headerHost.topAnchor.constraint(equalTo: root.topAnchor),
@@ -67,12 +58,13 @@ final class ConversationVC: NSViewController {
 
             table.topAnchor.constraint(equalTo: headerHost.bottomAnchor),
             table.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            table.bottomAnchor.constraint(equalTo: composerHost.topAnchor),
+            table.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            table.bottomAnchor.constraint(equalTo: statusHost.topAnchor),
 
-            panelHost.topAnchor.constraint(equalTo: headerHost.bottomAnchor),
-            panelHost.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            panelHost.bottomAnchor.constraint(equalTo: composerHost.topAnchor),
-            panelHost.widthAnchor.constraint(equalToConstant: 300),
+            statusHost.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            statusHost.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            statusHost.heightAnchor.constraint(equalToConstant: 36),
+            statusHost.bottomAnchor.constraint(equalTo: composerHost.topAnchor),
 
             composerHost.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             composerHost.trailingAnchor.constraint(equalTo: root.trailingAnchor),
@@ -84,29 +76,7 @@ final class ConversationVC: NSViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         observeSelection()
-        observePanelModel()
         syncAgent()
-    }
-
-    private func observePanelModel() {
-        withObservationTracking {
-            _ = panelModel.isOpen
-        } onChange: { [weak self] in
-            DispatchQueue.main.async { self?.syncPanel(); self?.observePanelModel() }
-        }
-    }
-
-    private func syncPanel() {
-        let open = panelModel.isOpen
-        panelHost.isHidden = !open
-        if open {
-            tableTrailingClosed.isActive = false
-            tableTrailingOpen.isActive   = true
-        } else {
-            tableTrailingOpen.isActive   = false
-            tableTrailingClosed.isActive = true
-        }
-        view.layoutSubtreeIfNeeded()
     }
 
     // The header/composer islands auto-update via Observation; we only re-bind
@@ -126,6 +96,15 @@ final class ConversationVC: NSViewController {
         let vm = (id != nil && !isPending) ? app.conversation(for: id!) : nil
         transcriptVC.bind(vm: vm, agentProvider: agent?.provider, workspaceCwd: agent?.cwd,
                           pending: isPending)
+        syncStatus(vm: vm)
+    }
+
+    private func syncStatus(vm: ConversationViewModel?) {
+        statusHost.rootView = AnyView(
+            TurnStatusBar(vm: vm)
+                .environment(settings)
+                .environment(\.accent, settings.accentPalette)
+        )
     }
 
     // Only replace rootViews when the accent color changes. The islands
@@ -140,14 +119,6 @@ final class ConversationVC: NSViewController {
         lastAccentHex = accent
         headerHost.rootView = header()
         composerHost.rootView = composer()
-        panelHost.rootView = panelView()
-    }
-
-    private func panelView() -> AnyView {
-        AnyView(
-            WorkspacePanelView(model: panelModel)
-                .environment(app).environment(settings).environment(\.accent, settings.accentPalette)
-        )
     }
 
     private func header() -> AnyView {
@@ -255,5 +226,46 @@ private struct ConversationComposerIsland: View {
         } else {
             Color.clear.frame(height: 0)
         }
+    }
+}
+
+// MARK: - Turn status bar (36pt fixed, between transcript and composer)
+//
+// Shows a real-time elapsed timer while the agent is working (visible even
+// before the first assistant row appears), and a completion pill after the
+// turn finishes. Fixed height avoids any table layout reflows.
+
+private struct TurnStatusBar: View {
+    let vm: ConversationViewModel?
+    @Environment(SettingsStore.self) private var settings
+
+    var body: some View {
+        ZStack {
+            // Hairline divider is always present.
+            Rectangle().fill(DS.divider).frame(height: 1).frame(maxWidth: .infinity).padding(.top, 0)
+            if let vm {
+                if vm.isAgentWorking {
+                    TimelineView(.periodic(from: .now, by: 0.5)) { ctx in
+                        TurnPill(working: true, elapsed: elapsedStr(vm: vm, now: ctx.date))
+                    }
+                    .padding(.horizontal, 12)
+                    .background(DS.contentBG)
+                } else if let d = vm.lastTurnDuration {
+                    TurnPill(working: false, duration: fmt(d))
+                        .padding(.horizontal, 12)
+                        .background(DS.contentBG)
+                }
+            }
+        }
+        .frame(height: 36)
+        .background(DS.contentBG)
+    }
+
+    private func elapsedStr(vm: ConversationViewModel, now: Date) -> String? {
+        vm.turnStartedAt.map { fmt(now.timeIntervalSince($0)) }
+    }
+
+    private func fmt(_ t: TimeInterval) -> String {
+        t < 60 ? String(format: "%.0fs", t) : String(format: "%dm %ds", Int(t) / 60, Int(t) % 60)
     }
 }

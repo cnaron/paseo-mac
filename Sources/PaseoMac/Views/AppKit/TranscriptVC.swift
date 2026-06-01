@@ -141,7 +141,7 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
             tableView.reloadData()
         }
         updateEmpty()
-        if atBottom || new.last?.isUser == true { scrollToBottom() }
+        if atBottom { scrollToBottom() }
     }
 
     /// Update one cell's hosted SwiftUI tree in place (no recreation, no flicker).
@@ -238,8 +238,10 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
         return visible.maxY >= docHeight - 120
     }
     private func scrollToBottom() {
-        guard groups.count > 0 else { return }
-        tableView.scrollRowToVisible(groups.count - 1)
+        guard let docView = scrollView.documentView else { return }
+        let maxY = max(0, docView.bounds.height - scrollView.contentView.bounds.height)
+        scrollView.contentView.scroll(to: NSPoint(x: 0, y: maxY))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
     }
 }
 
