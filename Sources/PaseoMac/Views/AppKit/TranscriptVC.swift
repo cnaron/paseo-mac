@@ -38,9 +38,11 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
     /// Off-screen host — fallback for rows not yet in the height cache.
     private lazy var measuringHost = NSHostingView(rootView: AnyView(EmptyView()))
     private var lastWidth: CGFloat = 0
-    /// Per-row height cache. Populated by SizingHostingView.onHeightInvalidated,
-    /// which fires *after* SwiftUI layout — so values are always accurate.
-    private var rowHeightCache: [Int: CGFloat] = [:]
+    /// Per-group height cache. Key is group.id (stable across row index shifts
+    /// that happen when new messages are inserted above). Populated by
+    /// SizingHostingView.onHeightInvalidated, which fires *after* SwiftUI layout.
+    /// Cleared for a specific group whenever its content changes (reconfigure).
+    private var rowHeightCache: [String: CGFloat] = [:]
     /// 30-fps streaming throttle: fires at most once per 33 ms during streaming.
     private var throttleTimer: Timer?
     private var pendingReconfigRow: Int?
@@ -222,10 +224,13 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
     /// Immediate (non-throttled) cell update — used for structural changes.
     private func doReconfigure(row: Int) {
         guard row >= 0, row < groups.count else { return }
+        // Content changed → its cached height is stale. Drop the entry so the
+        // next heightOfRow re-measures via measuringHost; SizingHostingView's
+        // post-layout callback will repopulate with the accurate value.
+        rowHeightCache.removeValue(forKey: groups[row].id)
         if let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? TurnCellView {
             cell.configure(group: displayGroup(row), env: makeEnv())
-            // Height is updated by SizingHostingView → onHeightInvalidated only when
-            // SwiftUI actually changes the size. No manual noteHeightOfRows here.
+            tableView.noteHeightOfRows(withIndexesChanged: IndexSet(integer: row))
         } else {
             tableView.reloadData(forRowIndexes: IndexSet(integer: row), columnIndexes: IndexSet(integer: 0))
         }
@@ -240,14 +245,20 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
         let cell = (tableView.makeView(withIdentifier: id, owner: self) as? TurnCellView) ?? TurnCellView(reuseID: id)
         cell.configure(group: displayGroup(row), env: makeEnv())
         // SizingHostingView fires this after SwiftUI layout completes — the cell's
-        // fittingSize is accurate here. Cache it first, then tell the table.
+        // fittingSize is accurate here. Cache it by group.id (stable across row
+        // index shifts), then tell the table to re-pull the row's height.
         cell.onHeightInvalidated = { [weak self, weak cell, weak tableView] in
             guard let self, let cell, let tableView else { return }
             let r = tableView.row(for: cell)
-            guard r >= 0 else { return }
+            guard r >= 0, r < self.groups.count else { return }
             let h = cell.fittingHeight
-            self.rowHeightCache[r] = h
-            tableView.noteHeightOfRows(withIndexesChanged: IndexSet(integer: r))
+            let cached = self.rowHeightCache[self.groups[r].id]
+            self.rowHeightCache[self.groups[r].id] = h
+            // Only ping NSTableView if the height actually changed (avoids
+            // pointless layout passes when the value stayed the same).
+            if cached.map({ abs($0 - h) > 0.5 }) ?? true {
+                tableView.noteHeightOfRows(withIndexesChanged: IndexSet(integer: r))
+            }
         }
         return cell
     }
@@ -255,18 +266,20 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
     func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool { false }
     func selectionShouldChange(in tableView: NSTableView) -> Bool { false }
 
-    /// Height comes from the per-row cache (populated by SizingHostingView after
-    /// SwiftUI layout — always accurate). Falls back to measuringHost for rows
-    /// that have not yet been rendered or whose cache was cleared (e.g. on resize).
+    /// Height comes from the per-group cache (key = group.id) populated by
+    /// SizingHostingView after SwiftUI layout — always accurate, and stable
+    /// across row-index shifts caused by inserting new rows above.
+    /// Fallback for un-rendered rows: measure via off-screen host.
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
         guard row >= 0, row < groups.count else { return 1 }
-        if let cached = rowHeightCache[row] { return cached }
+        let key = groups[row].id
+        if let cached = rowHeightCache[key] { return cached }
         let w = max(tableView.bounds.width, 1)
         measuringHost.rootView = AnyView(makeTurnBubble(displayGroup(row), makeEnv()).frame(width: w))
         measuringHost.frame = NSRect(x: 0, y: 0, width: w, height: 1)
         measuringHost.layout()
         let h = max(measuringHost.fittingSize.height, 1)
-        rowHeightCache[row] = h
+        rowHeightCache[key] = h
         return h
     }
 
