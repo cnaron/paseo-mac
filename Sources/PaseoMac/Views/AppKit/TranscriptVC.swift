@@ -35,9 +35,6 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
     private var agentProvider: String?
     private var workspaceCwd: String?
     private var pending = false
-    /// Off-screen hosting view used only to measure row heights at the column width.
-    private lazy var measuringHost = NSHostingView(rootView: AnyView(EmptyView()))
-    private var lastWidth: CGFloat = 0
 
     init(app: AppViewModel, settings: SettingsStore, onOpenFile: @escaping (String) -> Void) {
         self.app = app
@@ -51,14 +48,24 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
         tableView.headerView = nil
         tableView.backgroundColor = .white
         tableView.selectionHighlightStyle = .none
-        tableView.usesAutomaticRowHeights = false  // we measure explicitly (heightOfRow)
-        tableView.rowHeight = 80
+        // Auto heights: NSTableView measures each row via its NSHostingView's
+        // intrinsicContentSize (reported by SizingHostingView via Auto Layout).
+        // This eliminates the two-step stale-measurement → correction jitter
+        // that happened with manual noteHeightOfRows + measuringHost.
+        tableView.usesAutomaticRowHeights = true
         tableView.intercellSpacing = NSSize(width: 0, height: CGFloat(settings.bubbleGapPt))
         tableView.dataSource = self
         tableView.delegate = self
         let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("turn"))
         col.resizingMask = .autoresizingMask
         tableView.addTableColumn(col)
+        // Observe frame changes to synchronously pin scroll to bottom when the
+        // document grows (new content / row height increase from streaming).
+        tableView.postsFrameChangedNotifications = true
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(tableFrameChanged),
+            name: NSView.frameDidChangeNotification, object: tableView
+        )
 
         scrollView.documentView = tableView
         scrollView.hasVerticalScroller = true
@@ -154,6 +161,8 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
             tableView.reloadData()
         }
         updateEmpty()
+        // tableFrameChanged handles scroll during streaming; call here as
+        // a fallback for cases where the frame may not change (same height).
         if atBottom { scrollToBottom() }
     }
 
@@ -194,25 +203,6 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
 
     func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool { false }
     func selectionShouldChange(in tableView: NSTableView) -> Bool { false }
-
-    /// Measure the row's hosted SwiftUI content at the current column width. This
-    /// replaces `usesAutomaticRowHeights` (which mis-sized NSHostingView cells and
-    /// caused rows to overlap).
-    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-        guard row >= 0, row < groups.count else { return 1 }
-        let w = max(tableView.bounds.width, 1)
-        measuringHost.rootView = AnyView(makeTurnBubble(displayGroup(row), makeEnv()).frame(width: w))
-        return max(measuringHost.fittingSize.height, 1)
-    }
-
-    override func viewDidLayout() {
-        super.viewDidLayout()
-        let w = tableView.bounds.width
-        if abs(w - lastWidth) > 0.5, groups.count > 0 {
-            lastWidth = w
-            tableView.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0..<groups.count))
-        }
-    }
 
     // MARK: helpers
 
@@ -263,15 +253,26 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
         let docHeight = (scrollView.documentView?.bounds.height ?? 0)
         return visible.maxY >= docHeight - 120
     }
+
     private func scrollToBottom() {
-        // Defer one runloop cycle so noteHeightOfRows layout settles before we
-        // compute the new document bottom. Calling synchronously can scroll to
-        // a stale height, causing a one-frame jump on the next update.
-        DispatchQueue.main.async { [weak self] in
-            guard let self, let docView = self.scrollView.documentView else { return }
-            let maxY = max(0, docView.bounds.height - self.scrollView.contentView.bounds.height)
-            self.scrollView.contentView.scroll(to: NSPoint(x: 0, y: maxY))
-            self.scrollView.reflectScrolledClipView(self.scrollView.contentView)
+        guard let docView = scrollView.documentView else { return }
+        let maxY = max(0, docView.bounds.height - scrollView.contentView.bounds.height)
+        scrollView.contentView.scroll(to: NSPoint(x: 0, y: maxY))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+    }
+
+    /// Fires when NSTableView's frame grows (row height changed or rows added).
+    /// Synchronously pins scroll to bottom so there is no per-frame lag between
+    /// content growth and viewport position — this is what prevents the stutter.
+    @objc private func tableFrameChanged() {
+        guard let docView = scrollView.documentView else { return }
+        let docH = docView.bounds.height
+        let viewH = scrollView.contentView.bounds.height
+        let scrollY = scrollView.contentView.documentVisibleRect.minY
+        // Stay pinned if we were within one generous row-height of the bottom.
+        if docH - viewH - scrollY < 400 {
+            scrollView.contentView.scroll(to: NSPoint(x: 0, y: max(0, docH - viewH)))
+            scrollView.reflectScrolledClipView(scrollView.contentView)
         }
     }
 }
