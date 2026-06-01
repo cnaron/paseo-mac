@@ -116,16 +116,28 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
     }
 
     private func rebuild() {
-        groups = boundVM.map { groupTurns($0.rows, provider: agentProvider) } ?? []
+        groups = boundVM.map { groupsForDisplay(groupTurns($0.rows, provider: agentProvider), vm: $0) } ?? []
         tableView.reloadData()
         updateEmpty()
         DispatchQueue.main.async { [weak self] in self?.scrollToBottom() }
     }
 
+    /// Appends a transient "working" placeholder group when the agent has
+    /// started a turn but no assistant row exists yet, so the user sees
+    /// "Working…" immediately after sending rather than blank space.
+    private func groupsForDisplay(_ base: [TurnGroup], vm: ConversationViewModel) -> [TurnGroup] {
+        guard vm.isAgentWorking, base.last?.isUser == true || base.isEmpty else { return base }
+        var placeholder = TurnGroup(id: "__working__", isUser: false, provider: agentProvider)
+        placeholder.isActive = true
+        placeholder.turnStartedAt = vm.turnStartedAt
+        placeholder.modelUsed = vm.currentDisplayModel
+        return base + [placeholder]
+    }
+
     private func applyUpdate() {
         guard let vm = boundVM else { groups = []; tableView.reloadData(); updateEmpty(); return }
         let old = groups
-        let new = groupTurns(vm.rows, provider: agentProvider)
+        let new = groupsForDisplay(groupTurns(vm.rows, provider: agentProvider), vm: vm)
         let oldIds = old.map(\.id), newIds = new.map(\.id)
         let atBottom = isAtBottom()
         groups = new
