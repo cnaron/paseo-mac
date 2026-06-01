@@ -35,6 +35,12 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
     private var agentProvider: String?
     private var workspaceCwd: String?
     private var pending = false
+    /// Off-screen host used only to measure row heights synchronously.
+    private lazy var measuringHost = NSHostingView(rootView: AnyView(EmptyView()))
+    private var lastWidth: CGFloat = 0
+    /// True while streaming output should keep the viewport pinned to the bottom.
+    /// Set false when the user manually initiates a live scroll upward.
+    private var autoScroll = true
 
     init(app: AppViewModel, settings: SettingsStore, onOpenFile: @escaping (String) -> Void) {
         self.app = app
@@ -48,19 +54,15 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
         tableView.headerView = nil
         tableView.backgroundColor = .white
         tableView.selectionHighlightStyle = .none
-        // Auto heights: NSTableView measures each row via its NSHostingView's
-        // intrinsicContentSize (reported by SizingHostingView via Auto Layout).
-        // This eliminates the two-step stale-measurement → correction jitter
-        // that happened with manual noteHeightOfRows + measuringHost.
-        tableView.usesAutomaticRowHeights = true
+        tableView.usesAutomaticRowHeights = false  // manual heightOfRow — see below
+        tableView.rowHeight = 80
         tableView.intercellSpacing = NSSize(width: 0, height: CGFloat(settings.bubbleGapPt))
         tableView.dataSource = self
         tableView.delegate = self
         let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("turn"))
         col.resizingMask = .autoresizingMask
         tableView.addTableColumn(col)
-        // Observe frame changes to synchronously pin scroll to bottom when the
-        // document grows (new content / row height increase from streaming).
+        // Pin scroll to bottom when the document frame grows (row added/taller).
         tableView.postsFrameChangedNotifications = true
         NotificationCenter.default.addObserver(
             self, selector: #selector(tableFrameChanged),
@@ -73,6 +75,11 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
         scrollView.backgroundColor = .white
         scrollView.automaticallyAdjustsContentInsets = false
         scrollView.contentInsets = NSEdgeInsets(top: 26, left: 0, bottom: 20, right: 0)
+        // Track user-initiated live scroll to stop auto-scrolling while reading.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(userDidLiveScroll),
+            name: NSScrollView.willStartLiveScrollNotification, object: scrollView
+        )
 
         emptyHost = NSHostingView(rootView: AnyView(EmptyView()))
         emptyHost.translatesAutoresizingMaskIntoConstraints = false
@@ -171,12 +178,7 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
         guard row >= 0, row < groups.count else { return }
         if let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? TurnCellView {
             cell.configure(group: displayGroup(row), env: makeEnv())
-            // Do NOT call noteHeightOfRows here. SizingHostingView fires
-            // invalidateIntrinsicContentSize() once SwiftUI layout settles,
-            // then onHeightInvalidated calls noteHeightOfRows with the real
-            // height. Calling it synchronously now would use a stale
-            // measuringHost result — wrong height → immediate correction →
-            // two-frame jump on every streaming token.
+            tableView.noteHeightOfRows(withIndexesChanged: IndexSet(integer: row))
         } else {
             tableView.reloadData(forRowIndexes: IndexSet(integer: row), columnIndexes: IndexSet(integer: 0))
         }
@@ -203,6 +205,27 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
 
     func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool { false }
     func selectionShouldChange(in tableView: NSTableView) -> Bool { false }
+
+    /// Measure row height by laying out a SwiftUI bubble in an off-screen host.
+    /// `layout()` forces a synchronous SwiftUI pass so fittingSize reflects the
+    /// current content rather than the previous cached value.
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        guard row >= 0, row < groups.count else { return 1 }
+        let w = max(tableView.bounds.width, 1)
+        measuringHost.rootView = AnyView(makeTurnBubble(displayGroup(row), makeEnv()).frame(width: w))
+        measuringHost.frame = NSRect(x: 0, y: 0, width: w, height: 1)
+        measuringHost.layout()
+        return max(measuringHost.fittingSize.height, 1)
+    }
+
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        let w = tableView.bounds.width
+        if abs(w - lastWidth) > 0.5, groups.count > 0 {
+            lastWidth = w
+            tableView.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0..<groups.count))
+        }
+    }
 
     // MARK: helpers
 
@@ -259,21 +282,20 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
         let maxY = max(0, docView.bounds.height - scrollView.contentView.bounds.height)
         scrollView.contentView.scroll(to: NSPoint(x: 0, y: maxY))
         scrollView.reflectScrolledClipView(scrollView.contentView)
+        autoScroll = true
     }
 
-    /// Fires when NSTableView's frame grows (row height changed or rows added).
-    /// Synchronously pins scroll to bottom so there is no per-frame lag between
-    /// content growth and viewport position — this is what prevents the stutter.
+    /// NSTableView frame grew (row added or taller). If autoScroll is on,
+    /// immediately pin to the new document bottom with no async delay.
     @objc private func tableFrameChanged() {
-        guard let docView = scrollView.documentView else { return }
-        let docH = docView.bounds.height
-        let viewH = scrollView.contentView.bounds.height
-        let scrollY = scrollView.contentView.documentVisibleRect.minY
-        // Stay pinned if we were within one generous row-height of the bottom.
-        if docH - viewH - scrollY < 400 {
-            scrollView.contentView.scroll(to: NSPoint(x: 0, y: max(0, docH - viewH)))
-            scrollView.reflectScrolledClipView(scrollView.contentView)
-        }
+        guard autoScroll else { return }
+        scrollToBottom()
+    }
+
+    /// User started a live (finger/wheel) scroll — stop auto-scrolling unless
+    /// they are at the bottom, in which case keep it on.
+    @objc private func userDidLiveScroll() {
+        autoScroll = isAtBottom()
     }
 }
 
