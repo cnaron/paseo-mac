@@ -262,11 +262,16 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
             guard let self, let cell, let tableView else { return }
             let r = tableView.row(for: cell)
             guard r >= 0, r < self.groups.count else { return }
-            let h = cell.fittingHeight
+            // Re-measure with sizeThatFits rather than intrinsicContentSize.
+            // NSHostingView.intrinsicContentSize is unreliable for views that
+            // use .frame(maxWidth: .infinity) — it can under-report the height
+            // and cause the row to shrink below its actual content size,
+            // clipping the completion pill and last lines of text.
+            let w = max(tableView.bounds.width, 1)
+            self.measuringController.rootView = AnyView(makeTurnBubble(self.displayGroup(r), self.makeEnv()))
+            let h = max(self.measuringController.sizeThatFits(in: NSSize(width: w, height: 100_000)).height, 1)
             let cached = self.rowHeightCache[self.groups[r].id]
             self.rowHeightCache[self.groups[r].id] = h
-            // Only ping NSTableView if the height actually changed (avoids
-            // pointless layout passes when the value stayed the same).
             if cached.map({ abs($0 - h) > 0.5 }) ?? true {
                 tableView.noteHeightOfRows(withIndexesChanged: IndexSet(integer: r))
             }
