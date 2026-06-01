@@ -35,8 +35,10 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
     private var agentProvider: String?
     private var workspaceCwd: String?
     private var pending = false
-    /// Off-screen host — fallback for rows not yet in the height cache.
-    private lazy var measuringHost = NSHostingView(rootView: AnyView(EmptyView()))
+    /// Dedicated controller used to measure SwiftUI bubble heights for
+    /// `heightOfRow`. NSHostingController.sizeThatFits(in:) is the supported
+    /// way to measure SwiftUI content without it being in a window tree.
+    private lazy var measuringController = NSHostingController(rootView: AnyView(EmptyView()))
     private var lastWidth: CGFloat = 0
     /// Per-group height cache. Key is group.id (stable across row index shifts
     /// that happen when new messages are inserted above). Populated by
@@ -266,19 +268,18 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
     func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool { false }
     func selectionShouldChange(in tableView: NSTableView) -> Bool { false }
 
-    /// Height comes from the per-group cache (key = group.id) populated by
-    /// SizingHostingView after SwiftUI layout — always accurate, and stable
-    /// across row-index shifts caused by inserting new rows above.
-    /// Fallback for un-rendered rows: measure via off-screen host.
+    /// Height comes from the per-group cache (key = group.id), populated by
+    /// SizingHostingView after SwiftUI layout. For first-render rows, measure
+    /// via NSHostingController.sizeThatFits(in:) — the only reliable way to
+    /// size SwiftUI content that's not in a window tree.
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
         guard row >= 0, row < groups.count else { return 1 }
         let key = groups[row].id
         if let cached = rowHeightCache[key] { return cached }
         let w = max(tableView.bounds.width, 1)
-        measuringHost.rootView = AnyView(makeTurnBubble(displayGroup(row), makeEnv()).frame(width: w))
-        measuringHost.frame = NSRect(x: 0, y: 0, width: w, height: 1)
-        measuringHost.layout()
-        let h = max(measuringHost.fittingSize.height, 1)
+        measuringController.rootView = AnyView(makeTurnBubble(displayGroup(row), makeEnv()))
+        let size = measuringController.sizeThatFits(in: NSSize(width: w, height: 100_000))
+        let h = max(size.height, 1)
         rowHeightCache[key] = h
         return h
     }
@@ -398,12 +399,19 @@ final class TurnCellView: NSTableCellView {
         hosting = SizingHostingView(rootView: AnyView(EmptyView()))
         super.init(frame: .zero)
         self.identifier = reuseID
+        // CRITICAL: clip subviews so any height-mis-estimate during streaming
+        // does NOT bleed the SwiftUI content across the next row's frame.
+        self.wantsLayer = true
+        self.layer?.masksToBounds = true
         hosting.translatesAutoresizingMaskIntoConstraints = false
         if #available(macOS 13.0, *) { hosting.sizingOptions = [.intrinsicContentSize] }
         addSubview(hosting)
+        // Pin top/leading/trailing only — hosting's bottom is free, its height
+        // comes from SwiftUI's intrinsicContentSize. A bottomAnchor == cell
+        // bottom constraint would stretch the host (or compress it) and force
+        // SwiftUI to paint outside its own frame, causing the overlap visuals.
         NSLayoutConstraint.activate([
             hosting.topAnchor.constraint(equalTo: topAnchor),
-            hosting.bottomAnchor.constraint(equalTo: bottomAnchor),
             hosting.leadingAnchor.constraint(equalTo: leadingAnchor),
             hosting.trailingAnchor.constraint(equalTo: trailingAnchor),
         ])
@@ -416,7 +424,7 @@ final class TurnCellView: NSTableCellView {
     }
 
     /// Post-SwiftUI-layout height — accurate when called from onHeightInvalidated.
-    var fittingHeight: CGFloat { max(hosting.fittingSize.height, 1) }
+    var fittingHeight: CGFloat { max(hosting.intrinsicContentSize.height, 1) }
 }
 
 // MARK: - shared bubble builder (cell render + height measurement use one tree)
