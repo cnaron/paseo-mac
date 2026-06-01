@@ -196,26 +196,29 @@ struct AssistantTurnView: View {
     @State private var didCopy = false
 
     var body: some View {
-        HStack(alignment: .top, spacing: 11) {
-            ProviderGlyph(provider: group.provider, size: 22).frame(width: 26, height: 26, alignment: .top)
-            VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 8) {
+            // Header: avatar inline with timestamp + model name only
+            HStack(alignment: .center, spacing: 8) {
+                ProviderGlyph(provider: group.provider, size: 18).frame(width: 20, height: 20)
                 VStack(alignment: .leading, spacing: 1) {
                     if let stamp = formatStamp(group.timestamp) {
                         Text(stamp).font(.system(size: 12.5, weight: .medium)).monospacedDigit().foregroundStyle(DS.text2)
                     }
                     Text(profileLine).font(.system(size: 12)).foregroundStyle(DS.text3)
                 }
-                ForEach(group.blocks) { block in blockView(block) }
-                if group.isActive {
-                    activePill
-                } else if let dur = group.durationSec {
-                    TurnPill(working: false, duration: formatDurBubble(dur))
-                }
-                if !(isStreaming || group.isActive), !group.copyText.isEmpty { copyButton }
+                Spacer(minLength: 0)
             }
-            Spacer(minLength: 0)
+            // Content blocks start at the full left margin (no avatar indent)
+            ForEach(group.blocks) { block in blockView(block) }
+            if group.isActive {
+                activePill
+            } else if let dur = group.durationSec {
+                TurnPill(working: false, duration: formatDurBubble(dur))
+            }
+            if !(isStreaming || group.isActive), !group.copyText.isEmpty { copyButton }
         }
         .padding(.horizontal, 16)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder private func blockView(_ b: TurnBlock) -> some View {
