@@ -17,6 +17,9 @@ final class ConversationVC: NSViewController {
 
     private var headerHost: NSHostingView<AnyView>!
     private var composerHost: NSHostingView<AnyView>!
+    private var scrollButtonHost: NSHostingView<AnyView>!
+    private var scrollPositions: [String: CGFloat] = [:]
+    private var currentAgentId: String? = nil
     let transcriptVC: TranscriptVC
     private var lastAccentHex: String = ""
 
@@ -37,14 +40,14 @@ final class ConversationVC: NSViewController {
 
         headerHost = NSHostingView(rootView: header())
         composerHost = NSHostingView(rootView: composer())
+        scrollButtonHost = NSHostingView(rootView: scrollToBottomOverlay())
         let table = transcriptVC.view
         addChild(transcriptVC)
 
-        for v in [headerHost, table, composerHost] as [NSView] {
+        for v in [headerHost, table, composerHost, scrollButtonHost] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(v)
         }
-        // header / composer content-hugging so they stay at intrinsic height.
         headerHost.setContentHuggingPriority(.required, for: .vertical)
         composerHost.setContentHuggingPriority(.required, for: .vertical)
 
@@ -61,6 +64,12 @@ final class ConversationVC: NSViewController {
             composerHost.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             composerHost.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             composerHost.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+
+            // Scroll-to-bottom button overlaid over the bottom-right of the table.
+            scrollButtonHost.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            scrollButtonHost.bottomAnchor.constraint(equalTo: composerHost.topAnchor),
+            scrollButtonHost.widthAnchor.constraint(equalToConstant: 72),
+            scrollButtonHost.heightAnchor.constraint(equalToConstant: 56),
         ])
         view = root
     }
@@ -82,12 +91,24 @@ final class ConversationVC: NSViewController {
     }
 
     private func syncAgent() {
+        // Save the previous tab's scroll position before switching.
+        if let prev = currentAgentId, prev != AppViewModel.pendingAgentId {
+            scrollPositions[prev] = transcriptVC.currentScrollY
+        }
         let id = app.selectedAgentId
         let agent = id.flatMap { aid in app.agents.first { $0.id == aid } ?? app.archivedAgents.first { $0.id == aid } }
         let isPending = id == AppViewModel.pendingAgentId
         let vm = (id != nil && !isPending) ? app.conversation(for: id!) : nil
+        // If the tab was previously visited AND its agent is not currently
+        // streaming, restore the saved scroll Y. Otherwise (first visit OR
+        // active stream) follow the latest content at the bottom.
+        let restoreY: CGFloat? = {
+            guard let id, let saved = scrollPositions[id], vm?.isAgentWorking != true else { return nil }
+            return saved
+        }()
         transcriptVC.bind(vm: vm, agentProvider: agent?.provider, workspaceCwd: agent?.cwd,
-                          pending: isPending)
+                          pending: isPending, restoreY: restoreY)
+        currentAgentId = id
     }
 
     // Only replace rootViews when the accent color changes. The islands
@@ -102,6 +123,15 @@ final class ConversationVC: NSViewController {
         lastAccentHex = accent
         headerHost.rootView = header()
         composerHost.rootView = composer()
+    }
+
+    private func scrollToBottomOverlay() -> AnyView {
+        AnyView(
+            ScrollToBottomButton(state: transcriptVC.scrollState) { [weak self] in
+                self?.transcriptVC.scrollToBottomPublic()
+            }
+            .environment(\.accent, settings.accentPalette)
+        )
     }
 
     private func header() -> AnyView {
@@ -209,6 +239,35 @@ private struct ConversationComposerIsland: View {
         } else {
             Color.clear.frame(height: 0)
         }
+    }
+}
+
+// MARK: - Scroll-to-bottom button (appears when transcript is not at bottom)
+
+private struct ScrollToBottomButton: View {
+    let state: TranscriptScrollState
+    let onTap: () -> Void
+    @Environment(\.accent) private var accent
+
+    var body: some View {
+        ZStack {
+            if !state.isAtBottom {
+                Button(action: onTap) {
+                    DSIcon(name: "chevron-down", size: 14, weight: .semibold)
+                        .foregroundStyle(DS.text)
+                        .frame(width: 32, height: 32)
+                        .background(.regularMaterial, in: Circle())
+                        .overlay(Circle().strokeBorder(DS.divider, lineWidth: 1))
+                        .dsShadow(DS.shadowPop)
+                }
+                .buttonStyle(.plain)
+                .transition(.opacity.combined(with: .scale(scale: 0.85)))
+                .padding(.trailing, 20).padding(.bottom, 12)
+            }
+        }
+        .animation(.easeInOut(duration: 0.15), value: state.isAtBottom)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+        .allowsHitTesting(!state.isAtBottom)
     }
 }
 

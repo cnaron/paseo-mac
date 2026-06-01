@@ -35,12 +35,19 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
     private var agentProvider: String?
     private var workspaceCwd: String?
     private var pending = false
-    /// Off-screen host used only to measure row heights synchronously.
+    /// Off-screen host — fallback for rows not yet in the height cache.
     private lazy var measuringHost = NSHostingView(rootView: AnyView(EmptyView()))
     private var lastWidth: CGFloat = 0
-    /// True while streaming output should keep the viewport pinned to the bottom.
-    /// Set false when the user manually initiates a live scroll upward.
+    /// Per-row height cache. Populated by SizingHostingView.onHeightInvalidated,
+    /// which fires *after* SwiftUI layout — so values are always accurate.
+    private var rowHeightCache: [Int: CGFloat] = [:]
+    /// 30-fps streaming throttle: fires at most once per 33 ms during streaming.
+    private var throttleTimer: Timer?
+    private var pendingReconfigRow: Int?
+    /// Keeps the scroll pinned to the bottom during streaming.
     private var autoScroll = true
+    /// Observable state shared with the scroll-to-bottom button overlay.
+    let scrollState = TranscriptScrollState()
 
     init(app: AppViewModel, settings: SettingsStore, onOpenFile: @escaping (String) -> Void) {
         self.app = app
@@ -104,14 +111,32 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
 
     // MARK: binding & observation
 
-    func bind(vm: ConversationViewModel?, agentProvider: String?, workspaceCwd: String?, pending: Bool) {
+    /// restoreY: if provided, restore the scroll position instead of jumping to bottom.
+    func bind(vm: ConversationViewModel?, agentProvider: String?, workspaceCwd: String?,
+              pending: Bool, restoreY: CGFloat? = nil) {
+        throttleTimer?.invalidate(); throttleTimer = nil; pendingReconfigRow = nil
         self.boundVM = vm
         self.agentProvider = agentProvider
         self.workspaceCwd = workspaceCwd
         self.pending = pending
-        rebuild()
+        rebuild(restoreY: restoreY)
         observe()
     }
+
+    /// Expose scroll Y so ConversationVC can save it before switching agents.
+    var currentScrollY: CGFloat { scrollView.contentView.documentVisibleRect.minY }
+
+    /// Restore a saved scroll Y (called after a rebuild).
+    func restoreScroll(_ y: CGFloat) {
+        guard let docView = scrollView.documentView else { return }
+        let maxY = max(0, docView.bounds.height - scrollView.contentView.bounds.height)
+        scrollView.contentView.scroll(to: NSPoint(x: 0, y: min(y, maxY)))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        autoScroll = isAtBottom()
+        scrollState.isAtBottom = autoScroll
+    }
+
+    func scrollToBottomPublic() { scrollToBottom() }
 
     private func observe() {
         guard let vm = boundVM else { updateEmpty(); return }
@@ -129,11 +154,15 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
         }
     }
 
-    private func rebuild() {
+    private func rebuild(restoreY: CGFloat? = nil) {
+        rowHeightCache.removeAll()
         groups = boundVM.map { groupsForDisplay(groupTurns($0.rows, provider: agentProvider), vm: $0) } ?? []
         tableView.reloadData()
         updateEmpty()
-        DispatchQueue.main.async { [weak self] in self?.scrollToBottom() }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if let y = restoreY { self.restoreScroll(y) } else { self.scrollToBottom() }
+        }
     }
 
     /// Appends a transient "working" placeholder group when the agent has
@@ -158,27 +187,45 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
         groups = new
 
         if oldIds == newIds {
-            if let last = new.indices.last { reconfigure(row: last) }
+            // Streaming: throttle to 30 fps so AnyView doesn't rebuild every token.
+            if let last = new.indices.last { scheduleReconfigure(row: last) }
         } else if newIds.starts(with: oldIds) {
             tableView.beginUpdates()
-            if !oldIds.isEmpty { reconfigure(row: oldIds.count - 1) }
+            if !oldIds.isEmpty { doReconfigure(row: oldIds.count - 1) }
             tableView.insertRows(at: IndexSet(oldIds.count..<newIds.count), withAnimation: [])
             tableView.endUpdates()
         } else {
+            rowHeightCache.removeAll()
             tableView.reloadData()
         }
         updateEmpty()
-        // tableFrameChanged handles scroll during streaming; call here as
-        // a fallback for cases where the frame may not change (same height).
         if atBottom { scrollToBottom() }
     }
 
-    /// Update one cell's hosted SwiftUI tree in place (no recreation, no flicker).
-    private func reconfigure(row: Int) {
+    /// Throttled reconfigure: fires immediately on first call, then at most 30 fps.
+    /// This prevents AnyView's full-tree rebuild from running on every streaming token.
+    private func scheduleReconfigure(row: Int) {
+        if throttleTimer == nil {
+            doReconfigure(row: row)
+            throttleTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: false) { [weak self] _ in
+                self?.throttleTimer = nil
+                if let r = self?.pendingReconfigRow {
+                    self?.pendingReconfigRow = nil
+                    self?.scheduleReconfigure(row: r)
+                }
+            }
+        } else {
+            pendingReconfigRow = row  // will be drained when timer fires
+        }
+    }
+
+    /// Immediate (non-throttled) cell update — used for structural changes.
+    private func doReconfigure(row: Int) {
         guard row >= 0, row < groups.count else { return }
         if let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? TurnCellView {
             cell.configure(group: displayGroup(row), env: makeEnv())
-            tableView.noteHeightOfRows(withIndexesChanged: IndexSet(integer: row))
+            // Height is updated by SizingHostingView → onHeightInvalidated only when
+            // SwiftUI actually changes the size. No manual noteHeightOfRows here.
         } else {
             tableView.reloadData(forRowIndexes: IndexSet(integer: row), columnIndexes: IndexSet(integer: 0))
         }
@@ -192,12 +239,14 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
         let id = NSUserInterfaceItemIdentifier("turn")
         let cell = (tableView.makeView(withIdentifier: id, owner: self) as? TurnCellView) ?? TurnCellView(reuseID: id)
         cell.configure(group: displayGroup(row), env: makeEnv())
-        // When the cell's SwiftUI content changes height (e.g. disclosure toggle),
-        // ask NSTableView to re-measure just that row.
+        // SizingHostingView fires this after SwiftUI layout completes — the cell's
+        // fittingSize is accurate here. Cache it first, then tell the table.
         cell.onHeightInvalidated = { [weak self, weak cell, weak tableView] in
             guard let self, let cell, let tableView else { return }
             let r = tableView.row(for: cell)
             guard r >= 0 else { return }
+            let h = cell.fittingHeight
+            self.rowHeightCache[r] = h
             tableView.noteHeightOfRows(withIndexesChanged: IndexSet(integer: r))
         }
         return cell
@@ -206,16 +255,19 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
     func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool { false }
     func selectionShouldChange(in tableView: NSTableView) -> Bool { false }
 
-    /// Measure row height by laying out a SwiftUI bubble in an off-screen host.
-    /// `layout()` forces a synchronous SwiftUI pass so fittingSize reflects the
-    /// current content rather than the previous cached value.
+    /// Height comes from the per-row cache (populated by SizingHostingView after
+    /// SwiftUI layout — always accurate). Falls back to measuringHost for rows
+    /// that have not yet been rendered or whose cache was cleared (e.g. on resize).
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
         guard row >= 0, row < groups.count else { return 1 }
+        if let cached = rowHeightCache[row] { return cached }
         let w = max(tableView.bounds.width, 1)
         measuringHost.rootView = AnyView(makeTurnBubble(displayGroup(row), makeEnv()).frame(width: w))
         measuringHost.frame = NSRect(x: 0, y: 0, width: w, height: 1)
         measuringHost.layout()
-        return max(measuringHost.fittingSize.height, 1)
+        let h = max(measuringHost.fittingSize.height, 1)
+        rowHeightCache[row] = h
+        return h
     }
 
     override func viewDidLayout() {
@@ -223,6 +275,8 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
         let w = tableView.bounds.width
         if abs(w - lastWidth) > 0.5, groups.count > 0 {
             lastWidth = w
+            // Clear cache — all rows need re-measuring at the new width.
+            rowHeightCache.removeAll()
             tableView.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0..<groups.count))
         }
     }
@@ -283,20 +337,27 @@ final class TranscriptVC: NSViewController, NSTableViewDataSource, NSTableViewDe
         scrollView.contentView.scroll(to: NSPoint(x: 0, y: maxY))
         scrollView.reflectScrolledClipView(scrollView.contentView)
         autoScroll = true
+        scrollState.isAtBottom = true
     }
 
-    /// NSTableView frame grew (row added or taller). If autoScroll is on,
-    /// immediately pin to the new document bottom with no async delay.
+    /// NSTableView frame grew. If autoScroll is on, pin to the new bottom immediately.
     @objc private func tableFrameChanged() {
         guard autoScroll else { return }
         scrollToBottom()
     }
 
-    /// User started a live (finger/wheel) scroll — stop auto-scrolling unless
-    /// they are at the bottom, in which case keep it on.
+    /// User started a live scroll — stop auto-scrolling if they scroll away from bottom.
     @objc private func userDidLiveScroll() {
         autoScroll = isAtBottom()
+        scrollState.isAtBottom = autoScroll
     }
+}
+
+// MARK: - Observable scroll state (shared with the scroll-to-bottom button overlay)
+
+@Observable
+final class TranscriptScrollState {
+    var isAtBottom: Bool = true
 }
 
 // MARK: - Hosted turn cell
@@ -340,6 +401,9 @@ final class TurnCellView: NSTableCellView {
     func configure(group: TurnGroup, env: TurnEnv) {
         hosting.rootView = makeTurnBubble(group, env)
     }
+
+    /// Post-SwiftUI-layout height — accurate when called from onHeightInvalidated.
+    var fittingHeight: CGFloat { max(hosting.fittingSize.height, 1) }
 }
 
 // MARK: - shared bubble builder (cell render + height measurement use one tree)
