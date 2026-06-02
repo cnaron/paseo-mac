@@ -86,12 +86,12 @@ enum WorkspaceFilePreviewRouting {
 
     /// Convert an absolute/relative candidate to workspace-relative path.
     /// Returns nil when the path is outside workspace root.
+    ///
+    /// Uses pure string operations (no filesystem calls) so VPS paths that
+    /// don't exist locally are handled correctly regardless of how macOS
+    /// resolves symlinks like /home on the client machine.
     static func normalizePathForWorkspace(_ rawPath: String, cwd: String) -> String? {
         let expandedCwd = NSString(string: cwd).expandingTildeInPath
-        let cwdStd = URL(fileURLWithPath: expandedCwd)
-            .standardizedFileURL
-            .resolvingSymlinksInPath()
-            .path
 
         var candidate = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
         if candidate.hasPrefix("file://") {
@@ -101,14 +101,10 @@ enum WorkspaceFilePreviewRouting {
 
         let expandedCandidate = NSString(string: candidate).expandingTildeInPath
         if expandedCandidate.hasPrefix("/") {
-            let std = URL(fileURLWithPath: expandedCandidate)
-                .standardizedFileURL
-                .resolvingSymlinksInPath()
-                .path
-            if std == cwdStd { return "." }
-            let prefix = cwdStd.hasSuffix("/") ? cwdStd : cwdStd + "/"
-            guard std.hasPrefix(prefix) else { return nil }
-            let rel = String(std.dropFirst(prefix.count))
+            if expandedCandidate == expandedCwd { return "." }
+            let prefix = expandedCwd.hasSuffix("/") ? expandedCwd : expandedCwd + "/"
+            guard expandedCandidate.hasPrefix(prefix) else { return nil }
+            let rel = String(expandedCandidate.dropFirst(prefix.count))
             return rel.isEmpty ? "." : rel
         }
 
