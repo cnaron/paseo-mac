@@ -18,6 +18,7 @@ final class ConversationVC: NSViewController {
     private var headerHost: NSHostingView<AnyView>!
     private var composerHost: NSHostingView<AnyView>!
     private var scrollButtonHost: NSHostingView<AnyView>!
+    private var workspacePreviewHost: NSHostingView<AnyView>!
     private var scrollPositions: [String: CGFloat] = [:]
     private var currentAgentId: String? = nil
     let transcriptVC: TranscriptVC
@@ -28,7 +29,12 @@ final class ConversationVC: NSViewController {
         self.settings = settings
         self.notif = notif
         self.panelModel = panelModel
-        self.transcriptVC = TranscriptVC(app: app, settings: settings, onOpenFile: { panelModel.openFile($0) })
+        self.transcriptVC = TranscriptVC(app: app, settings: settings, onOpenFile: { raw in
+            guard let id = app.selectedAgentId,
+                  let cwd = (app.agents.first { $0.id == id } ?? app.archivedAgents.first { $0.id == id })?.cwd
+            else { return }
+            panelModel.openFile(cwd: cwd, raw: raw)
+        })
         super.init(nibName: nil, bundle: nil)
     }
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
@@ -41,10 +47,12 @@ final class ConversationVC: NSViewController {
         headerHost = NSHostingView(rootView: header())
         composerHost = NSHostingView(rootView: composer())
         scrollButtonHost = NSHostingView(rootView: scrollToBottomOverlay())
+        workspacePreviewHost = NSHostingView(rootView: AnyView(EmptyView()))
+        workspacePreviewHost.isHidden = true
         let table = transcriptVC.view
         addChild(transcriptVC)
 
-        for v in [headerHost, table, composerHost, scrollButtonHost] as [NSView] {
+        for v in [headerHost, table, composerHost, scrollButtonHost, workspacePreviewHost] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(v)
         }
@@ -70,24 +78,49 @@ final class ConversationVC: NSViewController {
             scrollButtonHost.bottomAnchor.constraint(equalTo: composerHost.topAnchor),
             scrollButtonHost.widthAnchor.constraint(equalToConstant: 72),
             scrollButtonHost.heightAnchor.constraint(equalToConstant: 56),
+
+            // Full-page in-window file preview: covers the transcript + composer
+            // below the header/tabs. It's a page, not a window and not a column.
+            workspacePreviewHost.topAnchor.constraint(equalTo: headerHost.bottomAnchor),
+            workspacePreviewHost.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            workspacePreviewHost.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            workspacePreviewHost.bottomAnchor.constraint(equalTo: root.bottomAnchor),
         ])
         view = root
     }
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        observeSelection()
+        app.selectedAgentDidChange = { [weak self] in self?.syncAgent() }
+        observeWorkspacePreview()
         syncAgent()
+        syncWorkspacePreview()
     }
 
-    // The header/composer islands auto-update via Observation; we only re-bind
-    // the AppKit transcript when the active agent changes.
-    private func observeSelection() {
+    private func observeWorkspacePreview() {
         withObservationTracking {
-            _ = app.selectedAgentId
+            _ = panelModel.previewRoute?.nonce
         } onChange: { [weak self] in
-            DispatchQueue.main.async { self?.syncAgent(); self?.observeSelection() }
+            DispatchQueue.main.async {
+                self?.syncWorkspacePreview()
+                self?.observeWorkspacePreview()
+            }
         }
+    }
+
+    private func syncWorkspacePreview() {
+        guard isViewLoaded else { return }
+        guard let route = panelModel.previewRoute else {
+            workspacePreviewHost.isHidden = true
+            return
+        }
+        workspacePreviewHost.rootView = AnyView(
+            WorkspaceFilePreviewWindow(route: route, onClose: { [panelModel] in panelModel.closePreview() })
+                .environment(app).environment(settings)
+                .environment(\.accent, settings.accentPalette)
+                .background(DS.contentBG)
+        )
+        workspacePreviewHost.isHidden = false
     }
 
     private func syncAgent() {
@@ -96,6 +129,11 @@ final class ConversationVC: NSViewController {
             scrollPositions[prev] = transcriptVC.currentScrollY
         }
         let id = app.selectedAgentId
+        // Switching conversations closes any open file preview.
+        if id != currentAgentId, panelModel.previewRoute != nil {
+            panelModel.closePreview()
+            syncWorkspacePreview()
+        }
         let agent = id.flatMap { aid in app.agents.first { $0.id == aid } ?? app.archivedAgents.first { $0.id == aid } }
         let isPending = id == AppViewModel.pendingAgentId
         let vm = (id != nil && !isPending) ? app.conversation(for: id!) : nil
@@ -140,7 +178,7 @@ final class ConversationVC: NSViewController {
                 panelModel: panelModel,
                 notif: notif,
                 onTogglePanel: { [panelModel] in panelModel.toggle() },
-                onOpenChanges: { [panelModel] in panelModel.openChanges() }
+                onOpenChanges: { [panelModel] in panelModel.toggleChanges() }
             )
             .environment(app).environment(settings).environment(\.accent, settings.accentPalette)
         )
@@ -270,4 +308,3 @@ private struct ScrollToBottomButton: View {
         .allowsHitTesting(!state.isAtBottom)
     }
 }
-

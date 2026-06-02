@@ -15,7 +15,9 @@ struct MDView: View {
 
     @Environment(SettingsStore.self) private var settings
     private var fs: CGFloat { CGFloat(settings.fontSize) }
-    private var lead: CGFloat { fs * 0.30 } // ≈ line-height 1.62 minus default leading
+    // User-adjustable in Settings (行间距). Absolute pt of extra space between
+    // lines, matching SwiftUI's .lineSpacing semantics.
+    private var lead: CGFloat { CGFloat(settings.paragraphLineSpacing) }
 
     var body: some View {
         let display = isStreaming ? Markdown.cleanForStreaming(text) : text

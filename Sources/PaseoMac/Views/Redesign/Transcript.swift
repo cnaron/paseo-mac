@@ -1,4 +1,63 @@
+import AppKit
 import SwiftUI
+
+private struct TranscriptBottomOffsetKey: PreferenceKey {
+    static let defaultValue = CGFloat.greatestFiniteMagnitude
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+}
+
+/// Observes only user-driven live scrolling from SwiftUI's enclosing
+/// NSScrollView. Content growth can move the bottom marker away from the
+/// viewport before our trailing scroll runs, so geometry alone cannot decide
+/// whether bottom-following should stop.
+private struct TranscriptLiveScrollMonitor: NSViewRepresentable {
+    let onUserScroll: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(onUserScroll: onUserScroll) }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        DispatchQueue.main.async { context.coordinator.attach(from: view) }
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        context.coordinator.onUserScroll = onUserScroll
+        DispatchQueue.main.async { context.coordinator.attach(from: view) }
+    }
+
+    final class Coordinator {
+        var onUserScroll: () -> Void
+        private weak var scrollView: NSScrollView?
+        private var observers: [NSObjectProtocol] = []
+
+        init(onUserScroll: @escaping () -> Void) {
+            self.onUserScroll = onUserScroll
+        }
+
+        deinit { detach() }
+
+        func attach(from view: NSView) {
+            guard let scrollView = view.enclosingScrollView else { return }
+            guard self.scrollView !== scrollView else { return }
+            detach()
+            self.scrollView = scrollView
+            let center = NotificationCenter.default
+            for name in [NSScrollView.didLiveScrollNotification, NSScrollView.didEndLiveScrollNotification] {
+                observers.append(center.addObserver(forName: name, object: scrollView, queue: .main) { [weak self] _ in
+                    self?.onUserScroll()
+                })
+            }
+        }
+
+        private func detach() {
+            let center = NotificationCenter.default
+            for observer in observers { center.removeObserver(observer) }
+            observers.removeAll()
+            scrollView = nil
+        }
+    }
+}
 
 // MARK: - Row → turn grouping
 //
@@ -84,6 +143,12 @@ struct TranscriptView: View {
     @Environment(SettingsStore.self) private var settings
     @State private var isNearBottom = true
     @State private var hasNew = false
+    @State private var viewportHeight: CGFloat = 0
+    @State private var shownTurnCount: Int = 30
+    @State private var expansionAnchorId: String? = nil
+
+    private let nearBottomThreshold: CGFloat = 120
+    private let turnPageSize = 20
 
     private var displayedRows: [ConversationViewModel.Row] {
         let base = vm.rows.filter { $0.tool?.name != "AskUserQuestion" }
@@ -94,16 +159,31 @@ struct TranscriptView: View {
 
     var body: some View {
         let groups = groupTurns(displayedRows, provider: agentProvider)
+        let hiddenCount = max(0, groups.count - shownTurnCount)
+        let visibleGroups = hiddenCount > 0 ? Array(groups.suffix(shownTurnCount)) : groups
         ScrollViewReader { proxy in
             ZStack(alignment: .bottom) {
                 ScrollView {
                     VStack(alignment: .leading, spacing: settings.bubbleGapPt) {
-                        if vm.hasOlderMessages { loadEarlier }
+                        // Spacer at top pushes all content toward the composer.
+                        // alignment:.bottom on .frame(minHeight:) doesn't work inside
+                        // ScrollView (unbounded height), so Spacer is the reliable fix.
+                        Spacer(minLength: 0)
+                        if vm.isLoading && displayedRows.isEmpty {
+                            ProgressView()
+                                .controlSize(.small)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 18)
+                        }
+                        // Server-side pagination: only show when all local turns are visible.
+                        if vm.hasOlderMessages && hiddenCount == 0 { loadEarlier }
+                        // Client-side pagination: show earlier locally-loaded turns.
+                        if hiddenCount > 0 { showEarlier(hiddenCount, firstVisibleId: visibleGroups.first?.id) }
                         if let err = vm.lastError {
                             Text(err).font(.system(size: 14)).foregroundStyle(DS.red).padding(.horizontal, 16)
                         }
-                        ForEach(Array(groups.enumerated()), id: \.element.id) { idx, g in
-                            turnView(g, isLast: idx == groups.count - 1).id(g.id)
+                        ForEach(Array(visibleGroups.enumerated()), id: \.element.id) { idx, g in
+                            turnView(g, isLast: idx == visibleGroups.count - 1).id(g.id)
                         }
                         if vm.isAgentWorking && !hasCurrentContent {
                             ThinkingRail()
@@ -113,22 +193,87 @@ struct TranscriptView: View {
                                 .font(.system(size: 12)).foregroundStyle(DS.text3)
                                 .frame(maxWidth: .infinity).padding(.vertical, 8)
                         }
-                        if searchText.isEmpty { turnStatus.padding(.leading, 53) }
-                        Color.clear.frame(height: 8).id("bottom")
-                            .onAppear { isNearBottom = true; hasNew = false }
-                            .onDisappear { isNearBottom = false }
+                        if searchText.isEmpty {
+                            turnStatus
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.leading, 16)
+                        }
+                        // Extra clearance so queued messages don't overlap the last turn.
+                        if !vm.queued.isEmpty {
+                            Color.clear.frame(height: 44)
+                        }
+                        // Bottom marker == the TRUE content bottom (the bottom gap
+                        // lives here, NOT in an outer .padding). That makes
+                        // scrollTo("bottom",.bottom) land exactly where
+                        // defaultScrollAnchor(.bottom) pins, so send/jump don't fight
+                        // the anchor. Its height grows while the agent is working —
+                        // this IS the tail compensation: the just-sent message and
+                        // the working indicator get breathing room above the composer
+                        // instead of being glued to it.
+                        Color.clear.frame(height: vm.isAgentWorking ? 44 : 20).id("bottom")
+                            .background {
+                                GeometryReader { geometry in
+                                    Color.clear.preference(
+                                        key: TranscriptBottomOffsetKey.self,
+                                        value: geometry.frame(in: .named("transcript-scroll")).maxY
+                                    )
+                                }
+                            }
                     }
                     .frame(maxWidth: DS.transcriptMaxW, alignment: .leading)
                     .frame(maxWidth: .infinity)
-                    .padding(.top, 26).padding(.bottom, 20)
+                    .frame(minHeight: max(viewportHeight - 46, 0))
+                    .padding(.horizontal, 40)
+                    .padding(.top, 26)
                 }
+                // Native bottom-pinning: while the scroll is at the bottom, content
+                // growth keeps the bottom aligned IN THE SAME LAYOUT PASS. This is
+                // what kills the streaming jitter — the old per-token
+                // `scrollTo("bottom")` always ran a frame behind the freshly
+                // appended token, producing a scroll → drift → snap cycle. We no
+                // longer scroll during streaming at all.
                 .defaultScrollAnchor(.bottom)
-                .onChange(of: vm.rows.count) { _, _ in
-                    if isNearBottom || vm.rows.last?.kind == "user" { scroll(proxy) } else { hasNew = true }
+                .coordinateSpace(name: "transcript-scroll")
+                .background {
+                    GeometryReader { geometry in
+                        Color.clear
+                            .onAppear { viewportHeight = geometry.size.height }
+                            .onChange(of: geometry.size.height) { _, height in viewportHeight = height }
+                    }
                 }
-                .onChange(of: vm.rows.last?.text ?? "") { _, _ in if isNearBottom { scroll(proxy) } }
-                .onChange(of: vm.isAgentWorking) { _, working in
-                    if !working { Task { try? await Task.sleep(nanoseconds: 150_000_000); scroll(proxy) } }
+                .onPreferenceChange(TranscriptBottomOffsetKey.self) { bottomY in
+                    let nearBottom = bottomY <= viewportHeight + nearBottomThreshold
+                    guard nearBottom != isNearBottom else { return }
+                    isNearBottom = nearBottom
+                    if nearBottom { hasNew = false }
+                }
+                // Streaming follow is handled by defaultScrollAnchor above, so these
+                // only flag unread content when the user has scrolled up to read
+                // history. No scrollTo during streaming.
+                .onChange(of: vm.rows.count) { oldCount, newCount in
+                    guard searchText.isEmpty else { return }
+                    if !isNearBottom && newCount > oldCount { hasNew = true }
+                }
+                .onChange(of: vm.rows.last?.text ?? "") { _, _ in
+                    guard searchText.isEmpty else { return }
+                    if !isNearBottom { hasNew = true }
+                }
+                // Sending a message: discrete one-shot jump to the bottom, even if
+                // the user had scrolled up, so the just-sent message + working
+                // indicator come into view.
+                .onChange(of: vm.bottomFollowRequest) { _, _ in
+                    guard searchText.isEmpty else { return }
+                    hasNew = false
+                    isNearBottom = true
+                    scrollToBottom(proxy)
+                }
+                .onChange(of: shownTurnCount) { _, _ in
+                    guard let id = expansionAnchorId else { return }
+                    Task { @MainActor in
+                        await Task.yield()
+                        proxy.scrollTo(id, anchor: .top)
+                        expansionAnchorId = nil
+                    }
                 }
 
                 if !isNearBottom { jumpButton(proxy) }
@@ -186,6 +331,23 @@ struct TranscriptView: View {
         .frame(maxWidth: .infinity).padding(.bottom, 8)
     }
 
+    private func showEarlier(_ hiddenCount: Int, firstVisibleId: String?) -> some View {
+        Button {
+            expansionAnchorId = firstVisibleId
+            shownTurnCount += turnPageSize
+        } label: {
+            HStack(spacing: 6) {
+                DSIcon(name: "chevron-up", size: 13, weight: .semibold)
+                Text("显示更早 \(min(turnPageSize, hiddenCount)) 条").font(.system(size: 12.5))
+            }
+            .foregroundStyle(DS.text3)
+            .padding(.horizontal, 14).padding(.vertical, 7)
+            .background(DS.hover, in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity).padding(.bottom, 8)
+    }
+
     @ViewBuilder private var turnStatus: some View {
         if vm.isAgentWorking {
             TimelineView(.periodic(from: .now, by: 0.25)) { _ in
@@ -198,6 +360,7 @@ struct TranscriptView: View {
 
     private func jumpButton(_ proxy: ScrollViewProxy) -> some View {
         Button {
+            isNearBottom = true
             withAnimation(.easeOut(duration: 0.18)) { proxy.scrollTo("bottom", anchor: .bottom) }
             hasNew = false
         } label: {
@@ -218,7 +381,16 @@ struct TranscriptView: View {
         guard let last = vm.rows.last else { return false }
         return ["assistant", "reasoning", "tool"].contains(last.kind)
     }
-    private func scroll(_ proxy: ScrollViewProxy) { proxy.scrollTo("bottom", anchor: .bottom) }
+    /// Discrete one-shot scroll to the bottom, deferred one runloop tick so the
+    /// just-appended row is laid out before we scroll. Used only for explicit
+    /// events (sending a message) — NOT during streaming, where
+    /// defaultScrollAnchor(.bottom) keeps the bottom pinned without scrollTo.
+    private func scrollToBottom(_ proxy: ScrollViewProxy) {
+        Task { @MainActor in
+            await Task.yield()
+            proxy.scrollTo("bottom", anchor: .bottom)
+        }
+    }
     private var elapsedString: String? {
         guard let s = vm.turnStartedAt else { return nil }
         return formatDur(Date().timeIntervalSince(s))

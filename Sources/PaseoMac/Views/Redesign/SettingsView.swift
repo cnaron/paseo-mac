@@ -137,7 +137,14 @@ private struct AppearanceSection: View {
                         Text("A").font(.system(size: 17)).foregroundStyle(DS.text3)
                     }
                 }
-                SetRow(label: "行间距 / 密度", sub: "消息之间的留白。") {
+                SetRow(label: "行间距", sub: "正文每行之间的留白 · \(String(format: "%.1f", settings.paragraphLineSpacing))pt") {
+                    HStack(spacing: 10) {
+                        Text("密").font(.system(size: 12)).foregroundStyle(DS.text3)
+                        Slider(value: $settings.paragraphLineSpacing, in: SettingsStore.lineSpacingRange, step: 0.5).frame(width: 170).tint(settings.accentPalette.accent)
+                        Text("疏").font(.system(size: 12)).foregroundStyle(DS.text3)
+                    }
+                }
+                SetRow(label: "消息密度", sub: "消息之间的留白。") {
                     Seg2(options: ["spacious", "compact"], label: { $0 == "spacious" ? "宽松" : "紧凑" }, selection: $settings.density)
                 }
             }
@@ -166,7 +173,19 @@ private struct GeneralSection: View {
                     Seg2(options: ["enter", "cmd"], label: { $0 == "enter" ? "Enter" : "⌘ Enter" }, selection: $sendKey)
                 }
             }
+            VStack(alignment: .leading, spacing: 0) {
+                GroupTitle(text: "关于")
+                SetRow(label: "版本") {
+                    Text(appVersionString).font(DS.mono(12.5)).foregroundStyle(DS.text2)
+                }
+            }
         }
+    }
+
+    private var appVersionString: String {
+        let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+        let b = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
+        return "\(v) (\(b))"
     }
 }
 
@@ -174,21 +193,33 @@ private struct GeneralSection: View {
 
 private struct UsageStatsSection: View {
     @Environment(AppViewModel.self) private var app
+    @State private var period: UsagePeriod = .all
     private let colors: [Color] = [Color(hex: 0xD97757), Color(hex: 0xE0A33E), Color(hex: 0x10A37F), Color(hex: 0x4285F4)]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                if let s = app.statsData { Text("Last computed: \(s.lastComputedDate)").font(.system(size: 12)).foregroundStyle(DS.text3) }
+                if let s = remoteStats {
+                    Text("长期统计 · \(s.lastComputedDate)").font(.system(size: 12)).foregroundStyle(DS.text3)
+                } else if !localUsage.isEmpty {
+                    Text("\(period.label) · 当前 daemon 会话 · API 等价估算").font(.system(size: 12)).foregroundStyle(DS.text3)
+                }
                 Spacer()
-                Button("刷新") { Task { await app.fetchStats() } }.buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(AccentPalette.terracotta.accent)
+                Button("刷新") {
+                    Task {
+                        await app.fetchStats()
+                        try? await app.refreshAgents()
+                    }
+                }
+                .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(AccentPalette.terracotta.accent)
             }
-            if let s = app.statsData, !s.modelUsage.isEmpty {
+            periodPicker
+            if let s = remoteStats {
                 let totalTokens = s.modelUsage.reduce(0) { $0 + $1.inputTokens + $1.outputTokens + $1.cacheReadTokens + $1.cacheWriteTokens }
                 let totalCost = s.modelUsage.reduce(0.0) { $0 + $1.apiEquivCostUSD }
                 HStack(spacing: 12) {
                     statCard("TOKEN", compactTokens(totalTokens))
-                    statCard("花费（USD）", String(format: "$%.2f", totalCost))
+                    statCard("API 等价估算（USD）", formatCost(totalCost))
                 }
                 GroupTitle(text: "按模型").padding(.top, 4)
                 ForEach(Array(s.modelUsage.enumerated()), id: \.element.id) { i, m in
@@ -202,16 +233,72 @@ private struct UsageStatsSection: View {
                     }
                     .padding(.vertical, 6)
                 }
+            } else if !localUsage.isEmpty {
+                HStack(spacing: 12) {
+                    statCard("TOKEN", compactTokens(localUsage.reduce(0) { $0 + $1.totalTokens }))
+                    statCard("API 等价估算（USD）", formatCost(localUsage.reduce(0) { $0 + $1.apiEquivCostUSD }))
+                }
+                Text("长期统计端点不可用时，使用 daemon 返回的各会话 token 快照。费用按对应模型的标准 API 单价估算，不代表订阅账单。")
+                    .font(.system(size: 12)).foregroundStyle(DS.text3).fixedSize(horizontal: false, vertical: true)
+                GroupTitle(text: "按模型").padding(.top, 4)
+                ForEach(Array(localUsage.enumerated()), id: \.element.id) { i, row in
+                    HStack(spacing: 10) {
+                        RoundedRectangle(cornerRadius: 3).fill(colors[i % colors.count]).frame(width: 11, height: 11)
+                        Text(row.label).font(DS.mono(12.5)).foregroundStyle(DS.text)
+                        Spacer()
+                        Text(compactTokens(row.totalTokens))
+                            .font(.system(size: 12.5, weight: .semibold)).monospacedDigit().foregroundStyle(DS.text2)
+                        Text("· \(formatCost(row.apiEquivCostUSD))").font(.system(size: 12)).monospacedDigit().foregroundStyle(DS.text3)
+                    }
+                    .padding(.vertical, 6)
+                    .help(row.tooltip)
+                }
             } else {
                 VStack(spacing: 8) {
-                    Text("暂无用量数据").font(.system(size: 13)).foregroundStyle(DS.text3)
-                    Text("在「连接 / Integration」配置 stats 端点后重连即可。").font(.system(size: 12)).foregroundStyle(DS.textFaint)
-                    Button("立即获取") { Task { await app.fetchStats() } }.controlSize(.small)
+                    Text("暂无可汇总的 token 数据").font(.system(size: 13)).foregroundStyle(DS.text3)
+                    Text("完成一次对话后即可显示当前会话的 token 与 API 等价估算。").font(.system(size: 12)).foregroundStyle(DS.textFaint)
+                    Button("立即获取") {
+                        Task {
+                            await app.fetchStats()
+                            try? await app.refreshAgents()
+                        }
+                    }
+                    .controlSize(.small)
                 }
                 .frame(maxWidth: .infinity).padding(.vertical, 30)
             }
         }
+        .task {
+            await app.fetchStats()
+            try? await app.refreshAgents()
+        }
     }
+
+    private var periodPicker: some View {
+        HStack(spacing: 4) {
+            ForEach(UsagePeriod.allCases) { item in
+                Button {
+                    period = item
+                } label: {
+                    Text(item.label)
+                        .font(.system(size: 12.5, weight: period == item ? .semibold : .regular))
+                        .foregroundStyle(period == item ? DS.text : DS.text3)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 7)
+                        .background(period == item ? DS.contentBG : .clear, in: RoundedRectangle(cornerRadius: 7))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(3)
+        .background(DS.hover, in: RoundedRectangle(cornerRadius: 9))
+    }
+
+    private var remoteStats: ClaudeStatsData? {
+        guard period == .all, let stats = app.statsData, !stats.modelUsage.isEmpty else { return nil }
+        return stats
+    }
+
     private func statCard(_ title: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(title).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(DS.text3)
@@ -220,6 +307,99 @@ private struct UsageStatsSection: View {
         .padding(.horizontal, 16).padding(.vertical, 14).frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(hex: 0xFBFBFA), in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(DS.divider, lineWidth: 1))
+    }
+
+    private var localUsage: [LocalUsageRow] {
+        var rows: [String: LocalUsageRow] = [:]
+        var seen = Set<String>()
+        for agent in app.agents + app.archivedAgents where seen.insert(agent.id).inserted {
+            guard period.includes(parseISODate(agent.updatedAt)) else { continue }
+            guard let usage = agent.lastUsage else { continue }
+            let provider = agent.provider ?? "unknown"
+            let model = agent.model ?? provider
+            let key = "\(provider)|\(model)"
+            var row = rows[key] ?? LocalUsageRow(id: key, label: "\(provider.capitalized) · \(prettyModel(model))")
+            row.inputTokens += usage.inputTokens ?? 0
+            row.cachedInputTokens += usage.cachedInputTokens ?? 0
+            row.outputTokens += usage.outputTokens ?? 0
+            row.apiEquivCostUSD += estimateAPIEquivCost(provider: provider, model: model, usage: usage)
+            rows[key] = row
+        }
+        return rows.values
+            .filter { $0.totalTokens > 0 || $0.apiEquivCostUSD > 0 }
+            .sorted { $0.apiEquivCostUSD == $1.apiEquivCostUSD ? $0.totalTokens > $1.totalTokens : $0.apiEquivCostUSD > $1.apiEquivCostUSD }
+    }
+
+    private func estimateAPIEquivCost(provider: String, model: String, usage: AgentUsage) -> Double {
+        if let reported = usage.totalCostUsd, reported > 0 { return reported }
+        guard let price = apiPrice(provider: provider, model: model) else { return 0 }
+        return Double(usage.inputTokens ?? 0) / 1_000_000 * price.input
+            + Double(usage.cachedInputTokens ?? 0) / 1_000_000 * price.cachedInput
+            + Double(usage.outputTokens ?? 0) / 1_000_000 * price.output
+    }
+
+    private func apiPrice(provider: String, model: String) -> (input: Double, cachedInput: Double, output: Double)? {
+        let m = model.lowercased()
+        if provider == "codex" {
+            if m.contains("5.5") { return (5, 0.5, 30) }
+            if m.contains("5.4") && m.contains("mini") { return (0.75, 0.075, 4.5) }
+            if m.contains("5.4") { return (2.5, 0.25, 15) }
+            if m.contains("5.2") { return (1.75, 0.175, 14) }
+            if m.contains("5.1") || m.contains("gpt-5") { return (1.25, 0.125, 10) }
+        }
+        if provider == "claude" {
+            if m.contains("opus") { return (5, 0.5, 25) }
+            if m.contains("haiku") { return (1, 0.1, 5) }
+            if m.contains("sonnet") { return (3, 0.3, 15) }
+        }
+        return nil
+    }
+
+    private enum UsagePeriod: String, CaseIterable, Identifiable {
+        case day
+        case week
+        case month
+        case all
+
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .day: return "日"
+            case .week: return "周"
+            case .month: return "月"
+            case .all: return "总量"
+            }
+        }
+
+        func includes(_ date: Date?) -> Bool {
+            guard self != .all else { return true }
+            guard let date else { return false }
+            let calendar = Calendar.current
+            switch self {
+            case .day:
+                return calendar.isDateInToday(date)
+            case .week:
+                return calendar.dateInterval(of: .weekOfYear, for: Date())?.contains(date) == true
+            case .month:
+                return calendar.dateInterval(of: .month, for: Date())?.contains(date) == true
+            case .all:
+                return true
+            }
+        }
+    }
+
+    private struct LocalUsageRow: Identifiable {
+        let id: String
+        let label: String
+        var inputTokens = 0
+        var cachedInputTokens = 0
+        var outputTokens = 0
+        var apiEquivCostUSD = 0.0
+
+        var totalTokens: Int { inputTokens + cachedInputTokens + outputTokens }
+        var tooltip: String {
+            "Input: \(inputTokens.formatted())\nCached: \(cachedInputTokens.formatted())\nOutput: \(outputTokens.formatted())"
+        }
     }
 }
 

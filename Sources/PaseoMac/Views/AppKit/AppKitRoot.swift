@@ -4,9 +4,14 @@ import AppKit
 // MARK: - AppKit shell entry
 //
 // The redesigned UI runs on an AppKit foundation (NSSplitViewController +
-// NSTableView transcript) so scrolling / row lifecycle / reconnects are stable.
-// The design is reused as SwiftUI NSHostingView islands. Three columns:
-// sidebar | conversation | workspace panel (the last collapsible, design-docked).
+// SwiftUI islands) so scrolling / row lifecycle / reconnects are stable.
+// Three columns: sidebar | conversation | workspace panel (the last collapsible).
+//
+// File preview opens as a SEPARATE window (the "Workspace Files" WindowGroup) via
+// the `onOpenFile` closure threaded down from ContentView, which holds SwiftUI's
+// scene-connected `openWindow`. A docked preview column was tried and rejected —
+// the user wants files to open as their own side-by-side page, like a new
+// same-directory conversation, not crammed into a narrow right column.
 
 struct AppKitRoot: NSViewControllerRepresentable {
     let app: AppViewModel
@@ -59,12 +64,20 @@ final class RootSplitController: NSSplitViewController {
             )
         }
         super.init(nibName: nil, bundle: nil)
+        // Replace the default NSSplitView BEFORE loadView fires (loadView is
+        // lazy — triggered on first .view access, which happens after init).
+        // Replacing it inside viewDidLoad() is too late: SwiftUI's NSView-
+        // controller bridge already holds a reference to the original splitView
+        // from loadView(), and swapping it causes a dangling-reference crash in
+        // the observation/environment machinery.
+        let sv = ZeroDividerSplitView()
+        sv.isVertical = true
+        splitView = sv
     }
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        splitView.dividerStyle = .thin
 
         let sidebarItem = NSSplitViewItem(viewController: sidebarVC)
         sidebarItem.minimumThickness = DS.sidebarW
@@ -90,6 +103,8 @@ final class RootSplitController: NSSplitViewController {
         observePanel()
     }
 
+    // MARK: - Workspace panel (变更/文件 navigator)
+
     private func observePanel() {
         withObservationTracking {
             _ = panelModel.isOpen
@@ -106,11 +121,9 @@ final class RootSplitController: NSSplitViewController {
         guard panelItem.isCollapsed == open else { return }  // already in target state
 
         if open {
-            // Grow window first, then reveal panel (one layout pass → no transcript resize).
             resizeWindow(by: +panelWidth)
             panelItem.isCollapsed = false
         } else {
-            // Collapse first, then shrink window.
             panelItem.isCollapsed = true
             resizeWindow(by: -panelWidth)
         }
@@ -136,6 +149,17 @@ final class RootSplitController: NSSplitViewController {
         conversationVC.refreshIslands()
         sidebarVC.view.needsLayout = true
     }
+}
+
+// MARK: - NSSplitView with invisible dividers
+//
+// NSSplitView always draws a hairline between panes. The sidebar and workspace
+// panel each draw their own 1pt separators, so the split's own divider would
+// double up. Zeroing it keeps a single clean line per edge.
+
+private final class ZeroDividerSplitView: NSSplitView {
+    override var dividerThickness: CGFloat { 0 }
+    override func drawDivider(in rect: NSRect) {}
 }
 
 // MARK: - Generic SwiftUI-island hosting controller

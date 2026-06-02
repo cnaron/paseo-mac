@@ -45,9 +45,20 @@ final class AppViewModel {
         didSet {
             if let id = selectedAgentId, id != AppViewModel.pendingAgentId {
                 UserDefaults.standard.set(id, forKey: "paseomac.lastSelectedAgentId")
+                // Opening a conversation marks it seen — clears the sidebar
+                // "等待中" attention pulse (a later attention/permission/fail
+                // event re-sets it).
+                clearAttention(for: id)
+            }
+            if oldValue != selectedAgentId {
+                selectedAgentDidChange?()
             }
         }
     }
+    /// AppKit's transcript island is not part of SwiftUI's observation tree.
+    /// Notify it synchronously so it switches in the same event turn as the
+    /// header and composer islands.
+    @ObservationIgnored var selectedAgentDidChange: (() -> Void)? = nil
     var pendingNewAgentCwd: String? = nil
     var pendingNewAgentProvider: String = "claude"
     var pendingNewAgentModel: String? = nil
@@ -463,6 +474,7 @@ final class AppViewModel {
             let vm = self.conversation(for: AppViewModel.pendingAgentId)
             vm.composerText = restoreText
             vm.pendingImages = restoreImages
+            vm.saveDraft()
         }
         creatingAgentText = text
         creatingAgentImages = images
@@ -567,6 +579,7 @@ final class AppViewModel {
                 ])
                 vm.composerText = text
                 vm.pendingImages = images
+                vm.saveDraft()
                 vm.lastError = "Send failed: \(error.localizedDescription)"
             }
         } else {
@@ -1385,6 +1398,26 @@ final class AppViewModel {
              .fetchRecentProviderSessionsResponse, .unknown:
             break
         }
+    }
+
+    /// Clears the attention flag for an agent (the sidebar "等待中" pulse).
+    /// State reads `liveStatus[id]?.requiresAttention ?? snapshot.requiresAttention`,
+    /// so we set a live entry with the flag false — that overrides a stale
+    /// snapshot fallback too. No-op when nothing is flagged, to avoid needless
+    /// observation churn.
+    func clearAttention(for id: String) {
+        let liveFlagged = liveStatus[id]?.requiresAttention ?? false
+        let snapshotFlagged = liveStatus[id] == nil
+            && (agents.first(where: { $0.id == id })?.requiresAttention ?? false)
+        guard liveFlagged || snapshotFlagged else { return }
+        var live = liveStatus[id] ?? LiveStatus(
+            status: agents.first(where: { $0.id == id })?.status ?? "idle",
+            requiresAttention: false,
+            attentionReason: nil
+        )
+        live.requiresAttention = false
+        live.attentionReason = nil
+        liveStatus[id] = live
     }
 
     private func applyLiveStatus(agentId: String, event: AgentStreamEvent) {

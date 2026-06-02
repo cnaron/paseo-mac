@@ -233,6 +233,12 @@ final class ConversationViewModel {
     var pendingImages: [PendingImageAttachment] = []
     var pendingTextFiles: [PendingTextFile] = []
     var composerForceUpdate: UInt = 0
+    /// Explicit bottom-follow request emitted as soon as a locally-sent user
+    /// row is appended. The transcript uses this before streamed tokens arrive.
+    var bottomFollowRequest: UInt = 0
+    /// Requests temporary tail space immediately when send begins so the
+    /// conversation lifts before the first Working/token event arrives.
+    var tailCompensationRequest: UInt = 0
 
     var hasOlderMessages: Bool = false
     private var oldestCursor: AgentTimelineCursor? = nil
@@ -332,10 +338,23 @@ final class ConversationViewModel {
         self.agentId = agentId
         self.getClient = getClient
         let ud = UserDefaults.standard
-        self.composerText = ud.string(forKey: "draft_\(agentId)") ?? ""
+        if let data = ud.data(forKey: "composer_draft_\(agentId)"),
+           let draft = try? JSONDecoder().decode(PersistedDraft.self, from: data) {
+            self.composerText = draft.text
+            self.pendingImages = draft.images.filter { FileManager.default.fileExists(atPath: $0.fileURL.path) }
+            self.pendingTextFiles = draft.textFiles
+        } else {
+            self.composerText = ud.string(forKey: "draft_\(agentId)") ?? ""
+        }
         if let data = ud.data(forKey: "queued_\(agentId)"),
            let items = try? JSONDecoder().decode([PersistedQueued].self, from: data) {
-            self.queued = items.map { QueuedMessage(text: $0.text, messageId: $0.messageId, images: []) }
+            self.queued = items.map {
+                QueuedMessage(
+                    text: $0.text,
+                    messageId: $0.messageId,
+                    images: ($0.images ?? []).filter { FileManager.default.fileExists(atPath: $0.fileURL.path) }
+                )
+            }
         }
         loadMetaCache()
     }
@@ -345,20 +364,33 @@ final class ConversationViewModel {
     private struct PersistedQueued: Codable {
         let text: String
         let messageId: String
+        let images: [PendingImageAttachment]?
+    }
+
+    private struct PersistedDraft: Codable {
+        let text: String
+        let images: [PendingImageAttachment]
+        let textFiles: [PendingTextFile]
     }
 
     func saveDraft() {
         let ud = UserDefaults.standard
-        if composerText.isEmpty {
+        let key = "composer_draft_\(agentId)"
+        if composerText.isEmpty && pendingImages.isEmpty && pendingTextFiles.isEmpty {
             ud.removeObject(forKey: "draft_\(agentId)")
+            ud.removeObject(forKey: key)
         } else {
             ud.set(composerText, forKey: "draft_\(agentId)")
+            let draft = PersistedDraft(text: composerText, images: pendingImages, textFiles: pendingTextFiles)
+            if let data = try? JSONEncoder().encode(draft) {
+                ud.set(data, forKey: key)
+            }
         }
     }
 
     func saveQueued() {
         let ud = UserDefaults.standard
-        let items = queued.map { PersistedQueued(text: $0.text, messageId: $0.messageId) }
+        let items = queued.map { PersistedQueued(text: $0.text, messageId: $0.messageId, images: $0.images) }
         if items.isEmpty {
             ud.removeObject(forKey: "queued_\(agentId)")
         } else if let data = try? JSONEncoder().encode(items) {
@@ -533,6 +565,7 @@ final class ConversationViewModel {
         pendingImages = msg.images
         composerForceUpdate &+= 1
         saveQueued()
+        saveDraft()
     }
 
     /// Pull the composer's current content into a QueuedMessage and clear it.
@@ -543,9 +576,11 @@ final class ConversationViewModel {
         let textFiles = pendingTextFiles
         if baseText.isEmpty && images.isEmpty && textFiles.isEmpty { return nil }
 
+        composerForceUpdate &+= 1
         composerText = ""
         pendingImages = []
         pendingTextFiles = []
+        saveDraft()
 
         let finalText = composeOutgoingText(baseText: baseText, files: textFiles)
         return QueuedMessage(
@@ -570,6 +605,7 @@ final class ConversationViewModel {
             saveQueued()
             return false
         }
+        requestTailCompensation()
         appendLocalUserRow(text: msg.text, messageId: msg.messageId, images: msg.images)
         EventLogger.shared.log("send", "request", [
             "agent": agentId, "messageId": msg.messageId,
@@ -628,18 +664,22 @@ final class ConversationViewModel {
 
     func addImages(_ images: [PendingImageAttachment]) {
         pendingImages.append(contentsOf: images)
+        saveDraft()
     }
 
     func removeImage(id: UUID) {
         pendingImages.removeAll { $0.id == id }
+        saveDraft()
     }
 
     func addTextFile(_ file: PendingTextFile) {
         pendingTextFiles.append(file)
+        saveDraft()
     }
 
     func removeTextFile(id: UUID) {
         pendingTextFiles.removeAll { $0.id == id }
+        saveDraft()
     }
 
     // MARK: - Stream ingestion
@@ -841,7 +881,13 @@ final class ConversationViewModel {
         messageId: String,
         images: [PendingImageAttachment]
     ) {
+        requestTailCompensation()
         appendLocalUserRow(text: text, messageId: messageId, images: images)
+    }
+
+    func requestTailCompensation() {
+        tailCompensationRequest &+= 1
+        bottomFollowRequest &+= 1
     }
 
     /// Clear `lastError` if it was a stale connection-related message left
@@ -928,6 +974,7 @@ final class ConversationViewModel {
             tool: nil,
             images: images
         ))
+        bottomFollowRequest &+= 1
     }
 
     private func appendSystemRow(text: String, timestamp: String) {

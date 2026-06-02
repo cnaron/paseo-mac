@@ -7,7 +7,7 @@ import UniformTypeIdentifiers
 /// Images are downsized + JPEG-compressed at attach time so the wire payload
 /// stays well under the relay's 1MB-per-WS-message limit even with several
 /// attachments. The on-disk file is the compressed JPEG, not the original.
-struct PendingImageAttachment: Identifiable, Hashable, Sendable {
+struct PendingImageAttachment: Identifiable, Hashable, Sendable, Codable {
     let id: UUID
     let fileURL: URL      // ~/Library/Caches/PaseoMac/images/<uuid>.<ext>
     let width: Int
@@ -150,7 +150,7 @@ struct PendingImageAttachment: Identifiable, Hashable, Sendable {
 /// A text file dragged into the composer. The daemon protocol has no
 /// first-class file slot, so we inline the content into the outgoing
 /// message body as a fenced code block (matching Claude Code's behavior).
-struct PendingTextFile: Identifiable, Hashable, Sendable {
+struct PendingTextFile: Identifiable, Hashable, Sendable, Codable {
     let id: UUID
     let name: String
     let content: String

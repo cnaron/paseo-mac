@@ -53,17 +53,7 @@ struct UsagePanelView: View {
             }
 
             if let cur = app.claudeCodeCurrentVersion, cur != "unknown" {
-                LinkRow(provider: "claude", url: nil) {
-                    HStack(spacing: 0) {
-                        Text("Claude Code · v\(cur)").font(.system(size: 12)).foregroundStyle(DS.text2)
-                        Spacer(minLength: 4)
-                        if app.claudeCodeUpdateAvailable, let latest = app.claudeCodeLatestVersion {
-                            Text("→ v\(latest)").font(.system(size: 11, weight: .semibold)).foregroundStyle(DS.orange)
-                        } else {
-                            Text("· latest").font(.system(size: 11)).foregroundStyle(DS.textFaint)
-                        }
-                    }
-                }
+                ClaudeCodeVersionRow(current: cur)
             }
         }
         .padding(.horizontal, 9).padding(.top, 10).padding(.bottom, 4)
@@ -128,6 +118,51 @@ struct UsagePanelView: View {
             .buttonStyle(.plain)
             .onHover { hover = $0 }
             .disabled(url == nil)
+        }
+    }
+
+    // Claude Code version row. When a newer version is available it becomes a
+    // clickable button that triggers `updateClaudeCode()` (via the usage proxy's
+    // claude-code-update endpoint); shows a spinner while updating; "· latest"
+    // (inert) when up to date.
+    private struct ClaudeCodeVersionRow: View {
+        let current: String
+        @Environment(AppViewModel.self) private var app
+        @State private var hover = false
+
+        private var canUpdate: Bool {
+            app.claudeCodeUpdateAvailable
+                && app.claudeCodeLatestVersion != nil
+                && !app.isUpdatingClaudeCode
+        }
+
+        var body: some View {
+            Button {
+                guard canUpdate else { return }
+                Task { await app.updateClaudeCode() }
+            } label: {
+                HStack(spacing: 8) {
+                    ProviderGlyph(provider: "claude", size: 14).frame(width: 14, height: 14)
+                    Text("Claude Code · v\(current)").font(.system(size: 12)).foregroundStyle(DS.text2)
+                    Spacer(minLength: 4)
+                    if app.isUpdatingClaudeCode {
+                        ProgressView().controlSize(.mini)
+                        Text("更新中…").font(.system(size: 11)).foregroundStyle(DS.text3)
+                    } else if app.claudeCodeUpdateAvailable, let latest = app.claudeCodeLatestVersion {
+                        Text("→ v\(latest)").font(.system(size: 11, weight: .semibold)).foregroundStyle(DS.orange)
+                    } else {
+                        Text("· latest").font(.system(size: 11)).foregroundStyle(DS.textFaint)
+                    }
+                }
+                .padding(.horizontal, 6).padding(.vertical, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background((canUpdate && hover) ? DS.hover : .clear, in: RoundedRectangle(cornerRadius: DS.R.row))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .onHover { hover = $0 }
+            .disabled(!canUpdate)
+            .help(canUpdate ? "点击更新 Claude Code 到 v\(app.claudeCodeLatestVersion ?? "")" : "Claude Code 已是最新")
         }
     }
 }

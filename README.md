@@ -4,6 +4,14 @@
 
 Native macOS client for interacting with [Claude Code](https://claude.ai/code) agents running remotely on a server or VPS.
 
+## Screenshots
+
+![PaseoMac main window](docs/assets/screenshot-main.png)
+
+| Sidebar — live agent states | Attachments, queued messages & usage panel |
+|---|---|
+| ![Sidebar with running / waiting / done states](docs/assets/screenshot-sidebar.png) | ![Composer with queued messages and usage panel](docs/assets/screenshot-composer.png) |
+
 ## Why this exists
 
 [Paseo](https://github.com/getpaseo) has an official Mac app. It works, but it's Electron-based and carries a heavy memory footprint — noticeable if you keep it open alongside other tools all day.
@@ -12,13 +20,15 @@ This is a lightweight SwiftUI replacement. It speaks the same relay protocol as 
 
 ## What it does
 
-- **Sidebar** — lists all agents with live status dots (green = running, animated)
-- **Conversations** — markdown, code highlighting, tool-use details, inline images
+- **Sidebar** — agents grouped by workspace, four live states (running / waiting / done / idle) with animated status rings; docked usage panel pinned at the bottom
+- **Tabs** — multiple open conversations in the same workspace, switch without losing scroll position
+- **Conversations** — markdown, code highlighting, tool-use clusters, inline images; lazy-rendered (last 30 turns, "show earlier" pages back) to keep memory low
 - **Per-turn info** — model name and elapsed time below each assistant reply
+- **File preview** — click a file path or the changes/files panel to open it as a full page over the conversation, ✕ to close
+- **Composer** — send messages, queue follow-ups while the agent works, attach images and text/code files; per-agent model / permission-mode / thinking pickers
 - **Search** — filter messages in any conversation
-- **Composer** — send messages, attach images and text/code files
-- **Agent controls** — switch model, mode, and thinking level per agent
-- **Quota panel** — shows Claude.ai subscription usage (5h / 7d windows) if configured
+- **Quota panel** — Claude.ai subscription usage (5h / 7d windows), plus a one-click **Claude Code update** when a newer CLI version is available
+- **Adjustable** — body font size and line spacing in Settings; multiple provider support (Claude / Codex / Gemini)
 
 ## Compared to the official Paseo Mac app
 
@@ -37,11 +47,11 @@ Measured on Apple Silicon (M-series Mac):
 
 | | PaseoMac | Official Paseo |
 |---|---|---|
-| App bundle | 3.8 MB | ~350 MB (includes Chromium) |
-| Memory in use | ~80 MB | ~450 MB typical |
+| App bundle | ~4 MB | ~350 MB (includes Chromium) |
+| Memory in use | ~150–250 MB | ~450 MB+ typical (3 processes) |
 | Runtime | SwiftUI native | Electron |
 
-Memory figures are approximate. PaseoMac was measured with an active connection and conversation loaded. Official Paseo figures are representative of a typical Electron app with an embedded Chromium runtime — your mileage may vary.
+Memory figures are approximate. PaseoMac runs as a single process; it was measured on Air with an active connection and a conversation loaded. Official Paseo spreads its footprint across a main process plus GPU/renderer helpers, so its true total is the sum of those — your mileage may vary. (Earlier minimal builds of PaseoMac idled around ~80 MB; the current richer redesign trades some of that for the tabbed UI and syntax highlighting — trimming this back is on the roadmap.)
 
 ## Install
 

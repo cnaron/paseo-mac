@@ -27,12 +27,16 @@ struct SidebarView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     ChatsSection()
                     SecondarySection()
-                    if app.connectionState == .connected {
-                        UsagePanelView(onOpenSettings: onOpenSettings)
-                    }
                 }
                 .padding(.horizontal, 10)
                 .padding(.bottom, 6)
+            }
+
+            // Usage panel docked to the bottom (above the footer), not scrolling
+            // with the chat list — so it stays pinned regardless of list length.
+            if app.connectionState == .connected {
+                UsagePanelView(onOpenSettings: onOpenSettings)
+                    .padding(.horizontal, 10)
             }
 
             ConnectionFooter(onOpenConnect: onOpenConnect)
@@ -304,22 +308,13 @@ struct ChatAvatar: View {
 
 private struct SecondarySection: View {
     @Environment(AppViewModel.self) private var app
-    @State private var hoverA = false
     @State private var hoverI = false
 
     var body: some View {
+        // The 显示/隐藏归档 toggle lives in the bottom utility bar's archive
+        // button now; this section just renders the archived agents (once shown)
+        // and the import row.
         VStack(alignment: .leading, spacing: 1) {
-            Button {
-                Task {
-                    if app.archivedAgents.isEmpty { await app.loadArchivedAgents() }
-                    else { app.clearArchivedAgents() }
-                }
-            } label: {
-                row(icon: "clock", text: app.archivedAgents.isEmpty ? "显示归档" : "隐藏归档", hover: hoverA)
-            }
-            .buttonStyle(.plain).onHover { hoverA = $0 }
-            .disabled(app.connectionState != .connected)
-
             ForEach(app.archivedAgents) { a in
                 HStack(spacing: 9) {
                     DSIcon(name: "archive", size: 15).foregroundStyle(DS.text3).opacity(0.6).frame(width: 22)
@@ -402,8 +397,12 @@ private struct UtilityBar: View {
         HStack(spacing: 2) {
             IconButton(icon: "gear", box: 28, glyph: 17, help: "偏好设置 (⌘,)", action: onOpenSettings)
             IconButton(icon: "help", box: 28, glyph: 17, help: "帮助") {}
-            IconButton(icon: "archive", box: 28, glyph: 17, help: "归档") {
-                Task { if app.archivedAgents.isEmpty { await app.loadArchivedAgents() } }
+            IconButton(icon: "archive", box: 28, glyph: 17,
+                       help: app.archivedAgents.isEmpty ? "显示归档" : "隐藏归档") {
+                Task {
+                    if app.archivedAgents.isEmpty { await app.loadArchivedAgents() }
+                    else { app.clearArchivedAgents() }
+                }
             }
             Spacer()
             IconButton(icon: "filter", box: 28, glyph: 17, help: "筛选 / 排序") {}

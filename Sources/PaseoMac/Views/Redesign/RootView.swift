@@ -218,6 +218,11 @@ struct WindowConfigurator: NSViewRepresentable {
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.styleMask.insert(.fullSizeContentView)
+        // Big Sur+ draws an automatic hairline under the titlebar when content
+        // is scrollable beneath it. With fullSizeContentView this line cuts
+        // across the top of the window — kill it. The sidebar draws its own
+        // trailing separator, so no visual structure is lost.
+        window.titlebarSeparatorStyle = .none
         window.appearance = NSAppearance(named: .aqua)
         window.backgroundColor = .white
         if let tb = window.standardWindowButton(.closeButton)?.superview {

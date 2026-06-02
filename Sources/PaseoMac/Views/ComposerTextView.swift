@@ -35,6 +35,8 @@ struct ComposerTextView: NSViewRepresentable {
         textView.textContainer?.widthTracksTextView = true
         textView.textContainer?.lineFragmentPadding = 4
         textView.autoresizingMask = [.width]
+        textView.string = text
+        textView.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
         textView.registerForDraggedTypes([
             .fileURL, .png, .tiff, .string
         ])
@@ -64,27 +66,35 @@ struct ComposerTextView: NSViewRepresentable {
         // Setting textView.string or even textView.font during IME composition can
         // silently cancel the in-progress candidate, causing "swallowed" characters.
         let hasIME = textView.markedRange().length > 0
+        let forced = forceUpdate != context.coordinator.lastForceUpdate
+        if forced { context.coordinator.lastForceUpdate = forceUpdate }
 
         if !hasIME && textView.string != text {
             if text.isEmpty {
-                // Programmatic clear (send action). Always apply.
-                // Also reset the recency guard so it doesn't block the next clear.
-                context.coordinator.lastUserTypedAt = .distantPast
-                textView.string = ""
-                textView.setSelectedRange(NSRange(location: 0, length: 0))
+                // Dictation can commit into NSTextView one run-loop before its
+                // binding catches up. Only clear an actively edited text view
+                // when the caller explicitly marked a programmatic overwrite.
+                let typedRecently = Date().timeIntervalSince(context.coordinator.lastUserTypedAt) < 1.0
+                let protected = !forced && (context.coordinator.isUserEditing || typedRecently)
+                if protected {
+                    context.coordinator.parent.text = textView.string
+                } else {
+                    context.coordinator.lastUserTypedAt = .distantPast
+                    textView.string = ""
+                    textView.setSelectedRange(NSRange(location: 0, length: 0))
+                }
             } else {
                 // External non-empty change (draft restore, history nav, editQueued).
                 // Block if the user typed recently — they're ahead of binding propagation.
                 // forceUpdate bypasses this protection for intentional overwrites.
-                let forced = forceUpdate != context.coordinator.lastForceUpdate
-                if forced { context.coordinator.lastForceUpdate = forceUpdate }
                 let typedRecently = Date().timeIntervalSince(context.coordinator.lastUserTypedAt) < 1.0
                 let protected = !forced && (context.coordinator.isUserEditing || typedRecently)
                 if !protected {
                     let sel = textView.selectedRange()
+                    let restoringDraft = textView.string.isEmpty
                     textView.string = text
                     let safe = NSRange(
-                        location: min(sel.location, textView.string.count),
+                        location: restoringDraft ? (textView.string as NSString).length : min(sel.location, (textView.string as NSString).length),
                         length: 0
                     )
                     textView.setSelectedRange(safe)
@@ -156,6 +166,7 @@ struct ComposerTextView: NSViewRepresentable {
             }
             tv.scrollRangeToVisible(tv.selectedRange())
         }
+
     }
 }
 

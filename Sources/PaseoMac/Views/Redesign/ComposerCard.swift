@@ -49,6 +49,7 @@ struct ComposerCard: View {
                 onImageDrop: handleImageDrop,
                 onLargeTextPaste: handleLargePaste
             )
+            .id(vm.agentId)
             .frame(height: CGFloat(settings.composerHeight))
             .padding(.horizontal, 14).padding(.top, 8).padding(.bottom, 4)
 
@@ -78,9 +79,15 @@ struct ComposerCard: View {
     private var actionRow: some View {
         HStack(spacing: 8) {
             IconButton(icon: "plus", box: 28, glyph: 18, help: "添加附件", action: openPicker)
-            ModelPickerPill(agent: agent)
-            ModePickerPill(agent: agent)
-            ThinkingPickerPill(agent: agent)
+            if pending {
+                PendingModelPickerPill()
+                PendingModePickerPill()
+                PendingThinkingPickerPill()
+            } else {
+                ModelPickerPill(agent: agent)
+                ModePickerPill(agent: agent)
+                ThinkingPickerPill(agent: agent)
+            }
             Spacer(minLength: 6)
             contextBar
             IconButton(icon: "image", box: 28, glyph: 18, help: "附加图片", action: openPicker)
@@ -215,9 +222,12 @@ struct ComposerCard: View {
         if pending {
             let text = vm.composerText.trimmingCharacters(in: .whitespacesAndNewlines)
             let images = vm.pendingImages
+            vm.composerForceUpdate &+= 1
             vm.composerText = ""; vm.pendingImages = []; vm.pendingTextFiles = []
+            vm.saveDraft()
             Task { await app.submitPendingAgent(text: text, images: images) }
         } else {
+            if !vm.isAgentWorking { vm.requestTailCompensation() }
             Task { await vm.sendComposer() }
         }
     }
@@ -263,14 +273,212 @@ private struct ModelPickerPill: View {
                 }
             } label: {
                 HStack(spacing: 7) {
-                    ProviderGlyph(provider: agent.provider, size: 15).frame(width: 15, height: 15)
-                    Text(snap.label ?? "Claude Code").font(.system(size: 13)).foregroundStyle(DS.text)
+                    ComposerProviderGlyph(provider: agent.provider)
+                    // Show the selected MODEL name (e.g. "Opus 4.8"), not the
+                    // provider label; fall back to provider/Claude Code only if
+                    // the model id has no matching definition yet.
+                    Text(models.first(where: { $0.id == agent.model })?.label ?? snap.label ?? "Claude Code")
+                        .font(.system(size: 13)).foregroundStyle(DS.text)
                     DSIcon(name: "chevron-down", size: 13).foregroundStyle(DS.text3)
                 }
                 .pillSurface()
             }
             .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
         }
+    }
+}
+
+private struct PendingModelPickerPill: View {
+    @Environment(AppViewModel.self) private var app
+
+    var body: some View {
+        Menu {
+            if readyProviders.count > 1 {
+                Section("厂商") {
+                    ForEach(readyProviders) { provider in
+                        Button {
+                            guard provider.provider != app.pendingNewAgentProvider else { return }
+                            app.pendingNewAgentProvider = provider.provider
+                            app.pendingNewAgentModel = nil
+                            app.pendingNewAgentModeId = nil
+                            app.pendingNewAgentThinkingOptionId = nil
+                            app.pendingNewAgentFeatureValues = [:]
+                        } label: {
+                            Text((provider.label ?? provider.provider.capitalized)
+                                 + (provider.provider == app.pendingNewAgentProvider ? "  ✓" : ""))
+                        }
+                    }
+                }
+                Divider()
+            }
+            if !models.isEmpty {
+                Section("模型") {
+                    ForEach(models) { model in
+                        Button {
+                            app.pendingNewAgentModel = model.id
+                            app.pendingNewAgentThinkingOptionId = nil
+                        } label: {
+                            Text(model.label + (model.id == effectiveModelId ? "  ✓" : ""))
+                        }
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 7) {
+                ComposerProviderGlyph(provider: app.pendingNewAgentProvider)
+                Text(currentModelLabel).font(.system(size: 13)).foregroundStyle(DS.text)
+                DSIcon(name: "chevron-down", size: 13).foregroundStyle(DS.text3)
+            }
+            .pillSurface()
+        }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        .help("厂商与模型：\(currentModelLabel)")
+    }
+
+    private var readyProviders: [ProviderSnapshot] {
+        app.providers.filter { $0.status == "ready" }
+    }
+    private var provider: ProviderSnapshot? {
+        app.providers.first { $0.provider == app.pendingNewAgentProvider }
+    }
+    private var models: [ModelDefinition] {
+        (provider?.models ?? []).filter { !app.isModelBlocked(provider: app.pendingNewAgentProvider, modelId: $0.id) }
+    }
+    private var effectiveModelId: String? {
+        app.pendingNewAgentModel ?? models.first(where: { $0.isDefault == true })?.id ?? models.first?.id
+    }
+    private var currentModelLabel: String {
+        models.first(where: { $0.id == effectiveModelId })?.label ?? "默认模型"
+    }
+}
+
+private struct ComposerProviderGlyph: View {
+    let provider: String?
+    private let glyphSize = CGFloat(13)
+
+    var body: some View {
+        if let image = tinyBrandImage {
+            Image(nsImage: image)
+                .interpolation(.high)
+                .frame(width: glyphSize, height: glyphSize)
+        } else {
+            DSIcon(name: "sparkle", size: 11, weight: .medium)
+                .foregroundStyle(DS.text2)
+                .frame(width: glyphSize, height: glyphSize)
+        }
+    }
+
+    private var tinyBrandImage: NSImage? {
+        guard let source = ProviderGlyph.brandImage(provider) else { return nil }
+        let size = NSSize(width: glyphSize, height: glyphSize)
+        let image = NSImage(size: size)
+        image.lockFocus()
+        source.draw(
+            in: NSRect(origin: .zero, size: size),
+            from: NSRect(origin: .zero, size: source.size),
+            operation: .sourceOver,
+            fraction: 1
+        )
+        image.unlockFocus()
+        return image
+    }
+}
+
+private struct PendingModePickerPill: View {
+    @Environment(AppViewModel.self) private var app
+
+    var body: some View {
+        if !modes.isEmpty {
+            Menu {
+                ForEach(modes) { mode in
+                    Button {
+                        if app.pendingNewAgentProvider == "opencode", mode.id == "full-access" {
+                            app.pendingNewAgentModeId = "build"
+                            app.setPendingNewAgentFeature(featureId: "auto_accept", value: .bool(true))
+                        } else {
+                            app.pendingNewAgentModeId = mode.id
+                        }
+                    } label: {
+                        Text(mode.label + (mode.id == effectiveModeId ? "  ✓" : ""))
+                    }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    DSIcon(name: modeIcon, size: 13).foregroundStyle(riskColor)
+                    Text(currentLabel).font(.system(size: 13)).foregroundStyle(riskColor)
+                    DSIcon(name: "chevron-down", size: 13).foregroundStyle(DS.text3)
+                }
+                .pillSurface()
+            }
+            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        }
+    }
+
+    private var modes: [AgentMode] {
+        app.providers.first(where: { $0.provider == app.pendingNewAgentProvider })?.modes ?? []
+    }
+    private var effectiveModeId: String? {
+        app.pendingNewAgentModeId
+            ?? app.providers.first(where: { $0.provider == app.pendingNewAgentProvider })?.defaultModeId
+            ?? modes.first?.id
+    }
+    private var currentLabel: String { modes.first(where: { $0.id == effectiveModeId })?.label ?? "Mode" }
+    private var modeIcon: String {
+        switch effectiveModeId {
+        case "bypassPermissions", "full-access": return "lock-open"
+        case "acceptEdits", "auto": return "shield-check"
+        case "plan": return "shield"
+        default: return "shield-check"
+        }
+    }
+    private var riskColor: Color {
+        switch effectiveModeId {
+        case "bypassPermissions", "full-access": return DS.red
+        case "acceptEdits", "auto": return DS.orange
+        case "plan": return AccentPalette.terracotta.accent
+        case "auto-review": return DS.greenSoftTX
+        default: return DS.greenSoftTX
+        }
+    }
+}
+
+private struct PendingThinkingPickerPill: View {
+    @Environment(AppViewModel.self) private var app
+
+    var body: some View {
+        if !options.isEmpty {
+            Menu {
+                ForEach(options) { option in
+                    Button { app.pendingNewAgentThinkingOptionId = option.id } label: {
+                        Text(option.label + (option.id == effectiveId ? "  ✓" : ""))
+                    }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Text("Thinking: \(currentLabel)").font(.system(size: 13)).foregroundStyle(DS.text)
+                    DSIcon(name: "chevron-down", size: 13).foregroundStyle(DS.text3)
+                }
+                .pillSurface()
+            }
+            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        }
+    }
+
+    private var model: ModelDefinition? {
+        let provider = app.providers.first { $0.provider == app.pendingNewAgentProvider }
+        let modelId = app.pendingNewAgentModel
+            ?? provider?.models?.first(where: { $0.isDefault == true })?.id
+            ?? provider?.models?.first?.id
+        return provider?.models?.first { $0.id == modelId }
+    }
+    private var options: [SelectOption] {
+        (model?.thinkingOptions ?? []).filter { !brokenThinkingOptionIds.contains($0.id) }
+    }
+    private var effectiveId: String? {
+        app.pendingNewAgentThinkingOptionId ?? model?.defaultThinkingOptionId
+    }
+    private var currentLabel: String {
+        options.first(where: { $0.id == effectiveId })?.label ?? "off"
     }
 }
 

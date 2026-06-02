@@ -21,3 +21,4 @@ build/
 
 # Claude Code local docs
 CLAUDE.md
+.claude/

@@ -3,33 +3,36 @@ import AppKit
 
 // MARK: - Docked workspace panel (prototype `FilePanel`)
 //
-// Docks on the right of the whole conversation as a collapsible 3rd split column
-// (not a window). Tabs: 变更 (left, default) / 文件 (right). Clicking a file link
-// in the transcript, the header changes button, or a file row expands the panel
-// and locates the target — no path/breadcrumb on the file view. Shares the header
-// toggle. Changes are derived from the agent's Edit/Write tool calls this session.
+// Docks on the right of the whole conversation as a collapsible 3rd split column.
+// Tabs: 变更 (left, default) / 文件 (right). File content opens in a separate
+// workspace preview page so it gets conversation-width space instead of being
+// squeezed into this narrow navigation panel.
 
 @MainActor
 @Observable
 final class WorkspacePanelModel {
     var isOpen = false
     var tab = "changes"            // "changes" | "files"
-    var filePath: String? = nil    // non-nil + tab=="files" → show file content
-    var lineStart: Int? = nil
-    var lineEnd: Int? = nil
-    var nonce = 0
+    /// When set, the conversation column shows a full-page in-window file
+    /// preview over the transcript+composer (NOT a separate window, NOT a
+    /// narrow docked column). Cleared by the preview's close (✕) button.
+    var previewRoute: WorkspaceFilePreviewRoute? = nil
 
     func toggle() { isOpen.toggle() }
-    func openChanges() { tab = "changes"; filePath = nil; isOpen = true }
-    func openFile(_ raw: String) {
-        let p = WorkspaceFilePreviewRouting.parseLocation(raw)
-        filePath = p.path; lineStart = p.lineStart; lineEnd = p.lineEnd
-        tab = "files"; isOpen = true; nonce += 1
+    func openChanges() { tab = "changes"; isOpen = true }
+    func toggleChanges() {
+        if isOpen, tab == "changes" { close() }
+        else { openChanges() }
     }
-    func openListed(_ path: String) {
-        filePath = path; lineStart = nil; lineEnd = nil; tab = "files"; isOpen = true; nonce += 1
+    func openFile(cwd: String, raw: String) {
+        previewRoute = WorkspaceFilePreviewRouting.forceRoute(cwd: cwd, rawLocation: raw)
+        isOpen = false
     }
-    func back() { filePath = nil; nonce += 1 }
+    func openListed(cwd: String, path: String) {
+        previewRoute = WorkspaceFilePreviewRouting.forceRoute(cwd: cwd, rawLocation: path)
+        isOpen = false
+    }
+    func closePreview() { previewRoute = nil }
     func close() { isOpen = false }
 }
 
@@ -70,7 +73,6 @@ struct WorkspacePanelView: View {
         let on = model.tab == id
         return Button {
             model.tab = id
-            if id == "changes" { model.filePath = nil }
         } label: {
             Text(label).font(.system(size: 14, weight: on ? .semibold : .regular))
                 .foregroundStyle(on ? DS.text : DS.text3)
@@ -82,19 +84,9 @@ struct WorkspacePanelView: View {
 
     @ViewBuilder private var content: some View {
         if model.tab == "changes" {
-            ChangesTab(changes: deriveChanges(vm), onOpen: { model.openListed($0) })
+            ChangesTab(changes: deriveChanges(vm), onOpen: { model.openListed(cwd: cwd, path: $0) })
         } else {
-            // Keep FilesTab mounted as the base layer so it never flashes
-            // when a file is selected. FileContentTab slides in on top.
-            ZStack(alignment: .top) {
-                FilesTab(cwd: cwd, onOpen: { model.openListed($0) })
-                if let path = model.filePath {
-                    FileContentTab(cwd: cwd, path: path, lineStart: model.lineStart, lineEnd: model.lineEnd,
-                                   nonce: model.nonce, onBack: { model.back() })
-                    .background(DS.contentBG)
-                    .transition(.opacity)
-                }
-            }
+            FilesTab(cwd: cwd, onOpen: { model.openListed(cwd: cwd, path: $0) })
         }
     }
 }
@@ -227,77 +219,5 @@ private struct FilesTab: View {
         defer { loading = false }
         do { entries = try await app.listWorkspaceDirectory(cwd: cwd, path: path).entries }
         catch let err { error = err.localizedDescription; entries = [] }
-    }
-}
-
-// MARK: - file content (back + bare filename + line badge; code/md/image)
-
-private struct FileContentTab: View {
-    let cwd: String
-    let path: String
-    let lineStart: Int?
-    let lineEnd: Int?
-    let nonce: Int
-    let onBack: () -> Void
-    @Environment(AppViewModel.self) private var app
-    @State private var file: FileExplorerFile? = nil
-    @State private var imageData: Data? = nil
-    @State private var loading = false
-    @State private var error: String? = nil
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 6) {
-                IconButton(icon: "chevron-up", box: 24, glyph: 16, help: "返回文件列表", action: onBack)
-                    .rotationEffect(.degrees(-90))
-                Text(URL(fileURLWithPath: path).lastPathComponent).font(.system(size: 13, weight: .medium)).foregroundStyle(DS.text).lineLimit(1)
-                if let s = lineStart {
-                    Text(lineEnd.map { "line \(s)-\($0)" } ?? "line \(s)")
-                        .font(.system(size: 11, weight: .semibold)).foregroundStyle(AccentPalette.terracotta.accent)
-                        .padding(.horizontal, 8).padding(.vertical, 2)
-                        .background(AccentPalette.terracotta.tint, in: RoundedRectangle(cornerRadius: 5))
-                }
-                Spacer()
-            }
-            .padding(.horizontal, 8).frame(height: 40)
-            .background(Color(hex: 0xFBFBFA))
-            .overlay(alignment: .bottom) { Rectangle().fill(DS.divider).frame(height: 1) }
-            body0
-        }
-        .task(id: "\(path)|\(nonce)") { await load() }
-    }
-
-    @ViewBuilder private var body0: some View {
-        if let error {
-            VStack(spacing: 8) { Spacer(); DSIcon(name: "alert", size: 24).foregroundStyle(DS.orange); Text(error).font(.system(size: 12.5)).foregroundStyle(DS.text2).multilineTextAlignment(.center).padding(.horizontal, 20); Spacer() }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if loading {
-            VStack { Spacer(); ProgressView(); Spacer() }.frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if let f = file {
-            if f.kind == "image", let d = imageData, let ns = NSImage(data: d) {
-                ScrollView([.horizontal, .vertical]) { Image(nsImage: ns).resizable().interpolation(.high).scaledToFit().padding(16) }
-            } else if f.kind == "text", let content = f.content {
-                if (path.lowercased().hasSuffix(".md") || path.lowercased().hasSuffix(".markdown")), lineStart == nil {
-                    ScrollView { MarkdownBodyView(text: content, workspaceCwd: cwd).frame(maxWidth: .infinity, alignment: .leading).padding(18) }
-                } else {
-                    WorkspaceCodePreview(content: content, filePath: f.path, revisionToken: "\(f.modifiedAt)|\(f.size)", lineStart: lineStart, lineEnd: lineEnd)
-                }
-            } else {
-                VStack(spacing: 8) { Spacer(); DSIcon(name: "file-text", size: 28).foregroundStyle(DS.text3); Text("无法以文本渲染（二进制 · \(ByteCountFormatter.string(fromByteCount: Int64(f.size), countStyle: .file))）").font(.system(size: 13)).foregroundStyle(DS.text3); Spacer() }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-        }
-    }
-
-    private func load() async {
-        guard !cwd.isEmpty else { return }
-        loading = true; error = nil
-        defer { loading = false }
-        do {
-            let readPath = WorkspaceFilePreviewRouting.normalizePathForWorkspace(path, cwd: cwd) ?? path
-            let f = try await app.readWorkspaceFile(cwd: cwd, path: readPath)
-            file = f
-            imageData = (f.kind == "image" && f.encoding == "base64") ? f.content.flatMap { Data(base64Encoded: $0) } : nil
-        } catch let err { file = nil; imageData = nil; error = err.localizedDescription }
     }
 }

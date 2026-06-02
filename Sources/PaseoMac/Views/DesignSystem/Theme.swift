@@ -33,7 +33,7 @@ enum DS {
     static let hoverStrong   = Color.black.opacity(0.07)
 
     // text
-    static let text      = Color(hex: 0x1D1D1F)
+    static let text      = Color(hex: 0x343438)
     static let text2     = Color(hex: 0x6E6E73)
     static let text3     = Color(hex: 0x9A9A9F)
     static let textFaint = Color(hex: 0xB6B6BA)
