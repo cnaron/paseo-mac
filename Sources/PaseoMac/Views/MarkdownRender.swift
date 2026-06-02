@@ -385,11 +385,18 @@ enum Markdown {
 
         for match in matches {
             guard let strRange = Range(match.range, in: plain) else { continue }
-            let raw = String(plain[strRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+            var raw = String(plain[strRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+            // Strip trailing non-ASCII punctuation (e.g. 。，！) that can't be in a file path
+            while let lastScalar = raw.unicodeScalars.last,
+                  lastScalar.value > 0x7F,
+                  !lastScalar.properties.isAlphabetic,
+                  lastScalar.properties.numericType == nil {
+                raw.unicodeScalars.removeLast()
+            }
             guard !raw.isEmpty else { continue }
 
             let startOff = plain.distance(from: plain.startIndex, to: strRange.lowerBound)
-            let endOff = plain.distance(from: plain.startIndex, to: strRange.upperBound)
+            let endOff = startOff + raw.count
             let charStart = str.characters.index(str.characters.startIndex, offsetBy: startOff)
             let charEnd = str.characters.index(str.characters.startIndex, offsetBy: endOff)
             let attrRange = charStart..<charEnd
