@@ -45,20 +45,9 @@ final class AppViewModel {
         didSet {
             if let id = selectedAgentId, id != AppViewModel.pendingAgentId {
                 UserDefaults.standard.set(id, forKey: "paseomac.lastSelectedAgentId")
-                // Opening a conversation marks it seen — clears the sidebar
-                // "等待中" attention pulse (a later attention/permission/fail
-                // event re-sets it).
-                clearAttention(for: id)
-            }
-            if oldValue != selectedAgentId {
-                selectedAgentDidChange?()
             }
         }
     }
-    /// AppKit's transcript island is not part of SwiftUI's observation tree.
-    /// Notify it synchronously so it switches in the same event turn as the
-    /// header and composer islands.
-    @ObservationIgnored var selectedAgentDidChange: (() -> Void)? = nil
     var pendingNewAgentCwd: String? = nil
     var pendingNewAgentProvider: String = "claude"
     var pendingNewAgentModel: String? = nil
@@ -474,7 +463,6 @@ final class AppViewModel {
             let vm = self.conversation(for: AppViewModel.pendingAgentId)
             vm.composerText = restoreText
             vm.pendingImages = restoreImages
-            vm.saveDraft()
         }
         creatingAgentText = text
         creatingAgentImages = images
@@ -579,7 +567,6 @@ final class AppViewModel {
                 ])
                 vm.composerText = text
                 vm.pendingImages = images
-                vm.saveDraft()
                 vm.lastError = "Send failed: \(error.localizedDescription)"
             }
         } else {
@@ -972,25 +959,6 @@ final class AppViewModel {
         return agents.first { $0.id == id } ?? archivedAgents.first { $0.id == id }
     }
 
-    /// Resolve an agent id to its workspace directory, including archived
-    /// agents so historical chats can still open file previews.
-    func workspaceCwd(for agentId: String) -> String? {
-        agents.first(where: { $0.id == agentId })?.cwd
-            ?? archivedAgents.first(where: { $0.id == agentId })?.cwd
-    }
-
-    /// Read-only workspace explorer RPC passthrough.
-    func listWorkspaceDirectory(cwd: String, path: String = ".") async throws -> FileExplorerDirectory {
-        guard let client else { throw DaemonError.notConnected }
-        return try await client.listWorkspaceDirectory(cwd: cwd, path: path)
-    }
-
-    /// Read-only workspace file RPC passthrough.
-    func readWorkspaceFile(cwd: String, path: String) async throws -> FileExplorerFile {
-        guard let client else { throw DaemonError.notConnected }
-        return try await client.readWorkspaceFile(cwd: cwd, path: path)
-    }
-
     func isArchivedAgent(_ agentId: String) -> Bool {
         archivedAgents.contains(where: { $0.id == agentId })
     }
@@ -1321,15 +1289,16 @@ final class AppViewModel {
                 }
             case .turnCompleted:
                 EventLogger.shared.log("turn", "completed", ["agent": agentId])
-            case .turnFailed(let err):
+            case .turnFailed:
                 EventLogger.shared.log("turn", "failed", ["agent": agentId])
-                maybeBlockFromError(agentId: agentId, message: err)
             case .turnCanceled:
                 EventLogger.shared.log("turn", "canceled", ["agent": agentId])
             case .attentionRequired(let reason):
                 EventLogger.shared.log("turn", "attention", ["agent": agentId, "reason": reason])
             case .permissionRequested:
                 EventLogger.shared.log("turn", "permission_requested", ["agent": agentId])
+            case .turnFailed(let err):
+                maybeBlockFromError(agentId: agentId, message: err)
             case .timelineUpdated(let item):
                 if case .error(let msg) = item {
                     maybeBlockFromError(agentId: agentId, message: msg)
@@ -1394,30 +1363,9 @@ final class AppViewModel {
              .sendAgentMessageResponse, .setAgentModeResponse, .setAgentModelResponse,
              .setAgentThinkingResponse, .setAgentFeatureResponse, .agentRewindResponse,
              .getProvidersSnapshotResponse, .cancelAgentResponse,
-             .fetchWorkspacesResponse, .fileExplorerResponse,
-             .fetchRecentProviderSessionsResponse, .unknown:
+             .fetchWorkspacesResponse, .fetchRecentProviderSessionsResponse, .unknown:
             break
         }
-    }
-
-    /// Clears the attention flag for an agent (the sidebar "等待中" pulse).
-    /// State reads `liveStatus[id]?.requiresAttention ?? snapshot.requiresAttention`,
-    /// so we set a live entry with the flag false — that overrides a stale
-    /// snapshot fallback too. No-op when nothing is flagged, to avoid needless
-    /// observation churn.
-    func clearAttention(for id: String) {
-        let liveFlagged = liveStatus[id]?.requiresAttention ?? false
-        let snapshotFlagged = liveStatus[id] == nil
-            && (agents.first(where: { $0.id == id })?.requiresAttention ?? false)
-        guard liveFlagged || snapshotFlagged else { return }
-        var live = liveStatus[id] ?? LiveStatus(
-            status: agents.first(where: { $0.id == id })?.status ?? "idle",
-            requiresAttention: false,
-            attentionReason: nil
-        )
-        live.requiresAttention = false
-        live.attentionReason = nil
-        liveStatus[id] = live
     }
 
     private func applyLiveStatus(agentId: String, event: AgentStreamEvent) {

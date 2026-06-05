@@ -36,23 +36,6 @@ struct PaseoMacApp: App {
             }
         }
 
-        WindowGroup("Workspace Files", for: WorkspaceFilePreviewRoute.self) { routeBinding in
-            if let route = routeBinding.wrappedValue {
-                WorkspaceFilePreviewWindow(route: route)
-                    .environment(appModel)
-                    .environment(settings)
-                    .frame(minWidth: 900, minHeight: 620)
-            } else {
-                ContentUnavailableView(
-                    "No file selected",
-                    systemImage: "doc",
-                    description: Text("Open a file from a conversation link or the Files button.")
-                )
-                .frame(minWidth: 640, minHeight: 420)
-            }
-        }
-        .windowResizability(.contentMinSize)
-
         Settings {
             PreferencesView()
                 .environment(settings)

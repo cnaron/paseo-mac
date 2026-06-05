@@ -35,8 +35,6 @@ struct ComposerTextView: NSViewRepresentable {
         textView.textContainer?.widthTracksTextView = true
         textView.textContainer?.lineFragmentPadding = 4
         textView.autoresizingMask = [.width]
-        textView.string = text
-        textView.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
         textView.registerForDraggedTypes([
             .fileURL, .png, .tiff, .string
         ])
@@ -57,44 +55,33 @@ struct ComposerTextView: NSViewRepresentable {
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        // Refresh the coordinator's binding closures so textDidChange always
-        // writes to the current vm, not the one captured at makeCoordinator time.
-        context.coordinator.parent = self
         guard let textView = scrollView.documentView as? DropInterceptingTextView else { return }
 
         // Never touch content or font while the IME has marked text (中文/日文 输入法).
         // Setting textView.string or even textView.font during IME composition can
         // silently cancel the in-progress candidate, causing "swallowed" characters.
         let hasIME = textView.markedRange().length > 0
-        let forced = forceUpdate != context.coordinator.lastForceUpdate
-        if forced { context.coordinator.lastForceUpdate = forceUpdate }
 
         if !hasIME && textView.string != text {
             if text.isEmpty {
-                // Dictation can commit into NSTextView one run-loop before its
-                // binding catches up. Only clear an actively edited text view
-                // when the caller explicitly marked a programmatic overwrite.
-                let typedRecently = Date().timeIntervalSince(context.coordinator.lastUserTypedAt) < 1.0
-                let protected = !forced && (context.coordinator.isUserEditing || typedRecently)
-                if protected {
-                    context.coordinator.parent.text = textView.string
-                } else {
-                    context.coordinator.lastUserTypedAt = .distantPast
-                    textView.string = ""
-                    textView.setSelectedRange(NSRange(location: 0, length: 0))
-                }
+                // Programmatic clear (send action). Always apply.
+                // Also reset the recency guard so it doesn't block the next clear.
+                context.coordinator.lastUserTypedAt = .distantPast
+                textView.string = ""
+                textView.setSelectedRange(NSRange(location: 0, length: 0))
             } else {
                 // External non-empty change (draft restore, history nav, editQueued).
                 // Block if the user typed recently — they're ahead of binding propagation.
                 // forceUpdate bypasses this protection for intentional overwrites.
+                let forced = forceUpdate != context.coordinator.lastForceUpdate
+                if forced { context.coordinator.lastForceUpdate = forceUpdate }
                 let typedRecently = Date().timeIntervalSince(context.coordinator.lastUserTypedAt) < 1.0
                 let protected = !forced && (context.coordinator.isUserEditing || typedRecently)
                 if !protected {
                     let sel = textView.selectedRange()
-                    let restoringDraft = textView.string.isEmpty
                     textView.string = text
                     let safe = NSRange(
-                        location: restoringDraft ? (textView.string as NSString).length : min(sel.location, (textView.string as NSString).length),
+                        location: min(sel.location, textView.string.count),
                         length: 0
                     )
                     textView.setSelectedRange(safe)
@@ -113,11 +100,7 @@ struct ComposerTextView: NSViewRepresentable {
     // MARK: - Coordinator
 
     final class Coordinator: NSObject, NSTextViewDelegate {
-        // Must be `var` so updateNSView can refresh the binding closures when
-        // the parent struct is recreated (e.g. on VM switch). If this stays
-        // `let`, textDidChange writes to a stale vm and composerText is never
-        // updated → send button stays gray + typed characters get overwritten.
-        var parent: ComposerTextView
+        let parent: ComposerTextView
         weak var textView: NSTextView?
         var sentHistory: [String] = []
         var historyIndex: Int = -1
@@ -166,7 +149,6 @@ struct ComposerTextView: NSViewRepresentable {
             }
             tv.scrollRangeToVisible(tv.selectedRange())
         }
-
     }
 }
 

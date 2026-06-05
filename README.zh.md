@@ -4,14 +4,6 @@
 
 用于远程管理 [Claude Code](https://claude.ai/code) 代理的原生 macOS 客户端。Claude Code 运行在你的服务器或 VPS 上，这个 App 让你从 Mac 连接并与之交互。
 
-## 截图
-
-![PaseoMac 主界面](docs/assets/screenshot-main.png)
-
-| 侧边栏 — 会话实时状态 | 附件、排队消息与用量面板 |
-|---|---|
-| ![侧边栏的进行中/等待中/已完成状态](docs/assets/screenshot-sidebar.png) | ![带排队消息和用量面板的输入区](docs/assets/screenshot-composer.png) |
-
 ## 为什么要做这个 App
 
 [Paseo](https://github.com/getpaseo) 有官方的 Mac 客户端。它能用，但基于 Electron，内存占用明显——如果你整天开着它，和其他工具并排跑，这个问题就很突出。

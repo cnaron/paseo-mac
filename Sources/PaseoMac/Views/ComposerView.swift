@@ -342,14 +342,11 @@ struct ComposerView: View {
         if app.pendingNewAgentCwd != nil {
             let text = vm.composerText.trimmingCharacters(in: .whitespacesAndNewlines)
             let images = vm.pendingImages
-            vm.composerForceUpdate &+= 1
             vm.composerText = ""
             vm.pendingImages = []
             vm.pendingTextFiles = []
-            vm.saveDraft()
             Task { await app.submitPendingAgent(text: text, images: images) }
         } else {
-            if !vm.isAgentWorking { vm.requestTailCompensation() }
             Task { await vm.sendComposer() }
         }
     }

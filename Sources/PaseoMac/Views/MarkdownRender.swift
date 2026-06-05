@@ -2,16 +2,6 @@ import SwiftUI
 import AppKit
 
 enum Markdown {
-    static let fileLinkColor = dynamicColor(
-        light: NSColor(red: 0x23 / 255.0, green: 0x99 / 255.0, blue: 0x56 / 255.0, alpha: 1),
-        dark: NSColor(red: 0x7c / 255.0, green: 0xcb / 255.0, blue: 0xa0 / 255.0, alpha: 1)
-    )
-    static let fileSelectionColor = dynamicColor(
-        light: NSColor(red: 0xec / 255.0, green: 0xec / 255.0, blue: 0xf1 / 255.0, alpha: 1),
-        dark: NSColor(red: 0x2f / 255.0, green: 0x35 / 255.0, blue: 0x34 / 255.0, alpha: 1)
-    )
-    static let inlineCodeForeground = Color.primary.opacity(0.9)
-    static let inlineCodeBackground = Color.secondary.opacity(0.14)
 
     enum Block: Hashable {
         case heading(level: Int, text: String)
@@ -329,23 +319,19 @@ enum Markdown {
         guard var parsed = try? AttributedString(markdown: processed, options: options) else {
             return AttributedString(s)
         }
-        // Style inline `code` spans: neutral foreground on subtle gray tint.
+        // Style inline `code` spans: blue foreground on subtle gray tint.
         for run in parsed.runs {
             guard let intent = run.inlinePresentationIntent,
                   intent.contains(.code) else { continue }
             var container = AttributeContainer()
-            container.foregroundColor = inlineCodeForeground
-            container.backgroundColor = inlineCodeBackground
+            container.foregroundColor = Color.blue
+            container.backgroundColor = Color.secondary.opacity(0.15)
             parsed[run.range].mergeAttributes(container)
         }
         // Auto-link plain URLs that markdown didn't already turn into links.
         // Runs NSDataDetector on the rendered plain text and stamps .link +
         // .underlineStyle onto any URL span not already carrying a link attribute.
         autoLinkURLs(in: &parsed)
-        // Detect absolute file references in assistant output so users can
-        // click directly into the workspace file preview pane.
-        autoLinkFileLocations(in: &parsed)
-        styleLinks(in: &parsed)
         return parsed
     }
 
@@ -370,72 +356,6 @@ enum Markdown {
             }
         }
     }
-
-    /// Turns absolute file references like `/repo/README.md:42` into
-    /// tappable custom-scheme links. We intentionally scope this to absolute
-    /// paths to avoid over-linking normal prose.
-    private static func autoLinkFileLocations(in str: inout AttributedString) {
-        let plain = String(str.characters)
-        guard !plain.isEmpty else { return }
-
-        let pattern = #"(?<![\w~])/(?:[^\s`:<>()\[\]{}"']+/)*[^\s`:<>()\[\]{}"']+(?::\d+(?:-\d+)?)?"#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return }
-        let nsRange = NSRange(plain.startIndex..., in: plain)
-        let matches = regex.matches(in: plain, range: nsRange)
-
-        for match in matches {
-            guard let strRange = Range(match.range, in: plain) else { continue }
-            var raw = String(plain[strRange]).trimmingCharacters(in: .whitespacesAndNewlines)
-            // Strip trailing non-ASCII punctuation (e.g. 。，！) that can't be in a file path
-            while let lastScalar = raw.unicodeScalars.last,
-                  lastScalar.value > 0x7F,
-                  !lastScalar.properties.isAlphabetic,
-                  lastScalar.properties.numericType == nil {
-                raw.unicodeScalars.removeLast()
-            }
-            guard !raw.isEmpty else { continue }
-
-            let startOff = plain.distance(from: plain.startIndex, to: strRange.lowerBound)
-            let endOff = startOff + raw.count
-            let charStart = str.characters.index(str.characters.startIndex, offsetBy: startOff)
-            let charEnd = str.characters.index(str.characters.startIndex, offsetBy: endOff)
-            let attrRange = charStart..<charEnd
-            guard str[attrRange].link == nil else { continue }
-            guard let url = WorkspaceFilePreviewRouting.makeLinkURL(rawLocation: raw) else { continue }
-            str[attrRange].link = url
-            str[attrRange].underlineStyle = .single
-            str[attrRange].foregroundColor = fileLinkColor
-        }
-    }
-
-    private static func styleLinks(in str: inout AttributedString) {
-        for run in str.runs {
-            guard let link = run.link, isFileLink(link) else { continue }
-            str[run.range].foregroundColor = fileLinkColor
-            str[run.range].underlineStyle = .single
-        }
-    }
-
-    private static func isFileLink(_ url: URL) -> Bool {
-        if url.scheme?.lowercased() == WorkspaceFilePreviewRouting.linkScheme {
-            return true
-        }
-        if url.isFileURL {
-            return true
-        }
-        if let scheme = url.scheme, !scheme.isEmpty {
-            return false
-        }
-        let raw = url.absoluteString.removingPercentEncoding ?? url.absoluteString
-        return raw.hasPrefix("/") || raw.hasPrefix("./") || raw.hasPrefix("../")
-    }
-
-    private static func dynamicColor(light: NSColor, dark: NSColor) -> Color {
-        Color(nsColor: NSColor(name: nil) { appearance in
-            let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            return isDark ? dark : light
-        })
-    }
 }
 
 // MARK: - Block renderer
@@ -444,9 +364,7 @@ enum Markdown {
 struct MarkdownBodyView: View {
     let text: String
     var isStreaming: Bool = false
-    var workspaceCwd: String? = nil
     @Environment(SettingsStore.self) private var settings
-    @Environment(\.openWindow) private var openWindow
     @State private var shownBlockCount: Int = 0
 
     var body: some View {
@@ -531,20 +449,6 @@ struct MarkdownBodyView: View {
             }
         }
         .textSelection(.enabled)
-        .environment(\.openURL, OpenURLAction { url in
-            let rawLocation = WorkspaceFilePreviewRouting.parseRawLocation(from: url)
-                ?? inferFileLocationCandidate(from: url)
-            guard let rawLocation else {
-                return .systemAction(url)
-            }
-            if let cwd = workspaceCwd, !cwd.isEmpty {
-                let route = WorkspaceFilePreviewRouting.forceRoute(cwd: cwd, rawLocation: rawLocation)
-                openWindow(value: route)
-            } else {
-                FileLocationOpener.open(FileLocation.parse(rawLocation))
-            }
-            return .handled
-        })
         .onAppear { shownBlockCount = blocks.count }
         .onChange(of: blocks.count) { _, newCount in
             guard newCount > shownBlockCount else { return }
@@ -570,20 +474,6 @@ struct MarkdownBodyView: View {
         case 3: return 16
         default: return 14
         }
-    }
-
-    private func inferFileLocationCandidate(from url: URL) -> String? {
-        if url.isFileURL {
-            return url.path
-        }
-        if let scheme = url.scheme, !scheme.isEmpty {
-            return nil
-        }
-        let raw = url.absoluteString.removingPercentEncoding ?? url.absoluteString
-        guard !raw.isEmpty,
-              !raw.hasPrefix("#"),
-              !raw.contains("://") else { return nil }
-        return raw
     }
 }
 
@@ -850,12 +740,11 @@ enum SyntaxHighlighter {
         let comment: Color
 
         static var dynamic: Palette {
-            // Design v1 code palette (prototype .tok-* tokens).
             Palette(
-                keyword: DS.tokKey,
-                string: DS.tokStr,
-                number: DS.tokNum,
-                comment: DS.tokCom
+                keyword: Color(nsColor: .systemPurple),
+                string: Color(nsColor: .systemRed),
+                number: Color(nsColor: .systemTeal),
+                comment: Color.secondary
             )
         }
     }
