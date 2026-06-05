@@ -708,8 +708,16 @@ private struct MessageList: View {
                         PinnedBar(
                             pins: vm.pinnedMessages,
                             onTap: { id in
-                                withAnimation(.easeInOut(duration: 0.2)) {
+                                // Suppress the streaming auto-scroll-to-bottom so the
+                                // jump isn't immediately yanked back while the agent
+                                // is replying.
+                                suppressAutoScroll = true
+                                withAnimation(.easeInOut(duration: 0.25)) {
                                     proxy.scrollTo(id, anchor: .center)
+                                }
+                                Task {
+                                    try? await Task.sleep(nanoseconds: 700_000_000)
+                                    suppressAutoScroll = false
                                 }
                             },
                             onUnpin: { id in vm.unpin(id: id) }
@@ -816,16 +824,22 @@ private struct PinnedBar: View {
             HStack(spacing: 8) {
                 ForEach(pins) { pin in
                     HStack(spacing: 6) {
-                        RoundedRectangle(cornerRadius: 1.5)
-                            .fill(Color.accentColor)
-                            .frame(width: 3, height: 22)
-                        Image(systemName: pin.kind == "user" ? "person.crop.circle.fill" : "sparkles")
-                            .font(.system(size: 9))
-                            .foregroundStyle(.secondary)
-                        Text(pin.snippet)
-                            .font(.caption2)
-                            .lineLimit(1)
-                            .foregroundStyle(.primary)
+                        Button { onTap(pin.id) } label: {
+                            HStack(spacing: 6) {
+                                RoundedRectangle(cornerRadius: 1.5)
+                                    .fill(Color.accentColor)
+                                    .frame(width: 3, height: 22)
+                                Image(systemName: pin.kind == "user" ? "person.crop.circle.fill" : "sparkles")
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(.secondary)
+                                Text(pin.snippet)
+                                    .font(.caption2)
+                                    .lineLimit(1)
+                                    .foregroundStyle(.primary)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
                         Button { onUnpin(pin.id) } label: {
                             Image(systemName: "xmark")
                                 .font(.system(size: 8, weight: .bold))
@@ -837,8 +851,6 @@ private struct PinnedBar: View {
                     .padding(.vertical, 5)
                     .background(.regularMaterial, in: Capsule())
                     .overlay(Capsule().strokeBorder(Color.primary.opacity(0.06)))
-                    .contentShape(Capsule())
-                    .onTapGesture { onTap(pin.id) }
                 }
             }
             .padding(.horizontal, 12)
