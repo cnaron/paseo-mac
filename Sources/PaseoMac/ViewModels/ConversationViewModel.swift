@@ -709,6 +709,16 @@ final class ConversationViewModel {
         case .timelineUpdated(let item):
             appendStreamedRow(item: item, seq: seq, timestamp: timestamp)
         case .permissionRequested(let payload):
+            // Diagnostic: confirm the daemon's permission_requested reaches us
+            // and decodes. If a question doesn't render, this distinguishes
+            // decode-failed (decoded=no) from never-arrived (no log at all).
+            EventLogger.shared.log("permission", "requested", [
+                "agent": agentId,
+                "decoded": payload != nil ? "yes" : "no",
+                "kind": payload?.kind ?? "nil",
+                "name": payload?.name ?? "nil",
+                "isQuestion": "\(payload?.isQuestion ?? false)"
+            ])
             currentPermissionRequestId = payload?.id
             pendingPermission = payload
             appendPermissionRow(timestamp: timestamp, requestId: payload?.id)
@@ -723,8 +733,13 @@ final class ConversationViewModel {
             guard reason != "finished" else { break }
             let linkedId = (reason == "permission") ? currentPermissionRequestId : nil
             appendAttentionRow(reason: reason, timestamp: timestamp, requestId: linkedId)
-        case .other:
-            break
+        case .other(let unhandledType):
+            // Diagnostic: a daemon stream event the client doesn't model. If a
+            // question fails to show, the permission may be arriving under an
+            // unexpected type and getting dropped here.
+            EventLogger.shared.log("stream", "unhandled_event", [
+                "agent": agentId, "type": unhandledType
+            ])
         }
     }
 

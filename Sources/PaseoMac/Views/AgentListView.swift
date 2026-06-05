@@ -52,10 +52,6 @@ struct AgentListView: View {
                 Divider()
                 DaemonVersionMismatchBanner(app: app)
             }
-            if app.claudeCodeUpdateAvailable {
-                Divider()
-                ClaudeCodeUpdateBanner(app: app)
-            }
             Divider()
             ArchivedToggleRow()
                 .environment(app)
