@@ -1625,10 +1625,12 @@ private func formatTimestamp(_ iso: String) -> String? {
     frac.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     let plain = ISO8601DateFormatter()
     guard let date = frac.date(from: iso) ?? plain.date(from: iso) else { return nil }
-    if Calendar.current.isDateInToday(date) {
-        return DateFormatter.localizedString(from: date, dateStyle: .none, timeStyle: .short)
-    }
-    return DateFormatter.localizedString(from: date, dateStyle: .short, timeStyle: .short)
+    // Full m/d/y hh:mm always (even today), POSIX-fixed so the order stays
+    // month/day/year regardless of the system locale.
+    let f = DateFormatter()
+    f.locale = Locale(identifier: "en_US_POSIX")
+    f.dateFormat = "M/d/yy HH:mm"
+    return f.string(from: date)
 }
 
 // MARK: - Per-bubble model + duration chip

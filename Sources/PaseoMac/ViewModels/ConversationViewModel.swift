@@ -271,6 +271,11 @@ final class ConversationViewModel {
 
     private let getClient: () -> DaemonClient?
     private var streamRowCounter: Int = 0
+    /// Optimistic user-bubble ids ("msg-...") that the daemon's user_message
+    /// echo has already been matched to. Lets the text-based fallback dedup
+    /// (in appendStreamedRow) tell an un-echoed bubble from one already
+    /// adopted, so repeated identical messages each keep exactly one bubble.
+    private var confirmedOptimisticRowIds: Set<String> = []
     /// Model the agent was running with when the most recent `turn_started`
     /// event fired. Used to tag subsequent assistant_message rows so a
     /// mid-conversation model switch is visible per bubble.
@@ -759,31 +764,46 @@ final class ConversationViewModel {
     }
 
     private func appendStreamedRow(item: TimelineItem, seq: Int?, timestamp: String) {
-        // Dedup optimistic user bubble: when our just-sent message echoes back
-        // with the messageId we chose, replace the local placeholder instead
-        // of appending a new row (which would show duplicated text once the
-        // merge logic coalesces both into one bubble).
-        if case let .userMessage(text, msgId) = item, let msgId {
-            let localId = "msg-\(msgId)"
-            if let idx = rows.firstIndex(where: { $0.id == localId }) {
+        // Dedup optimistic user bubble: when our just-sent message echoes back,
+        // adopt the local placeholder instead of appending a second row. The
+        // daemon does NOT reliably round-trip the messageId we chose (some
+        // versions mint their own id, or change the UUID's case), so matching
+        // on messageId alone left a duplicate bubble. We fall back to text.
+        if case let .userMessage(text, msgId) = item {
+            // 1. Exact match: the daemon echoed back the messageId we sent.
+            if let msgId, let idx = rows.firstIndex(where: { $0.id == "msg-\(msgId)" }) {
                 // Preserve the locally-attached image blobs — the daemon
                 // doesn't echo them back in the user_message payload.
                 rows[idx] = Row(
-                    id: localId,
-                    kind: "user",
-                    text: text,
-                    timestamp: timestamp,
-                    messageId: msgId,
-                    tool: nil,
-                    images: rows[idx].images
+                    id: "msg-\(msgId)", kind: "user", text: text, timestamp: timestamp,
+                    messageId: msgId, tool: nil, images: rows[idx].images
                 )
+                confirmedOptimisticRowIds.insert("msg-\(msgId)")
                 return
             }
-            // Also dedup against rows already loaded from fetchTimeline
-            // (which carry entry-xxx ids but the same messageId). Without
-            // this check, text-only new conversations show the user message
-            // twice: once from loadInitial() and once from the stream echo.
-            if rows.contains(where: { $0.messageId == msgId }) {
+            // 2. We already hold this messageId (case-insensitive): a row from
+            //    fetchTimeline/loadInitial, a replayed echo, or a bubble we
+            //    adopted in step 3 below. Nothing to add.
+            if let msgId, rows.contains(where: {
+                $0.messageId?.caseInsensitiveCompare(msgId) == .orderedSame
+            }) {
+                return
+            }
+            // 3. Fallback: the echo's messageId differs from what we sent (or is
+            //    absent). Adopt the oldest still-unconfirmed optimistic bubble
+            //    with identical text, so one send shows as one bubble no matter
+            //    what the daemon does with the id.
+            if let idx = rows.firstIndex(where: {
+                $0.kind == "user" && $0.id.hasPrefix("msg-")
+                    && !confirmedOptimisticRowIds.contains($0.id)
+                    && $0.text == text
+            }) {
+                let existing = rows[idx]
+                rows[idx] = Row(
+                    id: existing.id, kind: "user", text: text, timestamp: timestamp,
+                    messageId: msgId ?? existing.messageId, tool: nil, images: existing.images
+                )
+                confirmedOptimisticRowIds.insert(existing.id)
                 return
             }
         }
