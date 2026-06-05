@@ -598,6 +598,53 @@ actor DaemonClient {
         return match?.gitRuntime?.remoteUrl
     }
 
+    /// List one directory level under `path` for workspace `cwd`.
+    /// `path` is workspace-relative (default ".").
+    func listWorkspaceDirectory(cwd: String, path: String = ".") async throws -> FileExplorerDirectory {
+        let requestId = UUID().uuidString
+        let req = FileExplorerRequest(
+            requestId: requestId,
+            cwd: cwd,
+            path: path,
+            mode: .list,
+            acceptBinary: nil
+        )
+        let reply = try await requestResponse(requestId: requestId, outbound: .session(.fileExplorer(req)))
+        guard case let .fileExplorerResponse(resp) = reply else {
+            throw DaemonError.protocolError("Expected file_explorer_response, got \(reply)")
+        }
+        if let err = resp.payload.error, !err.isEmpty {
+            throw DaemonError.rpcFailed(err)
+        }
+        guard let directory = resp.payload.directory else {
+            throw DaemonError.protocolError("file_explorer_response missing directory payload")
+        }
+        return directory
+    }
+
+    /// Read one workspace file. `path` is workspace-relative.
+    func readWorkspaceFile(cwd: String, path: String) async throws -> FileExplorerFile {
+        let requestId = UUID().uuidString
+        let req = FileExplorerRequest(
+            requestId: requestId,
+            cwd: cwd,
+            path: path,
+            mode: .file,
+            acceptBinary: false
+        )
+        let reply = try await requestResponse(requestId: requestId, outbound: .session(.fileExplorer(req)))
+        guard case let .fileExplorerResponse(resp) = reply else {
+            throw DaemonError.protocolError("Expected file_explorer_response, got \(reply)")
+        }
+        if let err = resp.payload.error, !err.isEmpty {
+            throw DaemonError.rpcFailed(err)
+        }
+        guard let file = resp.payload.file else {
+            throw DaemonError.protocolError("file_explorer_response missing file payload")
+        }
+        return file
+    }
+
     func getProvidersSnapshot(cwd: String? = nil) async throws -> [ProviderSnapshot] {
         let requestId = UUID().uuidString
         let req = GetProvidersSnapshotRequest(requestId: requestId, cwd: cwd)
@@ -727,6 +774,7 @@ actor DaemonClient {
             case .getProvidersSnapshotResponse(let r): return r.payload.requestId
             case .cancelAgentResponse(let r): return r.payload.requestId
             case .fetchWorkspacesResponse(let r): return r.payload.requestId
+            case .fileExplorerResponse(let r): return r.payload.requestId
             case .fetchRecentProviderSessionsResponse(let r): return r.payload.requestId
             case .status(let r): return r.payload.requestId  // agent_created response
             default: return nil

@@ -131,6 +131,7 @@ enum SessionRequest: Encodable {
     case updateAgent(UpdateAgentRequest)
     case agentPermissionResponse(AgentPermissionResponseRequest)
     case fetchWorkspaces(FetchWorkspacesRequest)
+    case fileExplorer(FileExplorerRequest)
     case daemonConfigSet(DaemonConfigSetRequest)
     case fetchRecentProviderSessions(FetchRecentProviderSessionsRequest)
     case importAgent(ImportAgentRequest)
@@ -153,6 +154,7 @@ enum SessionRequest: Encodable {
         case .updateAgent(let r): try c.encode(r)
         case .agentPermissionResponse(let r): try c.encode(r)
         case .fetchWorkspaces(let r): try c.encode(r)
+        case .fileExplorer(let r): try c.encode(r)
         case .daemonConfigSet(let r): try c.encode(r)
         case .fetchRecentProviderSessions(let r): try c.encode(r)
         case .importAgent(let r): try c.encode(r)
@@ -615,6 +617,7 @@ enum SessionInbound: Decodable, @unchecked Sendable {
     case providersSnapshotUpdate(ProvidersSnapshotUpdatePayload)
     case cancelAgentResponse(CancelAgentResponse)
     case fetchWorkspacesResponse(FetchWorkspacesResponse)
+    case fileExplorerResponse(FileExplorerResponse)
     case fetchRecentProviderSessionsResponse(FetchRecentProviderSessionsResponse)
     case unknown(type: String, raw: Data)
 
@@ -658,6 +661,8 @@ enum SessionInbound: Decodable, @unchecked Sendable {
             self = .cancelAgentResponse(try JSONDecoder.paseo.decode(CancelAgentResponse.self, from: raw))
         case "fetch_workspaces_response":
             self = .fetchWorkspacesResponse(try JSONDecoder.paseo.decode(FetchWorkspacesResponse.self, from: raw))
+        case "file_explorer_response":
+            self = .fileExplorerResponse(try JSONDecoder.paseo.decode(FileExplorerResponse.self, from: raw))
         case "fetch_recent_provider_sessions_response":
             self = .fetchRecentProviderSessionsResponse(try JSONDecoder.paseo.decode(FetchRecentProviderSessionsResponse.self, from: raw))
         default:
@@ -1290,6 +1295,60 @@ enum AgentStreamEvent: Decodable, Sendable {
 struct FetchWorkspacesRequest: Encodable {
     let type = "fetch_workspaces_request"
     let requestId: String
+}
+
+enum FileExplorerMode: String, Codable, Sendable {
+    case list
+    case file
+}
+
+struct FileExplorerRequest: Encodable {
+    let type = "file_explorer_request"
+    let requestId: String
+    let cwd: String
+    var path: String?
+    let mode: FileExplorerMode
+    var acceptBinary: Bool?
+}
+
+struct FileExplorerEntry: Decodable, Sendable, Hashable {
+    let name: String
+    let path: String
+    let kind: String   // "file" | "directory"
+    let size: Int
+    let modifiedAt: String
+
+    var isDirectory: Bool { kind == "directory" }
+}
+
+struct FileExplorerFile: Decodable, Sendable, Hashable {
+    let path: String
+    let kind: String      // "text" | "image" | "binary"
+    let encoding: String  // "utf-8" | "base64" | "none"
+    let content: String?
+    let mimeType: String?
+    let size: Int
+    let modifiedAt: String
+}
+
+struct FileExplorerDirectory: Decodable, Sendable, Hashable {
+    let path: String
+    let entries: [FileExplorerEntry]
+}
+
+struct FileExplorerResponse: Decodable, Sendable {
+    let type: String
+    let payload: Payload
+
+    struct Payload: Decodable, Sendable {
+        let requestId: String
+        let cwd: String
+        let path: String
+        let mode: FileExplorerMode
+        let directory: FileExplorerDirectory?
+        let file: FileExplorerFile?
+        let error: String?
+    }
 }
 
 struct WorkspaceGitRuntime: Decodable, Sendable {

@@ -959,6 +959,25 @@ final class AppViewModel {
         return agents.first { $0.id == id } ?? archivedAgents.first { $0.id == id }
     }
 
+    /// Resolve an agent id to its workspace directory, including archived
+    /// agents so historical chats can still open file previews.
+    func workspaceCwd(for agentId: String) -> String? {
+        agents.first(where: { $0.id == agentId })?.cwd
+            ?? archivedAgents.first(where: { $0.id == agentId })?.cwd
+    }
+
+    /// Read-only workspace explorer RPC passthrough.
+    func listWorkspaceDirectory(cwd: String, path: String = ".") async throws -> FileExplorerDirectory {
+        guard let client else { throw DaemonError.notConnected }
+        return try await client.listWorkspaceDirectory(cwd: cwd, path: path)
+    }
+
+    /// Read-only workspace file RPC passthrough.
+    func readWorkspaceFile(cwd: String, path: String) async throws -> FileExplorerFile {
+        guard let client else { throw DaemonError.notConnected }
+        return try await client.readWorkspaceFile(cwd: cwd, path: path)
+    }
+
     func isArchivedAgent(_ agentId: String) -> Bool {
         archivedAgents.contains(where: { $0.id == agentId })
     }
@@ -1289,16 +1308,15 @@ final class AppViewModel {
                 }
             case .turnCompleted:
                 EventLogger.shared.log("turn", "completed", ["agent": agentId])
-            case .turnFailed:
+            case .turnFailed(let err):
                 EventLogger.shared.log("turn", "failed", ["agent": agentId])
+                maybeBlockFromError(agentId: agentId, message: err)
             case .turnCanceled:
                 EventLogger.shared.log("turn", "canceled", ["agent": agentId])
             case .attentionRequired(let reason):
                 EventLogger.shared.log("turn", "attention", ["agent": agentId, "reason": reason])
             case .permissionRequested:
                 EventLogger.shared.log("turn", "permission_requested", ["agent": agentId])
-            case .turnFailed(let err):
-                maybeBlockFromError(agentId: agentId, message: err)
             case .timelineUpdated(let item):
                 if case .error(let msg) = item {
                     maybeBlockFromError(agentId: agentId, message: msg)
@@ -1363,7 +1381,8 @@ final class AppViewModel {
              .sendAgentMessageResponse, .setAgentModeResponse, .setAgentModelResponse,
              .setAgentThinkingResponse, .setAgentFeatureResponse, .agentRewindResponse,
              .getProvidersSnapshotResponse, .cancelAgentResponse,
-             .fetchWorkspacesResponse, .fetchRecentProviderSessionsResponse, .unknown:
+             .fetchWorkspacesResponse, .fileExplorerResponse,
+             .fetchRecentProviderSessionsResponse, .unknown:
             break
         }
     }
