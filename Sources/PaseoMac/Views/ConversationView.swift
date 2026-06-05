@@ -636,7 +636,7 @@ private struct MessageList: View {
                             if vm.isLoading {
                                 ProgressView().frame(maxWidth: .infinity).padding()
                             }
-                            if searchText.isEmpty && vm.isAgentWorking && !vm.isLoading && !hasCurrentTurnContent(vm.rows) {
+                            if searchText.isEmpty && vm.isReplying && !vm.isLoading && !hasCurrentTurnContent(vm.rows) {
                                 ThinkingIndicator()
                                     .id("typing")
                                     .transition(.opacity)
@@ -653,9 +653,9 @@ private struct MessageList: View {
                             // Status bar: only shown when there is real turn data
                             // from this session. Nothing on cold start.
                             if searchText.isEmpty {
-                                if vm.isAgentWorking {
+                                if vm.isReplying {
                                     TurnStatusBar(
-                                        startedAt: vm.turnStartedAt,
+                                        startedAt: vm.replyStartedAt,
                                         isWorking: true
                                     )
                                 } else if vm.lastTurnModel != nil {

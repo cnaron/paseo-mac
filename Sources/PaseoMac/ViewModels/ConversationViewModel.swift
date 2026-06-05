@@ -279,6 +279,16 @@ final class ConversationViewModel {
     /// Messages the user pinned (Telegram-style). Persisted per-agent; `id` is
     /// the transcript group id, used directly as the scroll-to target.
     var pinnedMessages: [PinnedMessage] = []
+    /// Sticky "agent is replying" flag for the working pill. `isAgentWorking`
+    /// drops to false between the turns of a multi-round (tool-using) response,
+    /// which made the elapsed pill flicker/vanish mid-reply. This stays true
+    /// through brief inter-turn gaps and live streaming, clearing only after the
+    /// agent has been genuinely idle — so the pill stays up the whole reply.
+    var isReplying: Bool = false
+    /// Start of the current reply (first turn of a response). Keeps the pill's
+    /// elapsed time cumulative across the response's sub-turns.
+    var replyStartedAt: Date? = nil
+    @ObservationIgnored private var replyClearTask: Task<Void, Never>? = nil
     /// Model the agent was running with when the most recent `turn_started`
     /// event fired. Used to tag subsequent assistant_message rows so a
     /// mid-conversation model switch is visible per bubble.
@@ -702,10 +712,35 @@ final class ConversationViewModel {
 
     // MARK: - Stream ingestion
 
+    /// Keep the working pill alive on live reply activity (a turn starting or a
+    /// streamed row), cancelling any pending hide.
+    private func markReplyActivity() {
+        if !isReplying {
+            isReplying = true
+            replyStartedAt = Date()
+        }
+        replyClearTask?.cancel()
+        replyClearTask = nil
+    }
+
+    /// A turn ended. Hide the pill only after a grace period of genuine idle —
+    /// multi-round responses start the next turn moments later, and the elapsed
+    /// pill must not flicker away between rounds.
+    private func scheduleReplyClear() {
+        replyClearTask?.cancel()
+        replyClearTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            guard let self, !Task.isCancelled else { return }
+            self.isReplying = false
+            self.replyStartedAt = nil
+        }
+    }
+
     func apply(streamEvent: AgentStreamEvent, seq: Int?, timestamp: String, currentModel: String? = nil) {
         switch streamEvent {
         case .turnStarted:
             isAgentWorking = true
+            markReplyActivity()
             // If the snapshot lookup didn't have a model handy (status pings
             // sometimes drop it), keep whatever we resolved on the previous
             // turn rather than blanking out the live "Opus · 2m" chip.
@@ -713,6 +748,7 @@ final class ConversationViewModel {
             turnStartedAt = Date()
         case .turnCompleted, .turnFailed, .turnCanceled:
             isAgentWorking = false
+            scheduleReplyClear()
             let dur = turnStartedAt.map { Date().timeIntervalSince($0) }
             if let dur {
                 lastTurnDuration = dur
@@ -761,6 +797,9 @@ final class ConversationViewModel {
             break
         case .timelineUpdated(let item):
             appendStreamedRow(item: item, seq: seq, timestamp: timestamp)
+            // Live streaming keeps the pill alive even through long single turns
+            // and slow tool gaps (refreshes the idle timer).
+            if isAgentWorking || isReplying { markReplyActivity() }
         case .permissionRequested(let payload):
             // Diagnostic: confirm the daemon's permission_requested reaches us
             // and decodes. If a question doesn't render, this distinguishes
