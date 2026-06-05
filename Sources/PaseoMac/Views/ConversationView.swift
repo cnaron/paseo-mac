@@ -870,11 +870,32 @@ private struct MessageBubble: View {
     @State private var reasoningExpanded: Bool = false
     @State private var isExpanded: Bool = false
     @State private var didCopy: Bool = false
+    @State private var hovering: Bool = false
 
     private var isLong: Bool { group.text.count > 500 }
 
     var body: some View {
         bubbleContent
+            .overlay(alignment: .topTrailing) {
+                if hovering {
+                    Button { onTogglePin?() } label: {
+                        Image(systemName: isPinned ? "pin.fill" : "pin")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(isPinned ? Color.accentColor : Color.secondary)
+                            .padding(5)
+                            .background(.regularMaterial, in: Circle())
+                            .overlay(Circle().strokeBorder(Color.primary.opacity(0.08)))
+                    }
+                    .buttonStyle(.plain)
+                    .help(isPinned ? "Unpin message" : "Pin message")
+                    .padding(.top, 4)
+                    .padding(.trailing, 10)
+                    .transition(.opacity)
+                }
+            }
+            .onHover { h in
+                withAnimation(.easeInOut(duration: 0.12)) { hovering = h }
+            }
             .contextMenu { bubbleContextMenu }
     }
 

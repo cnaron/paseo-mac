@@ -270,7 +270,7 @@ private struct ClaudeCodeVersionRow: View {
                 if let current = currentVersion {
                     Text("v\(current)")
                         .font(.caption2.monospacedDigit())
-                        .foregroundStyle(updateAvailable ? AnyShapeStyle(.orange) : AnyShapeStyle(.tertiary))
+                        .foregroundStyle(updateAvailable ? AnyShapeStyle(.green) : AnyShapeStyle(.tertiary))
                 } else {
                     Text("—")
                         .font(.caption2)
@@ -279,10 +279,10 @@ private struct ClaudeCodeVersionRow: View {
                 if updateAvailable, let latest = latestVersion {
                     Image(systemName: "arrow.right")
                         .font(.caption2)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(.green)
                     Text("v\(latest)")
                         .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(.green)
                     Spacer()
                     if isUpdating {
                         ProgressView()
@@ -293,7 +293,7 @@ private struct ClaudeCodeVersionRow: View {
                         Button("Update") { onUpdate?() }
                             .font(.caption2.weight(.medium))
                             .buttonStyle(.plain)
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(.green)
                     }
                 } else if !updateAvailable, latestVersion != nil, currentVersion != nil {
                     Text("· latest")
