@@ -624,6 +624,10 @@ private struct MessageList: View {
                                     },
                                     onRewind: { messageId, mode, text in
                                         onRewind?(messageId, mode, text)
+                                    },
+                                    isPinned: vm.isPinned(gm.id),
+                                    onTogglePin: {
+                                        vm.togglePin(id: gm.id, snippet: gm.group.text, kind: gm.group.kind)
                                     }
                                 )
                                 .id(gm.id)
@@ -697,6 +701,19 @@ private struct MessageList: View {
                     Task {
                         try? await Task.sleep(nanoseconds: 150_000_000)
                         proxy.scrollTo("bottom", anchor: .bottom)
+                    }
+                }
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    if !vm.pinnedMessages.isEmpty {
+                        PinnedBar(
+                            pins: vm.pinnedMessages,
+                            onTap: { id in
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    proxy.scrollTo(id, anchor: .center)
+                                }
+                            },
+                            onUnpin: { id in vm.unpin(id: id) }
+                        )
                     }
                 }
 
@@ -787,6 +804,50 @@ private struct MessageList: View {
     }
 }
 
+// MARK: - Pinned messages bar (Telegram-style)
+
+private struct PinnedBar: View {
+    let pins: [ConversationViewModel.PinnedMessage]
+    let onTap: (String) -> Void
+    let onUnpin: (String) -> Void
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(pins) { pin in
+                    HStack(spacing: 6) {
+                        RoundedRectangle(cornerRadius: 1.5)
+                            .fill(Color.accentColor)
+                            .frame(width: 3, height: 22)
+                        Image(systemName: pin.kind == "user" ? "person.crop.circle.fill" : "sparkles")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                        Text(pin.snippet)
+                            .font(.caption2)
+                            .lineLimit(1)
+                            .foregroundStyle(.primary)
+                        Button { onUnpin(pin.id) } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 8, weight: .bold))
+                                .foregroundStyle(.tertiary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(.regularMaterial, in: Capsule())
+                    .overlay(Capsule().strokeBorder(Color.primary.opacity(0.06)))
+                    .contentShape(Capsule())
+                    .onTapGesture { onTap(pin.id) }
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+        }
+        .background(.bar)
+    }
+}
+
 private struct MessageBubble: View {
     let group: BubbleGroup
     let showConnector: Bool
@@ -804,6 +865,8 @@ private struct MessageBubble: View {
     var onDenyPermission: (() -> Void)? = nil
     var onSubmitQuestionAnswers: (([String: String]) -> Void)? = nil
     var onRewind: ((String, AgentRewindMode, String) -> Void)? = nil
+    var isPinned: Bool = false
+    var onTogglePin: (() -> Void)? = nil
     @State private var reasoningExpanded: Bool = false
     @State private var isExpanded: Bool = false
     @State private var didCopy: Bool = false
@@ -811,6 +874,12 @@ private struct MessageBubble: View {
     private var isLong: Bool { group.text.count > 500 }
 
     var body: some View {
+        bubbleContent
+            .contextMenu { bubbleContextMenu }
+    }
+
+    @ViewBuilder
+    private var bubbleContent: some View {
         switch group.kind {
         case "user":
             userBubble
@@ -826,6 +895,31 @@ private struct MessageBubble: View {
             attentionTimelineItem
         default:
             sideTimelineItem
+        }
+    }
+
+    // One context menu for every bubble kind (not just user bubbles), so any
+    // message can be pinned. Copy + Pin always; Rewind only where a messageId
+    // and rewind modes exist.
+    @ViewBuilder
+    private var bubbleContextMenu: some View {
+        Button {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(group.text, forType: .string)
+        } label: { Label("Copy text", systemImage: "doc.on.doc") }
+        Button {
+            onTogglePin?()
+        } label: {
+            Label(isPinned ? "Unpin message" : "Pin message",
+                  systemImage: isPinned ? "pin.slash" : "pin")
+        }
+        if let messageId = group.messageId, let onRewind, !rewindModes.isEmpty {
+            Divider()
+            Menu("Rewind") {
+                ForEach(rewindModes, id: \.self) { mode in
+                    Button(rewindLabel(mode)) { onRewind(messageId, mode, group.text) }
+                }
+            }
         }
     }
 
@@ -875,24 +969,6 @@ private struct MessageBubble: View {
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
                     .background(Color.accentColor.opacity(0.18), in: RoundedRectangle(cornerRadius: 12))
-                    .contextMenu {
-                        Button("Copy text") {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(group.text, forType: .string)
-                        }
-                        if let messageId = group.messageId,
-                           let onRewind,
-                           !rewindModes.isEmpty {
-                            Divider()
-                            Menu("Rewind") {
-                                ForEach(rewindModes, id: \.self) { mode in
-                                    Button(rewindLabel(mode)) {
-                                        onRewind(messageId, mode, group.text)
-                                    }
-                                }
-                            }
-                        }
-                    }
                 }
                 if let ts = group.timestamp, let label = formatTimestamp(ts) {
                     Text(label)

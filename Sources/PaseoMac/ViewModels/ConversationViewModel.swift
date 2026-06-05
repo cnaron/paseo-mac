@@ -276,6 +276,9 @@ final class ConversationViewModel {
     /// (in appendStreamedRow) tell an un-echoed bubble from one already
     /// adopted, so repeated identical messages each keep exactly one bubble.
     private var confirmedOptimisticRowIds: Set<String> = []
+    /// Messages the user pinned (Telegram-style). Persisted per-agent; `id` is
+    /// the transcript group id, used directly as the scroll-to target.
+    var pinnedMessages: [PinnedMessage] = []
     /// Model the agent was running with when the most recent `turn_started`
     /// event fired. Used to tag subsequent assistant_message rows so a
     /// mid-conversation model switch is visible per bubble.
@@ -343,6 +346,7 @@ final class ConversationViewModel {
             self.queued = items.map { QueuedMessage(text: $0.text, messageId: $0.messageId, images: []) }
         }
         loadMetaCache()
+        loadPinned()
     }
 
     // MARK: - Draft persistence
@@ -350,6 +354,55 @@ final class ConversationViewModel {
     private struct PersistedQueued: Codable {
         let text: String
         let messageId: String
+    }
+
+    // MARK: - Pinned messages (Telegram-style)
+
+    struct PinnedMessage: Codable, Hashable, Identifiable {
+        let id: String       // transcript group id == scrollTo target
+        let snippet: String  // short preview shown in the pinned bar
+        let kind: String     // "user" | "assistant" | ... for the bar icon
+    }
+
+    func isPinned(_ id: String) -> Bool {
+        pinnedMessages.contains { $0.id == id }
+    }
+
+    func togglePin(id: String, snippet: String, kind: String) {
+        if let idx = pinnedMessages.firstIndex(where: { $0.id == id }) {
+            pinnedMessages.remove(at: idx)
+        } else {
+            let clean = snippet
+                .replacingOccurrences(of: "\n", with: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !clean.isEmpty else { return }
+            pinnedMessages.append(PinnedMessage(
+                id: id, snippet: String(clean.prefix(90)), kind: kind
+            ))
+        }
+        savePinned()
+    }
+
+    func unpin(id: String) {
+        pinnedMessages.removeAll { $0.id == id }
+        savePinned()
+    }
+
+    private func savePinned() {
+        let ud = UserDefaults.standard
+        if pinnedMessages.isEmpty {
+            ud.removeObject(forKey: "pinned_\(agentId)")
+        } else if let data = try? JSONEncoder().encode(pinnedMessages) {
+            ud.set(data, forKey: "pinned_\(agentId)")
+        }
+    }
+
+    private func loadPinned() {
+        let ud = UserDefaults.standard
+        guard let data = ud.data(forKey: "pinned_\(agentId)"),
+              let decoded = try? JSONDecoder().decode([PinnedMessage].self, from: data)
+        else { return }
+        pinnedMessages = decoded
     }
 
     func saveDraft() {
