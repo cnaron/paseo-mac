@@ -1,5 +1,8 @@
 # 会话页滚动与询问交互改进（2026-07-24）
 
+> 总账见 `conversation-scroll-ledger.md`（当前机制地图 / 历次改动点 / 排查手册 /
+> 已证伪的路）。改这块之前先读那一份，这里只是本次改动的细节。
+
 本次围绕"会话页回看历史 / 加载更早 / 询问交互 / 粘贴"做的一组修复。macOS
 （paseo-mac）与 iOS（paseo-iOS）共用 `MessageList` / `ConversationViewModel`，
 下面每条注明适用平台。改动均带 `_claudecode_20260724` 或 `2026.07.24 Naron`
