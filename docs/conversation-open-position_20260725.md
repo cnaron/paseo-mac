@@ -1,7 +1,12 @@
-# 从列表点进会话"一片空白"的根因与重写（2026-07-25）
+# 从列表点进会话"一片空白"的根因与重写（2026-07-25，**实现已回退**）
 
-> 总账见 `conversation-scroll-ledger.md`（当前机制地图 / 历次改动点 / 排查手册 /
-> 已证伪的路）。改这块之前先读那一份，这里只是本次改动的细节。
+> ⚠️ **本文描述的实现已于当天全量回退**，线上代码回到 07.24 状态
+> （PaseoMac v0.2.167 / Paseo iOS build 38）。回退原因：用户实测"每次点进会话闪
+> 一下"，消闪版又把首屏加载拖慢，判断为"不如回到之前"。
+>
+> **下面的根因分析仍然成立**，可以直接拿来用；被否掉的是照着它做的那套实现。
+> 完整代码见 `docs/attic/conversation-positioning-attempt_20260725.patch`。
+> 教训与"下次该捡哪部分"写在 `conversation-scroll-ledger.md` 的时间线最后一节。
 
 **现象**（反复出现，mac + iOS 都有）：从会话列表点进一个会话，页面经常是空白
 的，既没有落在底部的最新回复上，也不是上次停留的阅读进度；要手动滚一下才看得
@@ -146,7 +151,7 @@ iOS 5 个 turn）是按 `turns.count` 算的，加载过程中 turn 数从 0 涨
 老系统（<iOS 18 / <macOS 15）没有 `defaultScrollAnchor(_:for:)`，保持原行为（仍靠
 收敛式 `scrollTo`），只是会看到原来那样的一跳。
 
-# 构建 / 安装
+# 构建 / 安装（历史记录，均已回退）
 
 - **macOS**：`swift build -c release` + `scripts/bundle.sh release paseomac`，覆盖
   安装到 `/Applications/PaseoMac.app`，**v0.2.165 (build 166)** → 消闪版

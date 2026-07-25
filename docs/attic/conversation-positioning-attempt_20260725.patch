@@ -1,0 +1,550 @@
+--- a/Sources/PaseoMac/Views/ConversationView.swift
++++ b/Sources/PaseoMac/Views/ConversationView.swift
+@@ -870,6 +870,68 @@
+     }
+ }
+ 
++/// 视口顶部可见段落的 id 追踪器。刻意用 class（引用类型）而不是 @State 值：
++/// 滚动时每跨过一行都会回调，写进 @State 会让 MessageList 整个 body（含
++/// groupMessages / groupTurns）重算，正是滚动发沉的来源。写进一个引用盒子
++/// 不触发任何视图刷新，只在需要时（滚动停下、进入会话）读一次。
++/// 2026.07.25 Naron
++private final class VisibleAnchorBox_claudecode_20260725 {
++    var topVisibleTurnId: String? = nil
++}
++
++/// 把"当前可见的滚动目标"喂进上面的盒子。需要内容容器上挂
++/// `.scrollTargetLayout()`；老系统没有这个 API，直接透传（此时"记住上次
++/// 阅读位置"降级为"回到底部"，不影响主路径）。2026.07.25 Naron
++private struct VisibleAnchorTracker_claudecode_20260725: ViewModifier {
++    let box: VisibleAnchorBox_claudecode_20260725
++
++    func body(content: Content) -> some View {
++        if #available(iOS 18.0, macOS 15.0, *) {
++            content.onScrollTargetVisibilityChange(idType: String.self, threshold: 0.01) { ids in
++                box.topVisibleTurnId = ids.first(where: { $0 != "bottom" })
++            }
++        } else {
++            content
++        }
++    }
++}
++
++/// 进会话不再"先画在顶部、再用 scrollTo 拽到底部"——那个先画出来的错误
++/// 帧就是用户看到的"闪一下 / 抖一下"。改成让布局系统一开始就把初始偏移锚
++/// 在底部（`.initialOffset`），第一帧画出来就已经在底部，没有可纠正的错误
++/// 帧。
++///
++/// `sizeChangeAnchor` 只在**定位窗口内**给 `.bottom`：这期间内容还在到位
++/// （磁盘缓存 → 网络 tail → 节点补齐），每次内容尺寸变化都由布局系统直接
++/// 把底边钉住，不再产生"画错一帧 + scrollTo 纠正"的跳动。定位结束后立刻
++/// 置回 nil —— 长期开着会在用户回看历史时把人往下拽（那是 07.23 专门修掉
++/// 的手感问题）。`UnitPoint?` 是同一个 modifier 的取值变化，不改变视图
++/// 身份，不会触发重建。2026.07.25 Naron
++private struct InitialBottomAnchor_claudecode_20260725: ViewModifier {
++    let sizeChangeAnchor: UnitPoint?
++
++    func body(content: Content) -> some View {
++        if #available(iOS 18.0, macOS 15.0, *) {
++            content
++                .defaultScrollAnchor(.bottom, for: .initialOffset)
++                .defaultScrollAnchor(sizeChangeAnchor, for: .sizeChanges)
++        } else {
++            content
++        }
++    }
++}
++
++/// 内容容器上的 `.scrollTargetLayout()`（老系统透传）。2026.07.25 Naron
++private struct ScrollTargetLayoutIfAvailable_claudecode_20260725: ViewModifier {
++    func body(content: Content) -> some View {
++        if #available(iOS 18.0, macOS 15.0, *) {
++            content.scrollTargetLayout()
++        } else {
++            content
++        }
++    }
++}
++
+ private struct NearBottomTrackingModifier_claudecode_20260714: ViewModifier {
+     let availableHeight: CGFloat
+     @Binding var isNearBottom: Bool
+@@ -877,10 +939,16 @@
+     @Binding var hasNewContent: Bool
+     @Binding var trackingGraceActive: Bool
+     @Binding var isUserScrolling: Bool
++    /// 滚动（含惯性）彻底停下时回调一次。用来记录"用户停在哪儿"，
++    /// 频率是每次手势一次，不是每帧一次。2026.07.25 Naron
++    var onScrollIdle_claudecode_20260725: () -> Void = {}
+ 
+     func body(content: Content) -> some View {
+         if #available(iOS 18.0, macOS 15.0, *) {
+             content.onScrollPhaseChange { _, newPhase in
++                if newPhase == .idle {
++                    onScrollIdle_claudecode_20260725()
++                }
+                 // 用户手指/触控板正在驱动滚动（含惯性）期间，一切程序化
+                 // scrollTo 都会打断手势、把页面拽回去——这正是"回看历史
+                 // 上滑总被回坐"的手感来源。.animating 是程序化滚动自己，
+@@ -942,6 +1010,14 @@
+     @State private var suppressAutoScroll: Bool = false
+     @State private var isUserScrolling_claudecode_20260723: Bool = false
+     @State private var lastAutoScrollAt_claudecode_20260711: Date = .distantPast
++    /// 进入会话后的"定位窗口"：期间持续把视口按在目标位置上，直到内容
++    /// 真正停止变化（或用户自己开始滚动）。见
++    /// settleInitialPosition_claudecode_20260725。2026.07.25 Naron
++    @State private var isPositioning_claudecode_20260725: Bool = false
++    /// 定位窗口内交给布局系统的"内容尺寸变化锚点"。见
++    /// InitialBottomAnchor_claudecode_20260725。2026.07.25 Naron
++    @State private var sizeChangeAnchor_claudecode_20260725: UnitPoint? = .bottom
++    @State private var visibleAnchor_claudecode_20260725 = VisibleAnchorBox_claudecode_20260725()
+     var availableHeight: CGFloat = 500
+     var searchText: String = ""
+     var bottomPadding: CGFloat = 210
+@@ -951,6 +1027,11 @@
+     var agentCapabilities: AgentCapabilityFlags? = nil
+     var onRewind: ((String, AgentRewindMode, String) -> Void)? = nil
+     var jumpListPresented: Binding<Bool>? = nil
++    /// 这一页是不是用户当前真正在看的会话。macOS 每次选中都会重建
++    /// ConversationView（`.id(agentId)`），恒为 true；iOS 的分页 TabView 会
++    /// 把所有 agent 的页面一次性建出来，只有选中的那一页才该做首次定位、
++    /// 也只有它的数据才在加载。2026.07.25 Naron
++    var isActive_claudecode_20260725: Bool = true
+ 
+     private var displayedRows: [ConversationViewModel.Row] {
+         let base = vm.rows.filter {
+@@ -971,6 +1052,14 @@
+         let turns = groupTurns(grouped, isAgentWorking: vm.isAgentWorking)
+         let lastTurnId = turns.last?.id
+         let segmentCopyTexts = Self.computeSegmentCopyTexts(grouped)
++        // Eager-render (plain VStack) threshold, platform-tuned — kept in sync
++        // with the iOS project's copy of this file. 2026.07.25 Naron
++        #if os(iOS)
++        let eagerTurnLimit_claudecode_20260724 = 5
++        #else
++        let eagerTurnLimit_claudecode_20260724 = 12
++        #endif
++
+         @ViewBuilder
+         func messageListContent(proxy: ScrollViewProxy) -> some View {
+             if vm.hasOlderMessages {
+@@ -1103,10 +1192,11 @@
+                     // by default, so eager rendering a dozen of them is cheap;
+                     // only genuinely long chats fall back to LazyVStack.
+                     // 2026.07.24 Naron
+-                    if turns.count <= 12 {
++                    if turns.count <= eagerTurnLimit_claudecode_20260724 {
+                         VStack(alignment: .leading, spacing: CGFloat(settings.bubbleGap)) {
+                             messageListContent(proxy: proxy)
+                         }
++                        .modifier(ScrollTargetLayoutIfAvailable_claudecode_20260725())
+                         .padding(.vertical, 16)
+                         #if os(iOS)
+                         .padding(.horizontal, 18)
+@@ -1118,6 +1208,7 @@
+                         LazyVStack(alignment: .leading, spacing: CGFloat(settings.bubbleGap)) {
+                             messageListContent(proxy: proxy)
+                         }
++                        .modifier(ScrollTargetLayoutIfAvailable_claudecode_20260725())
+                         .padding(.vertical, 16)
+                         #if os(iOS)
+                         .padding(.horizontal, 18)
+@@ -1128,39 +1219,52 @@
+                     }
+                 }
+                 .coordinateSpace(name: "ScrollViewSpace")
++                .modifier(InitialBottomAnchor_claudecode_20260725(
++                    sizeChangeAnchor: sizeChangeAnchor_claudecode_20260725
++                ))
++                .modifier(VisibleAnchorTracker_claudecode_20260725(box: visibleAnchor_claudecode_20260725))
+                 .modifier(NearBottomTrackingModifier_claudecode_20260714(
+                     availableHeight: availableHeight,
+                     isNearBottom: $isNearBottom,
+                     isAtBottom: $isAtBottom,
+                     hasNewContent: $hasNewContent,
+                     trackingGraceActive: $trackingGraceActive_claudecode_20260714,
+-                    isUserScrolling: $isUserScrolling_claudecode_20260723
+-                ))
+-                .task(id: vm.agentId) {
+-                    trackingGraceActive_claudecode_20260714 = true
+-                    isNearBottom = true
+-                    isAtBottom = true
+-                    showJumpButton_claudecode_20260714 = false
+-                    jumpButtonShowTask_claudecode_20260714?.cancel()
+-
+-                    if let lastTurnId = turns.last?.id {
+-                        withTransaction(Transaction(animation: nil)) {
+-                            proxy.scrollTo(lastTurnId, anchor: .bottom)
+-                        }
+-                    }
+-                    withTransaction(Transaction(animation: nil)) {
+-                        proxy.scrollTo("bottom", anchor: .bottom)
++                    isUserScrolling: $isUserScrolling_claudecode_20260723,
++                    onScrollIdle_claudecode_20260725: {
++                        rememberReadingAnchor_claudecode_20260725()
+                     }
+-                    try? await Task.sleep(nanoseconds: 120_000_000)
+-                    guard !Task.isCancelled else { return }
++                ))
++                // 首次定位的触发条件是"这一页成为用户正在看的会话"，不是
++                // "这个视图被创建出来"。iOS 的分页 TabView 会提前把所有会话
++                // 页建好（此时该会话一行都没加载），只按创建时机定位必然扑空。
++                // 2026.07.25 Naron
++                .task(id: "\(vm.agentId)|\(isActive_claudecode_20260725)") {
++                    guard isActive_claudecode_20260725 else { return }
++                    await settleInitialPosition_claudecode_20260725(proxy: proxy)
++                }
++                // 顶部插入（初次加载补齐节点、点"加载更早"之外的任何前插）
++                // 不会改变最后一行的 id，下面那个 last-id 监听完全看不到它，
++                // 而它恰恰会把停在底部的用户顶飞——严重时视口落进 LazyVStack
++                // 还没建出来的区域，就是"点进来一片空白"。2026.07.25 Naron
++                .onChange(of: vm.rows.count) { oldCount, newCount in
++                    guard newCount > oldCount else { return }
++                    guard !suppressAutoScroll, !isPositioning_claudecode_20260725 else { return }
++                    guard isAtBottom, !isUserScrolling_claudecode_20260723 else { return }
+                     withTransaction(Transaction(animation: nil)) {
+                         proxy.scrollTo("bottom", anchor: .bottom)
+                     }
+-                    try? await Task.sleep(nanoseconds: 120_000_000)
+-                    guard !Task.isCancelled else { return }
+-                    trackingGraceActive_claudecode_20260714 = false
+-                    withTransaction(Transaction(animation: nil)) {
+-                        proxy.scrollTo("bottom", anchor: .bottom)
++                }
++                // eager VStack ↔ LazyVStack 的切换会整体换掉 ScrollView 的
++                // 内容容器（两个分支是不同的视图身份），布局重建那一帧滚动
++                // 位置没有着落。在底部时重新贴底。2026.07.25 Naron
++                .onChange(of: turns.count <= eagerTurnLimit_claudecode_20260724) { _, _ in
++                    guard !suppressAutoScroll, !isPositioning_claudecode_20260725 else { return }
++                    guard isAtBottom, !isUserScrolling_claudecode_20260723 else { return }
++                    Task {
++                        try? await Task.sleep(nanoseconds: 30_000_000)
++                        withTransaction(Transaction(animation: nil)) {
++                            proxy.scrollTo("bottom", anchor: .bottom)
++                        }
+                     }
+                 }
+                 .onChange(of: isNearBottom) { _, nearBottom in
+@@ -1182,8 +1286,12 @@
+                 .ignoresSafeArea(.keyboard, edges: .bottom)
+                 #endif
+                 .onAppear {
+-                    trackingGraceActive_claudecode_20260714 = true
+-                    isNearBottom = true
++                    // 只是"先贴一下底"，真正的定位交给
++                    // settleInitialPosition_claudecode_20260725（它自己管
++                    // trackingGrace 的开关）。未被选中的分页页面不参与，
++                    // 否则会把 grace 永久置位、让贴底判断一直失真。
++                    // 2026.07.25 Naron
++                    guard isActive_claudecode_20260725 else { return }
+                     showJumpButton_claudecode_20260714 = false
+                     proxy.scrollTo("bottom", anchor: .bottom)
+                 }
+@@ -1288,6 +1396,143 @@
+ 
+ 
+ 
++    // MARK: - 进入会话时的定位（2026.07.25 重写）
++    //
++    // 老实现是"进来以后按固定节拍 scrollTo 三次（0ms / 120ms / 240ms）"。
++    // 会话内容却是分好几步异步到位的：磁盘缓存先铺一屏 → fetchTimeline 拿
++    // 回最近 50 条 → 若这批没落在节点边界，还会继续往前补最多 5 批 → markdown
++    // / 代码块的高度又要再过几帧才量准。只要任何一步慢过那 240ms，定位就
++    // 永久落空：之后没有任何人再把视口拉回来，而中途从顶部插进来的内容会把
++    // 视口推到 LazyVStack 尚未建出的区域——这就是反复出现的"点进来一片空白"。
++    // 老实现还有两个结构性问题：闭包里捕获的是 body 求值那一刻的 `turns`
++    // （进来时通常是空的），以及 iOS 分页 TabView 会提前建好所有会话页、
++    // 让 `.task(id: agentId)` 在那一页还没被选中、一行数据都没有时就跑完。
++    //
++    // 现在改成：定位是内容状态的函数，不是时间的函数——持续把视口按在目标
++    // 位置上，直到内容真的不再变化（rows 数量/首尾行 id 稳定且 isLoading
++    // 结束）为止；用户一旦自己开始滚动立即让位；再加一个硬上限兜底。
++
++    /// 定位窗口里判断"内容还在动"的指纹。刻意不含最后一行的正文长度：
++    /// 进来时正在流式输出的会话正文每帧都在变，那不该阻止定位收敛（贴底
++    /// 跟随交给常规的流式滚动逻辑）。2026.07.25 Naron
++    private func contentSignature_claudecode_20260725() -> String {
++        "\(vm.rows.count)|\(vm.rows.first?.id ?? "")|\(vm.rows.last?.id ?? "")|\(vm.isLoading)"
++    }
++
++    /// 上次停留的位置还值得恢复吗？要求：记录过、够新、期间没有新消息、
++    /// 并且那个锚点在当前分段结果里仍然是一个真实存在的滚动目标。
++    /// 任何一条不满足都返回 nil —— 即"回到底部"。2026.07.25 Naron
++    private func resolvedRestoreTarget_claudecode_20260725() -> String? {
++        guard let anchor = vm.readingAnchor_claudecode_20260725 else { return nil }
++        guard Date().timeIntervalSince(anchor.savedAt) < 600 else { return nil }
++        guard let lastRowId = vm.rows.last?.id, lastRowId == anchor.lastRowId else { return nil }
++        let currentTurnIds = groupTurns(
++            groupMessages(displayedRows),
++            isAgentWorking: vm.isAgentWorking
++        ).map(\.id)
++        return currentTurnIds.contains(anchor.turnId) ? anchor.turnId : nil
++    }
++
++    private func pinToTarget_claudecode_20260725(proxy: ScrollViewProxy, target: String?) {
++        withTransaction(Transaction(animation: nil)) {
++            if let target {
++                proxy.scrollTo(target, anchor: .top)
++            } else {
++                proxy.scrollTo("bottom", anchor: .bottom)
++            }
++        }
++    }
++
++    private func settleInitialPosition_claudecode_20260725(proxy: ScrollViewProxy) async {
++        isPositioning_claudecode_20260725 = true
++        suppressAutoScroll = true
++        trackingGraceActive_claudecode_20260714 = true
++        isUserScrolling_claudecode_20260723 = false
++        isNearBottom = true
++        isAtBottom = true
++        hasNewContent = false
++        showJumpButton_claudecode_20260714 = false
++        jumpButtonShowTask_claudecode_20260714?.cancel()
++        defer {
++            isPositioning_claudecode_20260725 = false
++            suppressAutoScroll = false
++            trackingGraceActive_claudecode_20260714 = false
++            // 定位结束就摘掉尺寸变化锚点，之后内容增长不再牵动视口
++            // （长期开着 = 回看历史时被往下拽）。2026.07.25 Naron
++            sizeChangeAnchor_claudecode_20260725 = nil
++        }
++
++        var target = resolvedRestoreTarget_claudecode_20260725()
++        // 回到底部时把"内容尺寸变化"交给布局系统钉住底边，加载中的每一次
++        // 内容到位就不会先画错一帧再被 scrollTo 拽回来（那就是"闪一下"）。
++        // 恢复到历史位置时不能开——会跟恢复目标打架。2026.07.25 Naron
++        sizeChangeAnchor_claudecode_20260725 = (target == nil) ? .bottom : nil
++        var signature = contentSignature_claudecode_20260725()
++        var quietTicks = 0
++        let startedAt = Date()
++        // 内容"看着安静"也要撑过这个下限：进来那一瞬间 loadInitial 可能还没
++        // 被调度起来（iOS 是 navigationDestination 的 onAppear 里才设置
++        // selectedAgentId），此时 rows 是磁盘缓存、isLoading 还是 false。
++        let minimumWindow: TimeInterval = 1.5
++        let hardDeadline: TimeInterval = 12
++
++        while true {
++            pinToTarget_claudecode_20260725(proxy: proxy, target: target)
++            try? await Task.sleep(nanoseconds: 40_000_000)
++            if Task.isCancelled { return }
++            // 用户已经自己接管了滚动——继续按着他就是"上滑总被回坐"。
++            if isUserScrolling_claudecode_20260723 { return }
++            let elapsed = Date().timeIntervalSince(startedAt)
++            if elapsed > hardDeadline { break }
++            let now = contentSignature_claudecode_20260725()
++            if now != signature {
++                signature = now
++                quietTicks = 0
++                // 内容变了，锚点的有效性要重算：冷启动那一刻 rows 还是空的，
++                // 上次的阅读位置得等真正的历史到位才认得出来。
++                target = resolvedRestoreTarget_claudecode_20260725()
++                let wantAnchor: UnitPoint? = (target == nil) ? .bottom : nil
++                if sizeChangeAnchor_claudecode_20260725 != wantAnchor {
++                    sizeChangeAnchor_claudecode_20260725 = wantAnchor
++                }
++            } else if !vm.isLoading && !vm.rows.isEmpty {
++                quietTicks += 1
++                if quietTicks >= 5 && elapsed >= minimumWindow { break }
++            }
++        }
++
++        // 收尾：内容稳定后 markdown / 代码块的最终高度还要再过一两帧才量准，
++        // 补两次贴合，位置才真的落在该在的地方。
++        pinToTarget_claudecode_20260725(proxy: proxy, target: target)
++        try? await Task.sleep(nanoseconds: 80_000_000)
++        if Task.isCancelled { return }
++        pinToTarget_claudecode_20260725(proxy: proxy, target: target)
++        if target != nil {
++            // 恢复到历史位置时，底部往往有没看过的内容，给出"跳到底部"入口。
++            isNearBottom = false
++            isAtBottom = false
++            hasNewContent = true
++        }
++    }
++
++    /// 滚动停下的那一刻记一次"用户停在哪儿"。贴着底部就清掉记录（下次进来
++    /// 直接到底部）；在回看历史就记下视口顶部那一段。2026.07.25 Naron
++    private func rememberReadingAnchor_claudecode_20260725() {
++        guard !isPositioning_claudecode_20260725 else { return }
++        guard !vm.rows.isEmpty else { return }
++        if isNearBottom {
++            vm.readingAnchor_claudecode_20260725 = nil
++            return
++        }
++        guard let topId = visibleAnchor_claudecode_20260725.topVisibleTurnId,
++              let lastRowId = vm.rows.last?.id else { return }
++        vm.readingAnchor_claudecode_20260725 = .init(
++            turnId: topId,
++            lastRowId: lastRowId,
++            savedAt: Date()
++        )
++    }
++
+     private func scrollToBottomThrottled_claudecode_20260711(proxy: ScrollViewProxy) {
+         guard isNearBottom, !isUserScrolling_claudecode_20260723 else { return }
+         let now = Date()
+--- a/Sources/PaseoMac/ViewModels/ConversationViewModel.swift
++++ b/Sources/PaseoMac/ViewModels/ConversationViewModel.swift
+@@ -244,6 +244,21 @@
+     /// 消息）和"别处到达的用户消息"（channel 转发、定时任务、队列自动
+     /// flush——正在回看历史时不该被拽走）。2026.07.23 Naron
+     var lastLocalSendAt_claudecode_20260723: Date? = nil
++
++    /// 用户上次离开这个会话时停留的阅读位置。只有"确实在回看历史"（视口不
++    /// 在底部）时才记录；滚回底部、或期间有新消息到达，都会让它失效，重新
++    /// 进入时直接定位到底部。MessageList 在滚动停下的那一刻写入，进入会话
++    /// 时读取。2026.07.25 Naron
++    struct ReadingAnchor_claudecode_20260725 {
++        /// 视口顶部那一段（turn）的 id —— 它同时是该段首行的 row id。
++        let turnId: String
++        /// 记录时最后一行的 id。回来时若已经不是它，说明期间有新消息进来，
++        /// 直接回到底部，而不是把用户按在旧位置上。
++        let lastRowId: String
++        let savedAt: Date
++    }
++    var readingAnchor_claudecode_20260725: ReadingAnchor_claudecode_20260725? = nil
++
+     var lastError: String? = nil
+     var composerText: String = ""
+     var pendingImages: [PendingImageAttachment] = []
+@@ -582,10 +597,16 @@
+ 
+     // MARK: - Loading
+ 
+-    private func loadOlderMessagesInternal(limit: Int) async -> [Row] {
+-        guard hasOlderMessages, let cursor = oldestCursor else { return [] }
++    /// 纯取数：拉一批更早的消息，**不碰 `rows` / 分页状态**。
++    /// 初次加载的节点补齐用它把几批攒齐后一次性发布（见 loadInitial），
++    /// 避免每批各自前插一次——每次前插都是一次整表重排 + 一次可见的跳动。
++    /// 2026.07.25 Naron
++    private func fetchOlderBatch_claudecode_20260725(
++        cursor: AgentTimelineCursor,
++        limit: Int
++    ) async -> (rows: [Row], hasOlder: Bool, cursor: AgentTimelineCursor?)? {
+         do {
+-            guard let client = getClient() else { return [] }
++            guard let client = getClient() else { return nil }
+             // Use the SAME projection ("projected") as the initial tail load.
+             // "canonical" returns the raw per-event log (every folded tool
+             // step), so paging older with it surfaced folded history steps
+@@ -599,16 +620,23 @@
+                 limit: limit,
+                 projection: "projected"
+             )
+-            let older = payload.entries.map(rowFromEntry)
+-            self.rows = older + self.rows
+-            self.hasOlderMessages = payload.hasOlder
+-            self.oldestCursor = payload.startCursor
+-            Task { await prewarmRenderCache_claudecode_20260713(older) }
+-            return older
++            return (payload.entries.map(rowFromEntry), payload.hasOlder, payload.startCursor)
+         } catch {
+             self.lastError = error.localizedDescription
++            return nil
++        }
++    }
++
++    private func loadOlderMessagesInternal(limit: Int) async -> [Row] {
++        guard hasOlderMessages, let cursor = oldestCursor else { return [] }
++        guard let batch = await fetchOlderBatch_claudecode_20260725(cursor: cursor, limit: limit) else {
+             return []
+         }
++        self.rows = batch.rows + self.rows
++        self.hasOlderMessages = batch.hasOlder
++        self.oldestCursor = batch.cursor
++        Task { await prewarmRenderCache_claudecode_20260713(batch.rows) }
++        return batch.rows
+     }
+ 
+     /// True once ensureLoaded_claudecode_20260713() has kicked off (or
+@@ -656,19 +684,9 @@
+         do {
+             guard let client = getClient() else { return }
+             let payload = try await client.fetchTimeline(agentId: agentId, limit: 50, projection: "projected")
+-            let fetched = payload.entries.map(rowFromEntry)
+-            // For brand-new agents the daemon may not have persisted the
+-            // first message yet — fetched is empty while the streaming
+-            // path has already populated optimistic/echoed rows. Naively
+-            // overwriting blanks them out and the only escape is jumping
+-            // around the timeline to force a re-render. Trust local rows
+-            // when fetch returns nothing.
+-            if !fetched.isEmpty || self.rows.isEmpty {
+-                self.rows = fetched
+-            }
+-            self.hasOlderMessages = payload.hasOlder
+-            self.oldestCursor = payload.startCursor
+-            self.lastError = nil
++            var fetched = payload.entries.map(rowFromEntry)
++            var hasOlder = payload.hasOlder
++            var cursor = payload.startCursor
+ 
+             // The tail fetch grabs the most recent 50 events, which can land
+             // in the MIDDLE of the last node when a single turn has many tool
+@@ -679,10 +697,37 @@
+             // conversation shows the full exchange. No-op for normal chats
+             // where the tail already starts at a boundary or nothing is older.
+             // Capped so a giant node doesn't stall the open. 2026.07.24 Naron
+-            if hasOlderMessages, rows.first?.kind != "user" {
+-                await loadOlderUntilNodeBoundary_claudecode_20260724(batch: 50, maxBatches: 5)
++            //
++            // 补齐是在**发布给视图之前**攒完的：老实现每补一批就往 `rows`
++            // 前插一次，每次前插都是一次整表重排（外加一次磁盘缓存写入），
++            // 视觉上就是打开会话时接连抖好几下。现在整个初次窗口只对 `rows`
++            // 赋值一次。2026.07.25 Naron
++            var boundaryBatches = 0
++            while hasOlder,
++                  fetched.first?.kind != "user",
++                  boundaryBatches < 5,
++                  let c = cursor {
++                guard let batch = await fetchOlderBatch_claudecode_20260725(cursor: c, limit: 50),
++                      !batch.rows.isEmpty else { break }
++                fetched = batch.rows + fetched
++                hasOlder = batch.hasOlder
++                cursor = batch.cursor
++                boundaryBatches += 1
+             }
+ 
++            // For brand-new agents the daemon may not have persisted the
++            // first message yet — fetched is empty while the streaming
++            // path has already populated optimistic/echoed rows. Naively
++            // overwriting blanks them out and the only escape is jumping
++            // around the timeline to force a re-render. Trust local rows
++            // when fetch returns nothing.
++            if !fetched.isEmpty || self.rows.isEmpty {
++                self.rows = fetched
++            }
++            self.hasOlderMessages = hasOlder
++            self.oldestCursor = cursor
++            self.lastError = nil
++
+             // iOS opens conversations at the tail first. Older turns and full
+             // canonical detail are loaded explicitly via the existing load-more
+             // path, which keeps first render cheap on large chats. 2026.07.11 Naron
+@@ -698,7 +743,8 @@
+                 }
+             }
+             populateHistoricalDurations()
+-            Task { await prewarmRenderCache_claudecode_20260713(fetched) }
++            let toWarm = fetched
++            Task { await prewarmRenderCache_claudecode_20260713(toWarm) }
+         } catch {
+             self.lastError = error.localizedDescription
+         }
+--- a/Sources/PaseoMac/Views/IOSConversationView.swift
++++ b/Sources/PaseoMac/Views/IOSConversationView.swift
+@@ -55,7 +55,13 @@
+                                 await app.rewindAgent(agentId: agentId, messageId: messageId, mode: mode, rewoundText: text)
+                             }
+                         },
+-                        jumpListPresented: $isMessageJumpListPresented_claudecode_20260713
++                        jumpListPresented: $isMessageJumpListPresented_claudecode_20260713,
++                        // 分页 TabView 会把所有会话页提前建出来。只有当前
++                        // 选中的这一页才该做首次定位——其余页面此刻既没有
++                        // 数据、也不在用户眼前，让它们跑定位只会在真正被
++                        // 打开时留下"已经定位过了"的假象（然后一片空白）。
++                        // 2026.07.25 Naron
++                        isActive_claudecode_20260725: app.selectedAgentId == agentId
+                     )
+                 }
+             }

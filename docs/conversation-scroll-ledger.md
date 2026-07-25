@@ -13,7 +13,11 @@
 
 ---
 
-# 一、当前机制地图（截至 2026.07.25）
+# 一、当前机制地图（截至 2026.07.25 回退后）
+
+> ⚠️ 2026.07.25 做过一轮大改（收敛式定位状态机 + 布局层锚点 + 阅读位置记忆 +
+> 初次加载原子化），**已全部回退**（原因见时间线最后两节）。下面描述的是**当前
+> 线上真实生效**的机制，也就是 07.24 的状态。
 
 ## 1. 数据是怎么到位的（这是所有定位问题的前提）
 
@@ -23,16 +27,15 @@
 |---|---|---|---|
 | 1 | 磁盘缓存铺屏（最多 300 行） | `ensureLoaded_claudecode_20260713()` | 同步，立刻有内容 |
 | 2 | `fetchTimeline` 取 tail 50 条（`projection: "projected"`） | `loadInitial()` | 网络，几百 ms～几秒；**整体替换 `rows`** |
-| 3 | 若 tail 没落在节点边界，继续往前补最多 5 批 × 50 | `loadInitial()` 内联（07.25 起） | 每批一次往返；**攒完再一次性发布**，不逐批前插 |
+| 3 | 若 tail 没落在节点边界，继续往前补最多 5 批 × 50 | `loadOlderUntilNodeBoundary_claudecode_20260724` | 每批一次往返，**每批各自从顶部插入一次** |
 | 4 | markdown / 代码块真实高度量准 | SwiftUI 布局 | 再过几帧 |
 
-关键点：**第 2~3 步合起来只对 `rows` 赋值一次**（07.25 起；之前是每批各前插一次，
-每次都是整表重排 + 磁盘缓存写入 + 一次可见跳动）。但这一次赋值仍会**从顶部塞进
-内容**——它不改变最后一行的 id，只改变 `rows.count` 和 `rows.first?.id`，所以
-只盯 `rows.last?.id` 的监听看不见它。`isLoading` 覆盖第 2~3 步全程。
+关键点：**第 3 步是逐批从顶部插入的**，它不改变最后一行的 id，只改变 `rows.count`
+和 `rows.first?.id` —— 只盯 `rows.last?.id` 的监听完全看不见它。`isLoading` 覆盖
+第 2~3 步全程（`loadOlderMessagesInternal` 自己不动 `isLoading`）。
 
-手动点"加载更早"走的是另一条路（`loadOlderMessagesInternal` → 逐批前插 +
-`suppressAutoScroll` + 锚点恢复），那里逐批前插是刻意的（用户在等反馈）。
+> 07.25 试过把第 2~3 步攒完再一次性发布（少 5 次整表重排）：**首屏出内容明显变慢，
+> 用户直接感知到，已回退**。逐批前插虽然会抖，但"先看到东西"更重要。
 
 `ensureLoaded` 每个 VM 生命周期只真正拉一次（`hasRequestedInitialLoad`），由
 `AppViewModel.markConversationAccessed_claudecode_20260713` 在 `selectedAgentId`
@@ -48,19 +51,15 @@
   也不在用户眼前。`selectedAgentId` 是在 `navigationDestination` 的 `.onAppear`
   里才设置的 —— 数据加载比页面创建**更晚**。
 
-  ⇒ **任何"页面被创建时做一次"的逻辑，在 iOS 上都等于没做。** 必须挂在
-  "这一页成为选中会话"上（`MessageList.isActive_claudecode_20260725`）。
+  ⇒ **任何"页面被创建时做一次"的逻辑，在 iOS 上都等于没做。** 当前的
+  `.task(id: vm.agentId)` 首屏定位就属于这一类（**已知缺陷，尚未修复**）。
 
 ## 3. 谁会滚动（`MessageList` 内所有 `proxy.scrollTo` 的入口）
 
 | 入口 | 时机 | 约束 |
 |---|---|---|
-| `defaultScrollAnchor(.bottom, for: .initialOffset)` | 首次布局 | 布局层，不是 scrollTo；第一帧就在底部，没有可闪的错误帧 |
-| `defaultScrollAnchor(anchor, for: .sizeChanges)` | 定位窗口内内容尺寸变化 | 布局层；窗口结束立刻置 nil，**长期开着会在回看历史时把人往下拽** |
-| `settleInitialPosition_claudecode_20260725` | `.task(id: "agentId\|isActive)`，即"成为选中会话" | 内容收敛式，见 §4；用户一滚就退出 |
-| `.onAppear` | 页面出现（仅 `isActive`） | 只是先贴一下底 |
-| `.onChange(of: rows.count)` | 行数增长（**顶部插入的唯一可见信号**） | 仅 `isAtBottom && !isUserScrolling` |
-| `.onChange(of: turns.count <= eagerLimit)` | eager/lazy 容器切换 | 仅 `isAtBottom`，延迟 30ms |
+| `.task(id: vm.agentId)` | 视图创建 | **固定节拍** 0/120/240ms 各贴底一次；**已知缺陷**：内容晚于 240ms 到位就永久落空，iOS 上还跑在没数据的时刻 |
+| `.onAppear` | 页面出现 | 贴底一次 + 置 `trackingGraceActive` |
 | `.onChange(of: rows.last?.id)` | 新消息 | user 行只在 `isNearBottom` 或**本机 3s 内发过**才跳；其它行 `isNearBottom` 才贴底 |
 | `.onChange(of: rows.last?.text)` | 流式增长 | 120ms 节流，仅 `isNearBottom && !isUserScrolling` |
 | `.onChange(of: isAgentWorking)` | turn 开始 / 结束 | 开始滚到 turn 顶；同样要 near-bottom 或本机刚发 |
@@ -69,44 +68,23 @@
 | jump-to-bottom 按钮 / 消息跳转列表 | 手动 | — |
 | `onToggleExpanded` | 展开折叠段 | 仅 `isAtBottom` |
 
-## 4. 定位状态机（2026.07.25 重写的核心）
+注意：**顶部插入没有任何监听**（`rows.last?.id` 看不见它），所以初次加载补齐节点时
+视口会被顶飞 —— 这就是"点进来空白"的直接来源，当前仍然存在。
 
-进入会话 → 进入"定位窗口"：**每 40ms 把视口按在目标位置，直到内容真的不再变化**。
-
-- 内容指纹 = `rows.count` + 首行 id + 末行 id + `isLoading`；
-  **刻意不含末行正文长度**（流式输出每帧都变，不该阻止收敛）。
-- 收敛判据：指纹连续 5 拍不变 + `isLoading` 结束 + `rows` 非空 + 至少撑过 **1.5s
-  下限**（`loadInitial` 可能还没被调度起来，此时"看着很安静"是假象）。
-- 硬上限 **12s**；`isUserScrolling` 一旦为真**立即退出**（绝不跟用户抢）。
-- 收尾再补两次贴合（markdown/代码块高度晚几帧才准）。
-
-## 5. 状态标志速查
+## 4. 状态标志速查
 
 | 标志 | 含义 | 谁写 |
 |---|---|---|
 | `isNearBottom` / `isAtBottom` | 距底 ≤100pt / ≤20pt | `onScrollGeometryChange`（iOS18/macOS15）或老系统的 PreferenceKey 探针 |
 | `isUserScrolling_claudecode_20260723` | 手指/触控板在驱动滚动（含惯性） | `onScrollPhaseChange`；`.animating` 是程序化滚动，不算 |
-| `trackingGraceActive_claudecode_20260714` | 定位期间冻结上面两个的更新 | 定位状态机自己开关 |
-| `suppressAutoScroll` | 手动加载更早 / 定位期间，屏蔽所有自动滚动 | 各入口 |
-| `isPositioning_claudecode_20260725` | 定位窗口进行中 | 定位状态机 |
+| `trackingGraceActive_claudecode_20260714` | 定位期间冻结上面两个的更新 | `.task` / `.onAppear` |
+| `suppressAutoScroll` | 手动加载更早时屏蔽自动滚动 | "Load earlier" / 跳转列表 |
 | `hasNewContent` | 底部有没看过的内容（jump 按钮红点） | 各入口 |
-| `visibleAnchor_claudecode_20260725` | 视口顶部段落 id，**class 引用盒子** | `onScrollTargetVisibilityChange` |
 
-> ⚠️ `visibleAnchor` 用引用类型而不是 `@State` 是**故意的**：滚动时每跨一行就
-> 回调一次，写 `@State` 会让 `MessageList` 整个 body（含 `groupMessages` /
-> `groupTurns`）重算 —— 那正是"滚动发沉"的来源。别把它改回 `@State`。
+## 5. 阅读位置记忆
 
-## 6. 阅读位置记忆
-
-`ConversationViewModel.readingAnchor_claudecode_20260725`（`turnId` + 记录时的
-`lastRowId` + 时间戳，**仅内存**，随 VM 缓存存活，被 LRU 回收就没了）。
-
-- 写：滚动彻底停下那一刻（每次手势一次）；贴着底部则清空记录。
-- 读：进入会话时四条**全**满足才恢复 —— 记录过 / 10 分钟内 / 期间没有新消息
-  （`lastRowId` 未变）/ 锚点在当前分段结果里仍是真实存在的滚动目标。
-  任何一条不满足 = 回到底部。恢复时同时亮出"跳到底部"按钮。
-
----
+**没有。** 每次进会话都是奔着底部去的（虽然经常落空）。07.25 实现过一版（视口顶部
+段落 id + 10 分钟有效期），随大改一起回退。
 
 # 二、改动时间线（新的追加在最后）
 
@@ -142,30 +120,54 @@ PreferenceKey` 探针改成只在 <iOS18/<macOS15 安装（新系统用
 消失）；有询问时不让 `agent_status: running` 复活 working 状态、隐藏底部运行指示
 器、询问出现时主动滚过去。**现状：全部仍在生效。**
 
-## 2026.07.25 — 「点进去一片空白」的根因重写（本轮）
-详见 `conversation-open-position_20260725.md`。三个叠加的根因：
+## 2026.07.25 — 「点进去一片空白」的根因重写 → **已回退**
+详见 `conversation-open-position_20260725.md`。**根因分析仍然有效，照着做的实现被
+回退了**，两者要分开看。
+
+**根因（结论保留，下次仍可直接用）：**
 
 1. **定位是按固定节拍猜的**（0/120/240ms），而内容分四步异步到位；任何一步慢过
    240ms 定位就永久落空，而第 3 步的顶部插入会把视口推进 `LazyVStack` 尚未构建
-   的区间 = 空白。附带：`.task` 闭包捕获的 `turns` 是 body 求值那一刻的值（进来
-   时是空的），第一句 `scrollTo(turns.last?.id)` **从来没生效过**。
+   的区间 = 空白。附带：`.task` 闭包捕获的 `turns` 是 body 求值那一刻的值（进会话
+   时通常是空的），第一句 `scrollTo(turns.last?.id)` **从来没生效过**。
 2. **iOS 定位跑在"页面被创建时"而非"会话被打开时"**（见 §一.2），且 `.onAppear`
    还会把 `trackingGraceActive` 永久置位，让未选中页面的贴底判断一直失真。
 3. **eager `VStack` ↔ `LazyVStack` 切换换掉整个内容容器**，加载中正好跨阈值。
 
-改动：定位改成内容收敛式状态机（§一.4）；触发条件改成
-`isActive_claudecode_20260725`；补两条兜底（`rows.count` 增长、容器切换）；
-新增阅读位置记忆（§一.6）。发布：PaseoMac **v0.2.165 (build 166)**、
-Paseo iOS **build 36**。
+**实现（v0.2.165 / iOS build 36）：** 收敛式定位状态机（每 40ms 贴一次直到内容指纹
+稳定，最少 1.5s、最多 12s）、触发条件改成 `isActive`、两条兜底监听
+（`rows.count` 增长 / 容器切换）、阅读位置记忆（`scrollTargetLayout` +
+`onScrollTargetVisibilityChange`）。
 
-## 2026.07.25（同日追加）— 消掉"进会话闪一下"
-定位对了之后暴露出的第二层问题：`proxy.scrollTo` 是**布局之后**的纠正，前提是先画
-了一帧错的；加载中内容分几次到位就画错几帧、纠正几次 = 抖好几下。改成**不画错帧**：
-`.defaultScrollAnchor(.bottom, for: .initialOffset)` 让第一帧就在底部；
-`.defaultScrollAnchor(anchor, for: .sizeChanges)` 只在**定位窗口内**给 `.bottom`
-（结束立刻置 nil，长期开着会在回看历史时把人往下拽）；`loadInitial` 的节点补齐改成
-发布前攒完、**整个初次窗口只对 `rows` 赋值一次**。发布：PaseoMac **v0.2.166
-(build 167)**、Paseo iOS **build 37**。
+**用户反馈：定位是对了，但每次点进会话都要闪一下。**
+
+## 2026.07.25（第二版）— 消闪尝试 → **也已回退**
+`proxy.scrollTo` 是布局之后的纠正，前提是先画了一帧错的；加载中内容分几次到位就
+画错几帧、纠正几次。于是改成"不画错帧"：`.defaultScrollAnchor(.bottom, for:
+.initialOffset)` + 定位窗口内 `.sizeChanges` 也锚底 + `loadInitial` 攒完再一次性
+发布（v0.2.166 / iOS build 37）。
+
+**用户反馈：还是抖，而且加载反应变慢了，不如回到之前。**
+
+## 2026.07.25（第三版）— **全量回退**（当前线上状态）
+代码回到 07.24 的状态（PaseoMac **v0.2.167 / build 168**、Paseo iOS **build 38**）。
+"点进去空白"的问题**仍然存在**，是明知故留 —— 用户判断"慢 + 抖"比"偶尔空白"更难受。
+
+**这次的教训（下次动手前必读）：**
+
+1. **首屏出内容的速度是第一优先级**，高于位置正确性。把初次加载攒成原子发布省掉
+   5 次重排，代价是首屏内容要等最多 5 个额外往返 —— 用户立刻察觉。**别再动这条
+   数据链路。**
+2. **两套机制不能同时控同一个滚动偏移。** 第二版里布局锚点
+   （`defaultScrollAnchor`）和收敛循环（每 40ms `scrollTo`）并存，很可能是"仍然
+   抖"的来源：一个在布局阶段钉位置，另一个在布局之后再纠正一次。下次**只留一套**。
+3. **"定位对了"和"看起来稳"是两回事。** 任何在布局之后纠正位置的方案，本质上都
+   承认先画错一帧；判断一个方案好不好，要按"用户看到几帧错的"来算，不是按"最终
+   停在哪儿"。
+4. 完整实现留了补丁：仓库内 `docs/attic/conversation-positioning-attempt_20260725.patch`
+   （VPS 上另有完整文件副本 `/home/ubuntu/paseo-sync/attempt-20260725/`）。下次要
+   重做，先读教训 1~3，再决定捡哪部分 —— **`isActive` 触发修正**（§一.2 那条 iOS
+   缺陷）几乎零成本、零风险，是最值得单独捡出来的一块。
 
 ---
 
@@ -207,6 +209,11 @@ Paseo iOS **build 36**。
   解决，`scrollTo` 只做兜底。
 - ❌ **长期开着 `defaultScrollAnchor(.bottom, for: .sizeChanges)`**。只能在定位
   窗口内开；常开 = 回看历史时被新内容往下拽。
+- ❌ **把初次加载攒成"一次性发布"**（tail + 节点补齐一起等完再赋值）。少 5 次整表
+  重排，但首屏内容要多等最多 5 个网络往返 —— 07.25 实测用户立刻感知到"加载变慢"，
+  已回退。首屏速度优先于位置正确性。
+- ❌ **布局锚点 + `scrollTo` 循环并存**。两套机制抢同一个滚动偏移，07.25 第二版
+  仍然抖，很可能就出在这里。要么全交给布局层，要么全用 `scrollTo`，别混。
 
 ---
 
