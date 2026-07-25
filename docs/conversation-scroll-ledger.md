@@ -23,12 +23,16 @@
 |---|---|---|---|
 | 1 | 磁盘缓存铺屏（最多 300 行） | `ensureLoaded_claudecode_20260713()` | 同步，立刻有内容 |
 | 2 | `fetchTimeline` 取 tail 50 条（`projection: "projected"`） | `loadInitial()` | 网络，几百 ms～几秒；**整体替换 `rows`** |
-| 3 | 若 tail 没落在节点边界，继续往前补最多 5 批 × 50 | `loadOlderUntilNodeBoundary_claudecode_20260724` | 每批一次往返，**从顶部插入** |
+| 3 | 若 tail 没落在节点边界，继续往前补最多 5 批 × 50 | `loadInitial()` 内联（07.25 起） | 每批一次往返；**攒完再一次性发布**，不逐批前插 |
 | 4 | markdown / 代码块真实高度量准 | SwiftUI 布局 | 再过几帧 |
 
-关键点：**第 3 步是从顶部插入的**，它不改变最后一行的 id，只改变 `rows.count`
-和 `rows.first?.id`；`isLoading` 覆盖第 2~3 步全程（`loadOlderMessagesInternal`
-自己不动 `isLoading`）。
+关键点：**第 2~3 步合起来只对 `rows` 赋值一次**（07.25 起；之前是每批各前插一次，
+每次都是整表重排 + 磁盘缓存写入 + 一次可见跳动）。但这一次赋值仍会**从顶部塞进
+内容**——它不改变最后一行的 id，只改变 `rows.count` 和 `rows.first?.id`，所以
+只盯 `rows.last?.id` 的监听看不见它。`isLoading` 覆盖第 2~3 步全程。
+
+手动点"加载更早"走的是另一条路（`loadOlderMessagesInternal` → 逐批前插 +
+`suppressAutoScroll` + 锚点恢复），那里逐批前插是刻意的（用户在等反馈）。
 
 `ensureLoaded` 每个 VM 生命周期只真正拉一次（`hasRequestedInitialLoad`），由
 `AppViewModel.markConversationAccessed_claudecode_20260713` 在 `selectedAgentId`
@@ -51,6 +55,8 @@
 
 | 入口 | 时机 | 约束 |
 |---|---|---|
+| `defaultScrollAnchor(.bottom, for: .initialOffset)` | 首次布局 | 布局层，不是 scrollTo；第一帧就在底部，没有可闪的错误帧 |
+| `defaultScrollAnchor(anchor, for: .sizeChanges)` | 定位窗口内内容尺寸变化 | 布局层；窗口结束立刻置 nil，**长期开着会在回看历史时把人往下拽** |
 | `settleInitialPosition_claudecode_20260725` | `.task(id: "agentId\|isActive)`，即"成为选中会话" | 内容收敛式，见 §4；用户一滚就退出 |
 | `.onAppear` | 页面出现（仅 `isActive`） | 只是先贴一下底 |
 | `.onChange(of: rows.count)` | 行数增长（**顶部插入的唯一可见信号**） | 仅 `isAtBottom && !isUserScrolling` |
@@ -152,6 +158,15 @@ PreferenceKey` 探针改成只在 <iOS18/<macOS15 安装（新系统用
 新增阅读位置记忆（§一.6）。发布：PaseoMac **v0.2.165 (build 166)**、
 Paseo iOS **build 36**。
 
+## 2026.07.25（同日追加）— 消掉"进会话闪一下"
+定位对了之后暴露出的第二层问题：`proxy.scrollTo` 是**布局之后**的纠正，前提是先画
+了一帧错的；加载中内容分几次到位就画错几帧、纠正几次 = 抖好几下。改成**不画错帧**：
+`.defaultScrollAnchor(.bottom, for: .initialOffset)` 让第一帧就在底部；
+`.defaultScrollAnchor(anchor, for: .sizeChanges)` 只在**定位窗口内**给 `.bottom`
+（结束立刻置 nil，长期开着会在回看历史时把人往下拽）；`loadInitial` 的节点补齐改成
+发布前攒完、**整个初次窗口只对 `rows` 赋值一次**。发布：PaseoMac **v0.2.166
+(build 167)**、Paseo iOS **build 37**。
+
 ---
 
 # 三、下次排查手册
@@ -187,6 +202,11 @@ Paseo iOS **build 36**。
 - ❌ **用 `turn.id` 做跨加载的滚动锚点**。turn.id = 段落首行 id，补齐上文后该 turn
   会被合并、id 从列表消失，`scrollTo` 静默失效。用稳定消息 id。
 - ❌ **在用户手势期间做程序化 `scrollTo`**。必看 `isUserScrolling`。
+- ❌ **靠 `scrollTo` 去"纠正"首屏位置**。它发生在布局之后，等于承认先画错一帧
+  ——那一帧就是用户看到的"闪一下"。首屏位置要用 `defaultScrollAnchor` 在布局层
+  解决，`scrollTo` 只做兜底。
+- ❌ **长期开着 `defaultScrollAnchor(.bottom, for: .sizeChanges)`**。只能在定位
+  窗口内开；常开 = 回看历史时被新内容往下拽。
 
 ---
 
@@ -208,6 +228,7 @@ Paseo iOS **build 36**。
 
 - `conversation-scroll-improvements_20260724.md` — 回看历史跳帧、加载更早按节点、
   询问被淹没、Cmd+V 被 composer 抢（仅 macOS）
-- `conversation-open-position_20260725.md` — 进会话一片空白的根因与定位重写
+- `conversation-open-position_20260725.md` — 进会话一片空白的根因与定位重写（含同日
+  追加的"消闪"一节：布局层锚点 + 初次加载只赋值一次）
 - `swiftui-stability-notes.md` — 更早期的 SwiftUI 稳定性笔记（含 AppKit transcript
   那一轮的教训）

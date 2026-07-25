@@ -116,12 +116,43 @@ iOS 5 个 turn）是按 `turns.count` 算的，加载过程中 turn 数从 0 涨
 
 ---
 
+---
+
+# 追加（同日）：定位对了，但"闪一下 / 抖一下"
+
+**现象**：上面那版装上以后，从列表点进会话**总会闪一下**才稳定下来。
+
+**根因**：定位正确不等于不闪。`proxy.scrollTo` 是**布局之后**的纠正动作——它成立
+的前提是"先画了一帧错误的位置"。老实现因为定位落空，那帧错误画面就一直留着（表现
+为空白/位置不对）；新实现把它纠正了，于是错误帧 → 正确帧的切换变成可见的一跳。
+加载过程中内容分好几次到位（磁盘缓存 → 网络 tail → 节点补齐每批各一次前插），
+**每一次都画错一帧再纠正一次**，连起来就是"抖好几下"。
+
+**改法：不要画错帧，而不是画错了再纠正。**
+
+1. **初始偏移交给布局系统**：`.defaultScrollAnchor(.bottom, for: .initialOffset)`
+   （iOS 18 / macOS 15）。第一帧画出来就已经在底部，没有可纠正的错误帧。
+2. **定位窗口内，内容尺寸变化也交给布局系统**：
+   `.defaultScrollAnchor(sizeChangeAnchor, for: .sizeChanges)`，`sizeChangeAnchor`
+   只在定位窗口内为 `.bottom`，结束立刻置回 `nil`。这样加载中每次内容到位都由布局
+   系统直接钉住底边，不再产生"画错一帧 + scrollTo 纠正"的跳动。
+   - 长期开着**不行**：那会在用户回看历史时把人往下拽（07.23 专门修掉的手感问题）。
+   - 恢复到历史阅读位置时也不开（会跟恢复目标打架）。
+   - `UnitPoint?` 是同一个 modifier 的**取值**变化，不改变视图身份，不触发重建。
+3. **初次加载只对 `rows` 赋值一次**：节点补齐（最多 5 批）改成在**发布给视图之前**
+   攒完（`fetchOlderBatch_claudecode_20260725` 纯取数、不碰 `rows`），整个初次窗口
+   从"最多 6 次整表重排 + 6 次磁盘缓存写入"降到 1 次。
+
+老系统（<iOS 18 / <macOS 15）没有 `defaultScrollAnchor(_:for:)`，保持原行为（仍靠
+收敛式 `scrollTo`），只是会看到原来那样的一跳。
+
 # 构建 / 安装
 
 - **macOS**：`swift build -c release` + `scripts/bundle.sh release paseomac`，覆盖
-  安装到 `/Applications/PaseoMac.app`，**v0.2.165 (build 166)**。
+  安装到 `/Applications/PaseoMac.app`，**v0.2.165 (build 166)** → 消闪版
+  **v0.2.166 (build 167)**。
 - **iOS**：`scripts/release-to-iphone.sh`，Release 签名构建 + `devicectl` 装到
-  iPhone 15 Pro，**v0.2.100 (build 36)**。
+  iPhone 15 Pro，**build 36** → 消闪版 **build 37**。
 
 # 观察项
 
