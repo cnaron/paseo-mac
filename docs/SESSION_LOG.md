@@ -649,3 +649,32 @@ assistant bubble 和 user bubble 各加 `.contextMenu { Button("Copy text") { ..
 ### 版本
 
 commits `330e516`（主改动）+ `5d505ba`（修 exhaustive switch 编译错误）。Air 上 `swift build -c release` 通过（0 error，若干历史 warning），`scripts/bundle.sh release` 打包，已覆盖 `/Applications/PaseoMac.app`。
+
+---
+
+## 2026-07-25 — iOS 会话页顶部加 Fast（agent toggle features）入口
+
+**背景**：`fast_mode` 一直是 daemon 下发的 agent feature（`features: [{type: toggle,
+id: "fast_mode", label: "Fast", icon: "zap", value: bool}]`，claude provider 专有），
+mac 端在 composer 那排小图标里渲染（`AgentFeatureControls` / `AgentFeatureControl`，
+黄色闪电）。**iOS 端从来没渲染过 features**，所以手机上根本没有 Fast 开关，只能跑到
+mac 上切——本次补上。
+
+**改动**：`IOSConversationView.swift` 新增 `IOSAgentTogglePills_claudecode_20260725`，
+放在会话页顶部 header 第二行、model 药丸右边：
+
+- 泛化处理 **所有 toggle 型 feature**（claude 的 `fast_mode`、opencode 的
+  `auto_accept`…），没有就整个不显示，不是只硬编码 Fast。
+- 图标映射（`zap` → `bolt.fill`、`shield-check` → `checkmark.shield`、
+  `list-todo` → `checklist`）和着色（`fast_mode` 黄 / `auto_accept` 绿 /
+  `plan_mode` 蓝）跟 mac 端 `featureIconName` / `enabledColor` 保持同一套。
+- 开：主题色描边 + 14% 底色；关：灰字 + 跟 model 药丸同款 `secondarySystemBackground`。
+  高度 28pt，与 model 药丸对齐。
+- 点击走跟 mac 端同一个 `app.setAgentFeature(agentId:featureId:value:)`；点下去先做
+  乐观更新（`optimistic` 字典），daemon 回话后清掉，避免"点了没反应"的错觉；带一次
+  light haptic。
+
+**注意**：feature 列表由 daemon 按 provider 下发，不是客户端写死的——换 provider /
+daemon 升级后多出来的 toggle 会自动出现在这排药丸里。
+
+**版本**：Paseo iOS build 39（mac 端无变化，它本来就有）。
