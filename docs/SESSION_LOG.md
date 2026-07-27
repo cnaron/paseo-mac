@@ -678,3 +678,46 @@ mac 上切——本次补上。
 daemon 升级后多出来的 toggle 会自动出现在这排药丸里。
 
 **版本**：Paseo iOS build 39（mac 端无变化，它本来就有）。
+
+---
+
+## 2026-07-27 — 新建会话的 composer 补上 feature 开关（Fast）：客户端从来没实现过草稿态查询
+
+**现象**：正常会话的 composer 有 Fast（黄闪电），**新建会话的 composer 没有**，两者不一致。
+
+**根因**：feature 开关有两条来源，客户端只实现了第一条。
+
+1. 已有会话：`agent.features`（随 agent 快照下发）→ `AgentFeatureControls` 渲染。✅
+2. 草稿态（还没有 agent，`agent.features` 无从谈起）：daemon 提供
+   `list_provider_features_request` / `..._response`（`draftConfig: {provider, cwd,
+   modeId?, model?, thinkingOptionId?, featureValues?}`），按草稿配置算出可用开关。
+   **PaseoMac / Paseo iOS 里完全没有这条 RPC**，所以 `PendingFeatureControls` 只能
+   硬编码 opencode 的 `auto_accept`，claude 的 Fast 在新建会话里根本没有入口。
+
+顺带确认：值本身早就是通的——`createAgent(cwd:)` 会把当前会话的 feature 值带进
+`pendingNewAgentFeatureValues`，`submitPendingAgent` 也会随 create 请求发出去。
+**缺的只是 UI**。
+
+**改动**：
+
+- `Protocol.swift` / `DaemonClient.swift`：新增
+  `ListProviderFeaturesRequest_claudecode_20260727` +
+  `ListProviderFeaturesResponse_claudecode_20260727` + client 方法。
+  ⚠️ **别忘了 `DaemonClient` 里那个按 case 取 `requestId` 的 switch**——新响应类型
+  不加进去，`requestResponse` 永远等不到回应，15s 后静默超时（本次就先漏了这一步，
+  编译不会报错，症状是"功能完全不生效但没有任何报错"）。
+- `AppViewModel`：`pendingNewAgentFeatures_claudecode_20260727` +
+  `refreshPendingNewAgentFeatures_claudecode_20260727()`（按 provider/cwd/model/mode
+  组 key 去重，草稿变了自动重问，过期响应丢弃）。model 为空时用 provider 默认模型
+  补上——**daemon 对空 model 直接返回空列表**。
+- macOS `ComposerView.PendingFeatureControls`：改成渲染 daemon 返回的开关，复用与正常
+  会话完全相同的 `AgentFeatureControl`，外观/交互一致；本地刚点过的值优先于 daemon
+  回的值（点了立刻生效）。daemon 没回话时保留 opencode `auto_accept` 老兜底。
+- iOS `IOSConversationView`：药丸视图拆成 `IOSTogglePill_claudecode_20260725`，
+  新增 `IOSPendingTogglePills_claudecode_20260727`，新建会话页顶部也有 Fast。
+
+**验证**：直连 daemon WS 打了真实 RPC（`{type:"session", message:{...}}` 信封）：
+`claude-opus-5` → 返回 fast_mode 开关且 `value` 跟随发过去的 `featureValues`；
+`claude-sonnet-5` → 返回 `[]`（该模型不支持 fast mode，开关自动消失）。
+
+**版本**：PaseoMac v0.2.168 (build 169)、Paseo iOS build 40。
