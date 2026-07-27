@@ -721,3 +721,45 @@ daemon 升级后多出来的 toggle 会自动出现在这排药丸里。
 `claude-sonnet-5` → 返回 `[]`（该模型不支持 fast mode，开关自动消失）。
 
 **版本**：PaseoMac v0.2.168 (build 169)、Paseo iOS build 40。
+
+---
+
+## 2026-07-27 — AskUserQuestion 不显示：待处理提问从来没从快照恢复过
+
+**现象**：agent 调 `AskUserQuestion` 后界面上只有一条 "1 task running: AskUserQuestion"，
+没有任何可以回答的地方，agent 就一直卡着等一个用户看不见的问题。
+
+**根因（两层，缺一不可）**：
+
+1. 客户端**只认实时的 `permission_requested` 流事件**。`AgentSnapshot` 里 daemon 每份
+   快照都带着的 `pendingPermissions` 字段，Swift 模型里**压根没有这个字段**（全工程
+   grep 零命中）。所以 App 重启 / 断线重连 / 会话被 LRU 回收后重新打开，"正在等你
+   回答"这个状态就彻底没人恢复。
+2. 提问界面挂在一条**客户端合成**的 permission row 上（`appendPermissionRow`，只在收到
+   那个事件时追加）。而 `loadInitial` 是 `rows = fetched` 整体替换 —— 只要会话重新
+   加载过一次，这一行就没了，即使 `pendingPermission` 还在也没有渲染的位置。
+
+daemon 侧一切正常：`fetch_agents_response` 的每个 entry 都带
+`pendingPermissions:[{id,provider,name:"AskUserQuestion",kind:"question",input:{questions:[...]}}]`，
+结构跟 Swift 的 `PermissionRequestPayload` / `AskUserQuestion` 完全对得上（裸 WS 实测）。
+
+**改动**：
+
+- `AgentSnapshot` 新增 `pendingPermissions_claudecode_20260727`（CodingKeys 映射到
+  `pendingPermissions`），`merging` 时 **不能被精简快照覆盖掉**（`agent_status` 那种
+  快照不带这个字段）。`PermissionRequestPayload` 补 `Encodable`（AgentSnapshot 是
+  Codable，落盘缓存要用）。
+- `ConversationViewModel.syncPendingPermissionFromSnapshot_claudecode_20260727(_:)`：
+  **只增不删**（清除仍然交给 `permission_resolved` 事件，避免和刚到的事件抢跑），
+  补 `pendingPermission` + 补那条 permission row。
+- 调用点三处：VM 创建时、`refreshAgents()` 拿到新列表时、**`loadInitial` 之后**
+  （rows 刚被整体替换，得把行补回来）。
+- 落盘的 agents 缓存里**剥掉** pendingPermissions（`withoutPendingPermissions_...`），
+  否则下次冷启动会先按旧快照画出一个早就答过的问题。
+
+**验证**：造了一个真实的 pending 提问（haiku agent 调 AskUserQuestion），然后**冷启动**
+Mac App（没有任何实时事件），日志出现两条
+`permission / restored_from_snapshot / kind=question` —— 分别对应"创建 VM 时"和
+"loadInitial 覆盖 rows 后重新补回"，正是设计的两个路径。
+
+**版本**：PaseoMac v0.2.176、Paseo iOS build 43。
